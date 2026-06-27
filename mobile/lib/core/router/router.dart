@@ -2,6 +2,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../features/assets/screens/asset_editor_screen.dart';
 import '../../features/auth/screens/login_screen.dart';
 import '../../features/auth/screens/registration_screen.dart';
 import '../../features/auth/screens/splash_screen.dart';
@@ -9,6 +10,7 @@ import '../../features/projects/screens/home_screen.dart';
 import '../../features/projects/screens/project_file_browser_screen.dart';
 import '../../features/provider_setup/screens/provider_setup_screen.dart';
 import '../../features/settings/screens/settings_screen.dart';
+import '../../features/story/screens/story_editor_screen.dart';
 import '../storage/secure_storage_service.dart';
 import 'routes.dart';
 
@@ -110,14 +112,31 @@ GoRouter buildRouter({
         builder: (context, state) => const SettingsScreen(),
       ),
 
-      // ── Phase 2+ stub routes ────────────────────────────────────────────────
+      // ── Phase 2 screens ─────────────────────────────────────────────────────
       GoRoute(
         path: Routes.storyEditor,
-        builder: (context, state) => const _PlaceholderScreen(title: 'Story Editor'),
+        builder: (context, state) {
+          final projectName = Uri.decodeComponent(
+            state.pathParameters['projectName'] ?? '',
+          );
+          return StoryEditorScreen(projectName: projectName);
+        },
       ),
       GoRoute(
         path: Routes.assetEditor,
-        builder: (context, state) => const _PlaceholderScreen(title: 'Asset Editor'),
+        builder: (context, state) {
+          final projectName = Uri.decodeComponent(
+            state.pathParameters['projectName'] ?? '',
+          );
+          // assetPath is the full directory path, URL-encoded to handle slashes.
+          final assetDirPath = Uri.decodeComponent(
+            state.pathParameters['assetPath'] ?? '',
+          );
+          return AssetEditorScreen(
+            projectName: projectName,
+            assetDirPath: assetDirPath,
+          );
+        },
       ),
       GoRoute(
         path: Routes.sceneDetail,

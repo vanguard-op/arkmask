@@ -308,7 +308,91 @@ class ProjectFileService {
     }
   }
 
+  // ── Asset MDX ─────────────────────────────────────────────────────────────
+
+  /// Reads `prompt.mdx` from [assetDirPath] and returns the parsed [AssetPrompt].
+  ///
+  /// Returns a blank [AssetPrompt] if the file does not exist or cannot be parsed.
+  Future<AssetPrompt> readAssetPrompt(String assetDirPath) async {
+    _assertInit();
+    final file = File(p.join(assetDirPath, 'prompt.mdx'));
+    if (!await file.exists()) {
+      final name = p.basename(assetDirPath);
+      return AssetPrompt(name: name, type: AssetType.character, description: '', promptBody: '');
+    }
+    final content = await file.readAsString();
+    final fm = _parseMdxFrontmatter(content);
+    final body = _parseMdxBody(content);
+    return AssetPrompt(
+      name: (fm['name'] as String?) ?? p.basename(assetDirPath),
+      type: AssetType.fromString((fm['type'] as String?) ?? 'character'),
+      description: (fm['description'] as String?) ?? '',
+      promptBody: body,
+    );
+  }
+
+  /// Writes [prompt] to `prompt.mdx` in [assetDirPath].
+  Future<void> writeAssetPrompt(String assetDirPath, AssetPrompt prompt) async {
+    _assertInit();
+    final file = File(p.join(assetDirPath, 'prompt.mdx'));
+    final content =
+        '---\nname: ${prompt.name}\ntype: ${prompt.type.value}\ndescription: "${_escapeYamlString(prompt.description)}"\n---\n${prompt.promptBody}';
+    await file.writeAsString(content);
+  }
+
+  /// Saves raw image [bytes] as `image.png` inside [assetDirPath].
+  Future<void> saveImageToAssetDir(String assetDirPath, List<int> bytes) async {
+    _assertInit();
+    final file = File(p.join(assetDirPath, 'image.png'));
+    await file.writeAsBytes(bytes);
+  }
+
+  /// Returns the `image.png` [File] for [assetDirPath] (may not exist on disk).
+  File imageFileForAsset(String assetDirPath) =>
+      File(p.join(assetDirPath, 'image.png'));
+
+  // ── Scene storyboard (ark.mdx) ─────────────────────────────────────────────
+
+  /// Reads `ark.mdx` from [sceneDirPath] and returns the parsed [SceneStoryboard].
+  Future<SceneStoryboard> readArkMdx(String sceneDirPath) async {
+    _assertInit();
+    final file = File(p.join(sceneDirPath, 'ark.mdx'));
+    if (!await file.exists()) {
+      final sceneNumber = int.tryParse(p.basename(sceneDirPath)) ?? 0;
+      return SceneStoryboard(sceneNumber: sceneNumber, storyboardBody: '');
+    }
+    final content = await file.readAsString();
+    final fm = _parseMdxFrontmatter(content);
+    final body = _parseMdxBody(content);
+    final sceneNumber = (fm['scene'] as int?) ?? (int.tryParse(p.basename(sceneDirPath)) ?? 0);
+    return SceneStoryboard(sceneNumber: sceneNumber, storyboardBody: body);
+  }
+
+  /// Writes [storyboard] to `ark.mdx` in [sceneDirPath].
+  Future<void> writeArkMdx(String sceneDirPath, SceneStoryboard storyboard) async {
+    _assertInit();
+    await Directory(sceneDirPath).create(recursive: true);
+    final file = File(p.join(sceneDirPath, 'ark.mdx'));
+    final content =
+        '---\nscene: ${storyboard.sceneNumber}\n---\n${storyboard.storyboardBody}';
+    await file.writeAsString(content);
+  }
+
+  /// Returns the `video.mp4` [File] for [sceneDirPath] (may not exist on disk).
+  File videoFileForScene(String sceneDirPath) =>
+      File(p.join(sceneDirPath, 'video.mp4'));
+
   // ── Utility ───────────────────────────────────────────────────────────────
+
+  /// Extracts the MDX body (content after the closing `---` of frontmatter).
+  String _parseMdxBody(String content) {
+    final parts = content.split('---');
+    if (parts.length < 3) return content.trim();
+    return parts.sublist(2).join('---').trimLeft();
+  }
+
+  /// Escapes double-quotes for YAML inline string values.
+  String _escapeYamlString(String s) => s.replaceAll('"', '\\"');
 
   /// Parses YAML frontmatter from an MDX file string.
   ///

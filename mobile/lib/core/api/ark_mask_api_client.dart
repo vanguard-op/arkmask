@@ -162,6 +162,27 @@ class ArkMaskApiClient {
     return (response.data as Map<String, dynamic>)['platform_api_key'] as String;
   }
 
+  // ── File download ──────────────────────────────────────────────────────────
+
+  /// Downloads a file from an arbitrary URL (e.g. GCS presigned URL) and
+  /// returns the raw bytes.
+  ///
+  /// Used to save generated images and videos to the device filesystem after
+  /// receiving a presigned GCS URL from `/image` or `/video/:id/status`.
+  Future<List<int>> downloadBytes(String url) async {
+    try {
+      final response = await _dio.get<List<int>>(
+        url,
+        options: Options(responseType: ResponseType.bytes),
+      );
+      return response.data ?? [];
+    } on DioException catch (e) {
+      throw _mapDioError(e);
+    } catch (e) {
+      throw ApiUnknownError(message: e.toString());
+    }
+  }
+
   // ── Internal ───────────────────────────────────────────────────────────────
 
   /// Executes a Dio request, mapping [DioException] to typed [ApiError].

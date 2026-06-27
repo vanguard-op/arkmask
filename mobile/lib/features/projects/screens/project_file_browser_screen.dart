@@ -258,10 +258,9 @@ class _TreeView extends StatelessWidget {
             right: AppSpacing.s4,
             bottom: AppSpacing.s6,
             child: _ExtractAssetsButton(
-              onTap: () => ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Story editor coming in Phase 2.'),
-                ),
+              onTap: () => context.push(
+                Routes.storyEditor.replaceFirst(
+                    ':projectName', Uri.encodeComponent(projectName)),
               ),
               isDark: isDark,
             ),

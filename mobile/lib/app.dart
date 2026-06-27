@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import 'core/api/ark_mask_api_client.dart';
 import 'core/auth/auth_service.dart';
 import 'core/filesystem/project_file_service.dart';
+import 'core/jobs/generation_job_manager.dart';
 import 'core/router/router.dart';
 import 'core/storage/secure_storage_service.dart';
 import 'core/theme/app_theme.dart';
@@ -27,6 +28,7 @@ class _ArkMaskAppState extends State<ArkMaskApp> {
   late final ArkMaskApiClient _apiClient;
   late final AuthService _authService;
   late final ProjectFileService _fileService;
+  late final GenerationJobManager _jobManager;
   late final GoRouterWrapper _routerWrapper;
 
   @override
@@ -41,6 +43,7 @@ class _ArkMaskAppState extends State<ArkMaskApp> {
     _fileService = ProjectFileService();
     // Initialize the filesystem root asynchronously; screens wait for this.
     _fileService.initialize();
+    _jobManager = GenerationJobManager();
 
     _routerWrapper = GoRouterWrapper(
       storage: _storage,
@@ -55,6 +58,7 @@ class _ArkMaskAppState extends State<ArkMaskApp> {
       apiClient: _apiClient,
       authService: _authService,
       fileService: _fileService,
+      jobManager: _jobManager,
       child: MaterialApp.router(
         title: 'ArkMask',
         debugShowCheckedModeBanner: false,
@@ -94,6 +98,7 @@ class ArkMaskServices extends InheritedWidget {
     required this.apiClient,
     required this.authService,
     required this.fileService,
+    required this.jobManager,
     required super.child,
   });
 
@@ -101,6 +106,9 @@ class ArkMaskServices extends InheritedWidget {
   final ArkMaskApiClient apiClient;
   final AuthService authService;
   final ProjectFileService fileService;
+  /// Singleton job manager for tracking all in-progress generation steps
+  /// (FEAT-017). Widgets listen via [ListenableBuilder].
+  final GenerationJobManager jobManager;
 
   static ArkMaskServices of(BuildContext context) {
     final result = context.dependOnInheritedWidgetOfExactType<ArkMaskServices>();
