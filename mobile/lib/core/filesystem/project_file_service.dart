@@ -198,10 +198,12 @@ class ProjectFileService {
   }
 
   Future<AssetNode> _readAssetNode(Directory assetDir, {required bool isGlobal, int? sceneNumber}) async {
-    final name = p.basename(assetDir.path);
     final promptFile = File(p.join(assetDir.path, 'prompt.mdx'));
     final imageFile = File(p.join(assetDir.path, 'image.png'));
 
+    // Default to directory basename; overridden by frontmatter `name` below so
+    // that reference paths (e.g. "@/scenes/0/lyra") are preserved and shown.
+    String name = p.basename(assetDir.path);
     String? description;
     bool hasPromptBody = false;
     AssetType? type;
@@ -209,6 +211,11 @@ class ProjectFileService {
     if (await promptFile.exists()) {
       final content = await promptFile.readAsString();
       final parsed = _parseMdxFrontmatter(content);
+      // Use the frontmatter name when available — it may be a reference path.
+      final frontmatterName = parsed['name'] as String?;
+      if (frontmatterName != null && frontmatterName.isNotEmpty) {
+        name = frontmatterName;
+      }
       description = parsed['description'] as String?;
       hasPromptBody = content.contains('---') && content.split('---').length >= 3
           ? (content.split('---')[2].trim().isNotEmpty)
@@ -295,12 +302,18 @@ class ProjectFileService {
     _assertInit();
     final projectDir = p.join(_projectsRoot.path, projectName);
     for (final asset in assets) {
+      // Reference names (e.g. "@/scenes/0/lyra") contain slashes that would
+      // create nested directories. Use only the last segment as the folder name
+      // so the directory is always a single flat entry under `assets/`.
+      final dirName = asset.name.contains('/') ? asset.name.split('/').last : asset.name;
+
       final dirPath = asset.isGlobal
-          ? p.join(projectDir, 'assets', asset.name)
-          : p.join(projectDir, 'scenes', '${asset.sceneNumber}', 'assets', asset.name);
+          ? p.join(projectDir, 'assets', dirName)
+          : p.join(projectDir, 'scenes', '${asset.sceneNumber}', 'assets', dirName);
       await Directory(dirPath).create(recursive: true);
 
-      // Write initial prompt.mdx with frontmatter populated, empty body.
+      // Write initial prompt.mdx. The frontmatter `name` stores the full
+      // reference path (e.g. "@/scenes/0/lyra") so the UI can display it.
       final promptFile = File(p.join(dirPath, 'prompt.mdx'));
       await promptFile.writeAsString(
         '---\nname: ${asset.name}\ntype: ${asset.type.value}\ndescription: "${asset.description}"\n---\n',
