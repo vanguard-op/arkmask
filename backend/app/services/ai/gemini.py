@@ -122,7 +122,7 @@ class GeminiProvider(AIProvider):
                 number_of_videos=1,
                 duration_seconds=8,
                 enhance_prompt=True,
-                generate_audio=False,
+                generate_audio=True,
             ),
         )
 
