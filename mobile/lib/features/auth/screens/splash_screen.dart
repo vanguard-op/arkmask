@@ -73,7 +73,12 @@ class _SplashScreenState extends State<SplashScreen>
     );
 
     _controller.forward();
-    _checkAuthAndRoute();
+
+    // Defer auth check to post-frame so that ArkMaskServices.of(context)
+    // can resolve the InheritedWidget — it is not available during initState.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _checkAuthAndRoute();
+    });
   }
 
   Future<void> _checkAuthAndRoute() async {

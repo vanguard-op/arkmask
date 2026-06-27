@@ -23,11 +23,14 @@ dependencies = [
     # Configuration
     "pydantic==2.11.7",
     "pydantic-settings==2.9.1",
+    "pydantic[email]",
 
     # AI providers (ported from solid-work prototype)
     "google-genai==1.20.0",
     # BytePlus Ark SDK: pip install byteplus-python-sdk-v2
     "byteplus-python-sdk-v2",
+    # sniffio is a transitive dep of byteplus-python-sdk-v2 not declared by that package
+    "sniffio",
 
     # Object storage (GCS / MinIO)
     "boto3==1.38.39",

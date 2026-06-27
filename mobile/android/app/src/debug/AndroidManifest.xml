@@ -4,4 +4,7 @@
          to allow setting breakpoints, to provide hot reload, etc.
     -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Allow cleartext HTTP to the host machine (10.0.2.2) during local dev.
+         Android blocks non-HTTPS by default; this overrides for debug builds only. -->
+    <application android:usesCleartextTraffic="true" />
 </manifest>

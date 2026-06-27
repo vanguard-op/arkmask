@@ -2,12 +2,14 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install build dependencies for psycopg2-binary and other C extensions.
+# libpq-dev is needed at runtime for psycopg2-binary's shared lib.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq-dev gcc \
+    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml .
+# Install psycopg2-binary first using the pre-built wheel (avoids needing gcc).
+RUN pip install --no-cache-dir --only-binary=:all: psycopg2-binary
 RUN pip install --no-cache-dir -e .
 
 COPY . .

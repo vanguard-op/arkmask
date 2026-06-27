@@ -48,7 +48,10 @@ class _HomeViewState extends State<_HomeView> {
   @override
   void initState() {
     super.initState();
-    _checkProviderSetup();
+    // Defer so ArkMaskServices.of(context) can resolve after first frame.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _checkProviderSetup();
+    });
   }
 
   Future<void> _checkProviderSetup() async {

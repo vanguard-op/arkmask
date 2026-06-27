@@ -11,12 +11,13 @@ import 'credential_interceptor.dart';
 /// are injected automatically by [CredentialInterceptor].
 ///
 /// Base URL is configured per environment:
-/// - Local dev: `http://localhost:8000`
+/// - Local dev (Android emulator): `http://10.0.2.2:8000` (host machine loopback)
+/// - Local dev (physical device / iOS sim): `http://localhost:8000`
 /// - Production: Cloud Run URL (set via env / build config)
 class ArkMaskApiClient {
   ArkMaskApiClient({
     required SecureStorageService storage,
-    String baseUrl = 'http://localhost:8000',
+    String baseUrl = 'http://10.0.2.2:8000',
   }) : _dio = _buildDio(baseUrl: baseUrl, storage: storage);
 
   final Dio _dio;
