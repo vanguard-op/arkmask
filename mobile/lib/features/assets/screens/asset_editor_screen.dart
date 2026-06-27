@@ -148,6 +148,9 @@ class _AssetAppBar extends StatelessWidget implements PreferredSizeWidget {
     final promptKey = GenerationJobManager.promptKey(assetDirPath);
     final imageKey = GenerationJobManager.imageKey(assetDirPath);
 
+    // Filesystem-backed baseline: read from loaded state so dots survive restarts.
+    final loaded = state is AssetEditorLoaded ? state as AssetEditorLoaded : null;
+
     return AppBar(
       leading: IconButton(
         icon: const Icon(LucideIcons.arrowLeft),
@@ -163,17 +166,39 @@ class _AssetAppBar extends StatelessWidget implements PreferredSizeWidget {
         overflow: TextOverflow.ellipsis,
       ),
       actions: [
-        // Step indicator: 2 dots — Prompt and Image
+        // Step indicator: 2 dots — Prompt and Image.
+        // The job manager overlays running/failed during active generation;
+        // filesystem state (hasPromptBody / hasImage) is the persistent source
+        // of truth so dots survive app restarts.
         ListenableBuilder(
           listenable: jobManager,
           builder: (_, child) => _StepDotsAppBar(
-            promptState: jobManager.stateFor(promptKey),
-            imageState: jobManager.stateFor(imageKey),
+            promptState: _resolveState(
+              jobManager.stateFor(promptKey),
+              fallbackDone: loaded?.prompt.promptBody.isNotEmpty ?? false,
+            ),
+            imageState: _resolveState(
+              jobManager.stateFor(imageKey),
+              fallbackDone: loaded?.hasImage ?? false,
+            ),
           ),
         ),
         const SizedBox(width: AppSpacing.s3),
       ],
     );
+  }
+
+  /// Returns [liveState] when it carries active signal (running/failed).
+  /// Falls back to [done] or [idle] derived from the persisted filesystem flag.
+  static GenerationJobState _resolveState(
+    GenerationJobState liveState, {
+    required bool fallbackDone,
+  }) {
+    if (liveState == GenerationJobState.running ||
+        liveState == GenerationJobState.failed) {
+      return liveState;
+    }
+    return fallbackDone ? GenerationJobState.done : GenerationJobState.idle;
   }
 }
 
