@@ -168,9 +168,10 @@ class _TreeView extends StatelessWidget {
               asset.hasPromptBody ? GenerationStepState.done : GenerationStepState.pending,
               asset.hasImage ? GenerationStepState.done : GenerationStepState.pending,
             ],
-            onTap: () {
+            onTap: () async {
               context.read<FileBrowserCubit>().select(asset.directoryPath);
-              context.push(_assetEditorPath(asset.directoryPath));
+              await context.push(_assetEditorPath(asset.directoryPath));
+              if (context.mounted) context.read<FileBrowserCubit>().load(projectName);
             },
           ));
         }
@@ -204,9 +205,10 @@ class _TreeView extends StatelessWidget {
               scene.hasStoryboard ? GenerationStepState.done : GenerationStepState.pending,
               scene.hasVideo ? GenerationStepState.done : GenerationStepState.pending,
             ],
-            onTap: () {
+            onTap: () async {
               context.read<FileBrowserCubit>().toggleExpand(sceneKey);
-              context.push(_sceneDetailPath(scene.sceneNumber));
+              await context.push(_sceneDetailPath(scene.sceneNumber));
+              if (context.mounted) context.read<FileBrowserCubit>().load(projectName);
             },
             onToggleExpand: () =>
                 context.read<FileBrowserCubit>().toggleExpand(sceneKey),
@@ -227,9 +229,10 @@ class _TreeView extends StatelessWidget {
                         asset.hasPromptBody ? GenerationStepState.done : GenerationStepState.pending,
                         asset.hasImage ? GenerationStepState.done : GenerationStepState.pending,
                       ],
-                onTap: () {
+                onTap: () async {
                   context.read<FileBrowserCubit>().select(asset.directoryPath);
-                  context.push(_assetEditorPath(asset.directoryPath));
+                  await context.push(_assetEditorPath(asset.directoryPath));
+                  if (context.mounted) context.read<FileBrowserCubit>().load(projectName);
                 },
               ));
             }
@@ -238,7 +241,10 @@ class _TreeView extends StatelessWidget {
               label: 'ark.mdx',
               icon: LucideIcons.scrollText,
               depth: 2,
-              onTap: () => context.push(_sceneDetailPath(scene.sceneNumber)),
+              onTap: () async {
+                await context.push(_sceneDetailPath(scene.sceneNumber));
+                if (context.mounted) context.read<FileBrowserCubit>().load(projectName);
+              },
             ));
             // video.mp4 (only if exists)
             if (scene.hasVideo) {
