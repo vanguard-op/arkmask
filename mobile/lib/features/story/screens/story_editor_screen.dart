@@ -86,6 +86,11 @@ class _StoryEditorView extends StatelessWidget {
                 ),
               StoryLoaded() => _SceneList(state: state),
             },
+            floatingActionButton: state is StoryLoaded && !state.isExtracting
+                ? _AddSceneFab(
+                    onPressed: () => context.read<StoryCubit>().addScene(),
+                  )
+                : null,
           ),
         );
       },
@@ -274,26 +279,32 @@ class _SceneList extends StatelessWidget {
           ),
         Expanded(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(
-              horizontal: AppSpacing.s4,
-              vertical: AppSpacing.s4,
+            padding: const EdgeInsets.only(
+              left: AppSpacing.s4,
+              right: AppSpacing.s4,
+              top: AppSpacing.s4,
+              // Extra bottom padding so content isn't hidden behind the Add Scene button.
+              bottom: AppSpacing.s12 + AppSpacing.s8,
             ),
-            child: state.scenes.isEmpty
-                ? _EmptySceneBlock(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // ── Scene blocks ──────────────────────────────────────────
+                if (state.scenes.isEmpty)
+                  _EmptySceneBlock(
                     onBodyChanged: (body) =>
                         context.read<StoryCubit>().onSceneBodyChanged(1, body),
                   )
-                : Column(
-                    children: state.scenes
-                        .map((scene) => _SceneBlock(
-                              scene: scene,
-                              isReadOnly: state.isExtracting,
-                              onBodyChanged: (body) => context
-                                  .read<StoryCubit>()
-                                  .onSceneBodyChanged(scene.number, body),
-                            ))
-                        .toList(),
-                  ),
+                else
+                  ...state.scenes.map((scene) => _SceneBlock(
+                        scene: scene,
+                        isReadOnly: state.isExtracting,
+                        onBodyChanged: (body) => context
+                            .read<StoryCubit>()
+                            .onSceneBodyChanged(scene.number, body),
+                      )),
+              ],
+            ),
           ),
         ),
       ],
@@ -413,6 +424,29 @@ class _EmptySceneBlock extends StatelessWidget {
     return _SceneBlock(
       scene: const StoryScene(number: 1, body: ''),
       onBodyChanged: onBodyChanged,
+    );
+  }
+}
+
+// ── Add Scene FAB ─────────────────────────────────────────────────────────────
+
+class _AddSceneFab extends StatelessWidget {
+  const _AddSceneFab({required this.onPressed});
+
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final primaryColor = isDark ? AppColors.primaryDark : AppColors.primaryLight;
+
+    return FloatingActionButton.extended(
+      onPressed: onPressed,
+      backgroundColor: primaryColor.withValues(alpha: 0.15),
+      foregroundColor: primaryColor,
+      elevation: 0,
+      icon: const Icon(LucideIcons.plus, size: AppSizing.iconSm),
+      label: Text('Add Scene', style: AppTextStyles.body(context).copyWith(color: primaryColor)),
     );
   }
 }

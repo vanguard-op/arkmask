@@ -47,17 +47,49 @@ class StoryCubit extends Cubit<StoryState> {
   ///
   /// Updates the in-memory state immediately and schedules a debounced save
   /// (1.5 s idle time triggers a write to `story.mdx`).
+  ///
+  /// If the scene doesn't exist yet (e.g. typing into the empty-state
+  /// placeholder for scene 1), it is appended and then sorted.
   void onSceneBodyChanged(int sceneNumber, String body) {
     final current = state;
     if (current is! StoryLoaded) return;
 
-    final updated = current.scenes.map((s) {
-      return s.number == sceneNumber ? s.copyWith(body: body) : s;
-    }).toList();
+    final List<StoryScene> updated;
+    if (current.scenes.any((s) => s.number == sceneNumber)) {
+      updated = current.scenes
+          .map((s) => s.number == sceneNumber ? s.copyWith(body: body) : s)
+          .toList();
+    } else {
+      // Scene doesn't exist yet — add it (handles the empty-project case
+      // where the placeholder scene 1 is not yet in the scenes list).
+      updated = [...current.scenes, StoryScene(number: sceneNumber, body: body)]
+        ..sort((a, b) => a.number.compareTo(b.number));
+    }
+
     emit(current.copyWith(scenes: updated, savedRecently: false, clearExtractError: true));
 
     _saveTimer?.cancel();
     _saveTimer = Timer(const Duration(milliseconds: 1500), _save);
+  }
+
+  /// Appends a new blank scene with the next sequential number.
+  void addScene() {
+    final current = state;
+    if (current is! StoryLoaded) return;
+
+    // Determine next scene number: max existing + 1, or 2 if only scene 1 exists.
+    final nextNumber = current.scenes.isEmpty
+        ? 1
+        : current.scenes.map((s) => s.number).reduce((a, b) => a > b ? a : b) + 1;
+
+    // If scenes is empty and we're adding #1, it replaces the placeholder —
+    // no need to add; the placeholder already covers that case. Only add
+    // if we're going beyond what already exists.
+    if (current.scenes.any((s) => s.number == nextNumber)) return;
+
+    final updated = [...current.scenes, StoryScene(number: nextNumber, body: '')];
+    emit(current.copyWith(scenes: updated));
+    // No immediate save — empty scene will be saved when the user types.
   }
 
   /// Saves immediately (e.g. on back gesture before pop).
@@ -69,9 +101,11 @@ class StoryCubit extends Cubit<StoryState> {
   Future<void> _save() async {
     final current = state;
     if (current is! StoryLoaded) return;
+    // Capture scenes NOW before emitting isSaving (which triggers a rebuild).
+    final scenesToWrite = List<StoryScene>.from(current.scenes);
     emit(current.copyWith(isSaving: true));
     try {
-      await fileService.writeStory(projectName, _serializeScenes(current.scenes));
+      await fileService.writeStory(projectName, _serializeScenes(scenesToWrite));
       emit((state as StoryLoaded).copyWith(isSaving: false, savedRecently: true));
       // Auto-clear "Saved ✓" indicator after 2 s.
       Timer(const Duration(seconds: 2), () {
