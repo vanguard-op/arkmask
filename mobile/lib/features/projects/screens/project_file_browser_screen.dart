@@ -130,10 +130,16 @@ class _TreeView extends StatelessWidget {
       icon: LucideIcons.fileText,
       depth: 0,
       isSelected: state.selectedPath == '${tree.directoryPath}/story.mdx',
-      onTap: () {
+      onTap: () async {
         context.read<FileBrowserCubit>().select('${tree.directoryPath}/story.mdx');
-        context.push(Routes.storyEditor.replaceFirst(
+        await context.push(Routes.storyEditor.replaceFirst(
             ':projectName', Uri.encodeComponent(projectName)));
+        // Reload the tree when returning from the story editor so that any
+        // newly extracted asset directories appear immediately without the
+        // user having to re-open the project.
+        if (context.mounted) {
+          context.read<FileBrowserCubit>().load(projectName);
+        }
       },
     ));
 
@@ -258,10 +264,15 @@ class _TreeView extends StatelessWidget {
             right: AppSpacing.s4,
             bottom: AppSpacing.s6,
             child: _ExtractAssetsButton(
-              onTap: () => context.push(
-                Routes.storyEditor.replaceFirst(
-                    ':projectName', Uri.encodeComponent(projectName)),
-              ),
+              onTap: () async {
+                await context.push(
+                  Routes.storyEditor.replaceFirst(
+                      ':projectName', Uri.encodeComponent(projectName)),
+                );
+                if (context.mounted) {
+                  context.read<FileBrowserCubit>().load(projectName);
+                }
+              },
               isDark: isDark,
             ),
           ),
