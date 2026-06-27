@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "5392643534",
+    "project_id": "arkmask",
+    "storage_bucket": "arkmask.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:5392643534:android:70594aee6b76dd7b49679f",
+        "android_client_info": {
+          "package_name": "com.arkmask.ark_mask"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBh3o4n32HSgpAY20OUfsoI3zaZ1X00FkE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
