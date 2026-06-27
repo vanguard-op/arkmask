@@ -4,12 +4,14 @@ import 'package:go_router/go_router.dart';
 
 import '../../features/assets/screens/asset_editor_screen.dart';
 import '../../features/auth/screens/login_screen.dart';
+import '../../features/editor/screens/video_editor_screen.dart';
 import '../../features/auth/screens/registration_screen.dart';
 import '../../features/auth/screens/splash_screen.dart';
 import '../../features/projects/screens/home_screen.dart';
 import '../../features/projects/screens/project_file_browser_screen.dart';
 import '../../features/provider_setup/screens/provider_setup_screen.dart';
 import '../../features/settings/screens/settings_screen.dart';
+import '../../features/scene/screens/scene_detail_screen.dart';
 import '../../features/story/screens/story_editor_screen.dart';
 import '../storage/secure_storage_service.dart';
 import 'routes.dart';
@@ -140,11 +142,28 @@ GoRouter buildRouter({
       ),
       GoRoute(
         path: Routes.sceneDetail,
-        builder: (context, state) => const _PlaceholderScreen(title: 'Scene Detail'),
+        builder: (context, state) {
+          final projectName = Uri.decodeComponent(
+            state.pathParameters['projectName'] ?? '',
+          );
+          final sceneId = int.tryParse(
+                state.pathParameters['sceneId'] ?? '',
+              ) ??
+              1;
+          return SceneDetailScreen(
+            projectName: projectName,
+            sceneId: sceneId,
+          );
+        },
       ),
       GoRoute(
         path: Routes.videoEditor,
-        builder: (context, state) => const _PlaceholderScreen(title: 'Video Editor'),
+        builder: (context, state) {
+          final projectName = Uri.decodeComponent(
+            state.pathParameters['projectName'] ?? '',
+          );
+          return VideoEditorScreen(projectName: projectName);
+        },
       ),
       GoRoute(
         path: Routes.videoPlayer,
