@@ -26,7 +26,8 @@ def _extract_json(text: str) -> str:
 
 class GeminiProvider(AIProvider):
     TEXT_MODEL = "gemini-2.5-flash"
-    IMAGE_MODEL = "models/gemini-3.1-flash-image"
+    # Imagen 3 — used via client.models.generate_images() (not generate_content).
+    IMAGE_MODEL = "imagen-3.0-generate-002"
     VIDEO_MODEL = "veo-2.0-generate-001"
     VIDEO_POLL_INTERVAL = 10  # seconds between status checks
 
@@ -44,12 +45,12 @@ class GeminiProvider(AIProvider):
             thinking_config=genai.types.ThinkingConfig(thinking_budget=8192),
         )
 
-    def _image_config(self) -> genai.types.GenerateContentConfig:
-        return genai.types.GenerateContentConfig(
-            temperature=1,
-            top_p=0.95,
-            response_modalities=["IMAGE"],
-            image_config=genai.types.ImageConfig(image_size="1K"),
+    def _image_config(self) -> genai.types.GenerateImagesConfig:
+        return genai.types.GenerateImagesConfig(
+            number_of_images=1,
+            image_size="1024x1024",
+            # Allow adult characters (needed for character assets in stories).
+            person_generation="ALLOW_ADULT",
         )
 
     def generate_asset_list(self, story: str) -> list[dict]:
@@ -80,21 +81,20 @@ class GeminiProvider(AIProvider):
         return response.text.strip()
 
     def generate_image(self, prompt: str, ref_images: list[RefImage]) -> tuple[bytes, str]:
-        contents: list = [genai.types.Part.from_text(text=prompt)]
-        if ref_images:
-            # Use only the first reference image for Gemini image generation.
-            img = ref_images[0]
-            contents.append(genai.types.Part.from_bytes(data=img.data, mime_type=img.mime_type))
-
-        response = self._client.models.generate_content(
+        # Imagen 3 uses generate_images(), not generate_content().
+        # Reference images are not supported by the Imagen API directly;
+        # the prompt itself should carry style and visual context.
+        response = self._client.models.generate_images(
             model=self.IMAGE_MODEL,
-            contents=contents,
+            prompt=prompt,
             config=self._image_config(),
         )
-        for part in response.candidates[0].content.parts:
-            if part.inline_data is not None:
-                return part.inline_data.data, part.inline_data.mime_type
-        raise ValueError("Gemini returned no image data in response")
+        generated = response.generated_images
+        if not generated or generated[0].image is None:
+            raise ValueError("Imagen returned no image data in response")
+        img = generated[0].image
+        mime = img.mime_type or "image/png"
+        return img.image_bytes, mime
 
     def generate_video(self, storyboard: str, ref_images: list[RefImage]) -> tuple[bytes, str]:
         if not ref_images:
