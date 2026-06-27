@@ -32,9 +32,26 @@ class CredentialInterceptor extends Interceptor {
     final providerType = await storage.readProviderType();
     final providerKey = await storage.readProviderApiKey();
 
-    if (platformKey != null) {
-      options.headers['X-Platform-Key'] = platformKey;
+    // Guard: if the platform key is absent the request would reach the backend
+    // without X-Platform-Key, causing a confusing 422 instead of a meaningful
+    // 401. Reject early so the caller receives ApiUnauthorized and the UI can
+    // redirect to login, matching real 401 behaviour.
+    if (platformKey == null) {
+      return handler.reject(
+        DioException(
+          requestOptions: options,
+          type: DioExceptionType.badResponse,
+          response: Response(
+            requestOptions: options,
+            statusCode: 401,
+            data: {'detail': 'Platform API key not found. Please log in again.'},
+          ),
+        ),
+        true,
+      );
     }
+
+    options.headers['X-Platform-Key'] = platformKey;
     if (providerType != null) {
       options.headers['X-Provider-Type'] = providerType.headerValue;
     }

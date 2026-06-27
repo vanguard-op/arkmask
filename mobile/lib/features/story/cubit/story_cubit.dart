@@ -143,7 +143,10 @@ class StoryCubit extends Cubit<StoryState> {
       await fileService.writeStory(projectName, _serializeScenes(scenesToWrite));
       emit((state as StoryLoaded).copyWith(isSaving: false, savedRecently: true));
       // Auto-clear "Saved ✓" indicator after 2 s.
+      // Guard isClosed: the user may navigate away before the timer fires,
+      // which closes the cubit. Emitting on a closed cubit throws a Bad State.
       Timer(const Duration(seconds: 2), () {
+        if (isClosed) return;
         final s = state;
         if (s is StoryLoaded && s.savedRecently) {
           emit(s.copyWith(savedRecently: false));
