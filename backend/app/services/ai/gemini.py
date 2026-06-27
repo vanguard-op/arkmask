@@ -2,13 +2,14 @@
 
 Models used (per architecture.md provider model mapping):
   - Text:  gemini-2.5-flash
-  - Image: models/gemini-3.1-flash-image
+  - Image: gemini-3.1-flash-image  (Nano Banana — Interactions API)
   - Video: veo-2.0-generate-001 (Veo 2.0)
 
 The user's Gemini API key is passed in at construction time via `X-Provider-Key`.
 It is used in-flight only — never logged, never stored.
 """
 
+import base64
 import json
 import re
 import time
@@ -26,8 +27,9 @@ def _extract_json(text: str) -> str:
 
 class GeminiProvider(AIProvider):
     TEXT_MODEL = "gemini-2.5-flash"
-    # Imagen 3 — used via client.models.generate_images() (not generate_content).
-    IMAGE_MODEL = "imagen-3.0-generate-002"
+    # Nano Banana — uses the Interactions API (client.interactions.create),
+    # not generate_content or generate_images.
+    IMAGE_MODEL = "gemini-3.1-flash-image"
     VIDEO_MODEL = "veo-2.0-generate-001"
     VIDEO_POLL_INTERVAL = 10  # seconds between status checks
 
@@ -45,13 +47,6 @@ class GeminiProvider(AIProvider):
             thinking_config=genai.types.ThinkingConfig(thinking_budget=8192),
         )
 
-    def _image_config(self) -> genai.types.GenerateImagesConfig:
-        return genai.types.GenerateImagesConfig(
-            number_of_images=1,
-            image_size="1024x1024",
-            # Allow adult characters (needed for character assets in stories).
-            person_generation="ALLOW_ADULT",
-        )
 
     def generate_asset_list(self, story: str) -> list[dict]:
         response = self._client.models.generate_content(
@@ -81,20 +76,34 @@ class GeminiProvider(AIProvider):
         return response.text.strip()
 
     def generate_image(self, prompt: str, ref_images: list[RefImage]) -> tuple[bytes, str]:
-        # Imagen 3 uses generate_images(), not generate_content().
-        # Reference images are not supported by the Imagen API directly;
-        # the prompt itself should carry style and visual context.
-        response = self._client.models.generate_images(
+        """Generate an image via the Interactions API (Nano Banana / gemini-3.1-flash-image).
+
+        Supports up to 14 reference images passed as base64-encoded blocks.
+        The response carries the final image in `interaction.output_image.data`
+        as a base64 string.
+        """
+        # Build the input list: text prompt first, then optional reference images.
+        input_blocks: list = [{"type": "text", "text": prompt}]
+        for img in ref_images[:14]:
+            input_blocks.append({
+                "type": "image",
+                "data": base64.b64encode(img.data).decode("utf-8"),
+                "mime_type": img.mime_type,
+            })
+
+        interaction = self._client.interactions.create(
             model=self.IMAGE_MODEL,
-            prompt=prompt,
-            config=self._image_config(),
+            input=input_blocks if len(input_blocks) > 1 else prompt,
+            response_format={"type": "image", "image_size": "1K"},
         )
-        generated = response.generated_images
-        if not generated or generated[0].image is None:
-            raise ValueError("Imagen returned no image data in response")
-        img = generated[0].image
-        mime = img.mime_type or "image/png"
-        return img.image_bytes, mime
+
+        out = interaction.output_image
+        if out is None or out.data is None:
+            raise ValueError("gemini-3.1-flash-image returned no image in response")
+
+        image_bytes = base64.b64decode(out.data)
+        mime = out.mime_type or "image/png"
+        return image_bytes, mime
 
     def generate_video(self, storyboard: str, ref_images: list[RefImage]) -> tuple[bytes, str]:
         if not ref_images:
