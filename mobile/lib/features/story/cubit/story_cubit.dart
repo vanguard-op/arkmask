@@ -67,29 +67,64 @@ class StoryCubit extends Cubit<StoryState> {
     }
 
     emit(current.copyWith(scenes: updated, savedRecently: false, clearExtractError: true));
-
-    _saveTimer?.cancel();
-    _saveTimer = Timer(const Duration(milliseconds: 1500), _save);
+    _scheduleAutoSave();
   }
 
-  /// Appends a new blank scene with the next sequential number.
+  /// Appends a new blank scene after all existing scenes.
   void addScene() {
     final current = state;
     if (current is! StoryLoaded) return;
-
-    // Determine next scene number: max existing + 1, or 2 if only scene 1 exists.
-    final nextNumber = current.scenes.isEmpty
-        ? 1
-        : current.scenes.map((s) => s.number).reduce((a, b) => a > b ? a : b) + 1;
-
-    // If scenes is empty and we're adding #1, it replaces the placeholder —
-    // no need to add; the placeholder already covers that case. Only add
-    // if we're going beyond what already exists.
-    if (current.scenes.any((s) => s.number == nextNumber)) return;
-
-    final updated = [...current.scenes, StoryScene(number: nextNumber, body: '')];
+    final nextNumber = current.scenes.isEmpty ? 2 : current.scenes.length + 1;
+    final updated = _reindex([
+      ...current.scenes,
+      StoryScene(number: nextNumber, body: ''),
+    ]);
     emit(current.copyWith(scenes: updated));
-    // No immediate save — empty scene will be saved when the user types.
+  }
+
+  /// Inserts a blank scene immediately before the scene at [index] (0-based).
+  /// All scene numbers are re-assigned sequentially after the insertion.
+  void insertSceneBefore(int index) {
+    final current = state;
+    if (current is! StoryLoaded) return;
+    final list = List<StoryScene>.from(current.scenes);
+    list.insert(index, const StoryScene(number: 0, body: ''));
+    emit(current.copyWith(scenes: _reindex(list)));
+    _scheduleAutoSave();
+  }
+
+  /// Inserts a blank scene immediately after the scene at [index] (0-based).
+  void insertSceneAfter(int index) {
+    final current = state;
+    if (current is! StoryLoaded) return;
+    final list = List<StoryScene>.from(current.scenes);
+    list.insert(index + 1, const StoryScene(number: 0, body: ''));
+    emit(current.copyWith(scenes: _reindex(list)));
+    _scheduleAutoSave();
+  }
+
+  /// Deletes the scene at [index] (0-based) and re-indexes remaining scenes.
+  /// No-op if only one scene remains (minimum 1 scene enforced).
+  void deleteScene(int index) {
+    final current = state;
+    if (current is! StoryLoaded) return;
+    if (current.scenes.length <= 1) return; // cannot delete the last scene
+    final list = List<StoryScene>.from(current.scenes)..removeAt(index);
+    emit(current.copyWith(scenes: _reindex(list)));
+    _scheduleAutoSave();
+  }
+
+  /// Re-assigns 1-based sequential numbers to scenes in their current order.
+  static List<StoryScene> _reindex(List<StoryScene> scenes) {
+    return [
+      for (var i = 0; i < scenes.length; i++)
+        scenes[i].copyWith(number: i + 1),
+    ];
+  }
+
+  void _scheduleAutoSave() {
+    _saveTimer?.cancel();
+    _saveTimer = Timer(const Duration(milliseconds: 1500), _save);
   }
 
   /// Saves immediately (e.g. on back gesture before pop).

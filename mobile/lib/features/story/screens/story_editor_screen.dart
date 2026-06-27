@@ -296,12 +296,14 @@ class _SceneList extends StatelessWidget {
                         context.read<StoryCubit>().onSceneBodyChanged(1, body),
                   )
                 else
-                  ...state.scenes.map((scene) => _SceneBlock(
-                        scene: scene,
+                  ...state.scenes.asMap().entries.map((entry) => _SceneBlock(
+                        scene: entry.value,
+                        sceneIndex: entry.key,
+                        totalScenes: state.scenes.length,
                         isReadOnly: state.isExtracting,
                         onBodyChanged: (body) => context
                             .read<StoryCubit>()
-                            .onSceneBodyChanged(scene.number, body),
+                            .onSceneBodyChanged(entry.value.number, body),
                       )),
               ],
             ),
@@ -312,15 +314,25 @@ class _SceneList extends StatelessWidget {
   }
 }
 
-/// A single scene block: header divider + body text field.
+/// A single scene block: interactive header divider + body text field.
+///
+/// Long-pressing the scene header chip reveals an inline action row with
+/// three options: add before, add after, delete (per screens.md Scene Header
+/// Long-Press spec). All structural changes are delegated to [StoryCubit].
 class _SceneBlock extends StatefulWidget {
   const _SceneBlock({
     required this.scene,
+    required this.sceneIndex,
+    required this.totalScenes,
     required this.onBodyChanged,
     this.isReadOnly = false,
   });
 
   final StoryScene scene;
+  /// 0-based position of this scene in the list (used for insert/delete).
+  final int sceneIndex;
+  /// Total scene count — needed to disable delete when only 1 scene remains.
+  final int totalScenes;
   final ValueChanged<String> onBodyChanged;
   final bool isReadOnly;
 
@@ -328,19 +340,26 @@ class _SceneBlock extends StatefulWidget {
   State<_SceneBlock> createState() => _SceneBlockState();
 }
 
-class _SceneBlockState extends State<_SceneBlock> {
+class _SceneBlockState extends State<_SceneBlock>
+    with SingleTickerProviderStateMixin {
   late final TextEditingController _controller;
+  late final AnimationController _actionAnim;
+  bool _showActions = false;
 
   @override
   void initState() {
     super.initState();
     _controller = TextEditingController(text: widget.scene.body);
+    _actionAnim = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 180),
+    );
   }
 
   @override
   void didUpdateWidget(_SceneBlock old) {
     super.didUpdateWidget(old);
-    // Only update if the body changed externally (not from user typing).
+    // Only update controller if body changed externally (not from user typing).
     if (old.scene.body != widget.scene.body &&
         _controller.text != widget.scene.body) {
       _controller.text = widget.scene.body;
@@ -350,7 +369,68 @@ class _SceneBlockState extends State<_SceneBlock> {
   @override
   void dispose() {
     _controller.dispose();
+    _actionAnim.dispose();
     super.dispose();
+  }
+
+  void _toggleActions() {
+    setState(() => _showActions = !_showActions);
+    if (_showActions) {
+      _actionAnim.forward();
+    } else {
+      _actionAnim.reverse();
+    }
+  }
+
+  void _dismissActions() {
+    if (!_showActions) return;
+    setState(() => _showActions = false);
+    _actionAnim.reverse();
+  }
+
+  void _addBefore() {
+    _dismissActions();
+    context.read<StoryCubit>().insertSceneBefore(widget.sceneIndex);
+  }
+
+  void _addAfter() {
+    _dismissActions();
+    context.read<StoryCubit>().insertSceneAfter(widget.sceneIndex);
+  }
+
+  Future<void> _delete() async {
+    _dismissActions();
+    if (widget.scene.body.trim().isNotEmpty) {
+      // Confirm before deleting a scene that has content.
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Delete scene?'),
+          content: Text(
+            'Scene ${widget.scene.number} and its content will be permanently removed.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: Text(
+                'Delete',
+                style: TextStyle(
+                  color: Theme.of(context).brightness == Brightness.dark
+                      ? AppColors.errorDark
+                      : AppColors.errorLight,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+    }
+    if (mounted) context.read<StoryCubit>().deleteScene(widget.sceneIndex);
   }
 
   @override
@@ -358,57 +438,193 @@ class _SceneBlockState extends State<_SceneBlock> {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final primaryColor = isDark ? AppColors.primaryDark : AppColors.primaryLight;
     final dividerColor = isDark ? AppColors.borderSubtleDark : AppColors.borderSubtleLight;
+    final errorColor = isDark ? AppColors.errorDark : AppColors.errorLight;
+    final canDelete = widget.totalScenes > 1;
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // ── Scene header: ─── Scene N ─── ──────────────────────────────────
-        const SizedBox(height: AppSpacing.s4),
-        Row(
-          children: [
-            Expanded(child: Divider(color: dividerColor, height: 1)),
-            const SizedBox(width: AppSpacing.s2),
-            Container(
-              padding: const EdgeInsets.symmetric(
-                horizontal: AppSpacing.s2,
-                vertical: 2,
-              ),
-              decoration: BoxDecoration(
-                color: primaryColor.withValues(alpha: 0.15),
-                borderRadius: BorderRadius.circular(AppSizing.radiusXs),
-              ),
-              child: Text(
-                'SCENE ${widget.scene.number}',
-                style: AppTextStyles.caption(context).copyWith(
-                  color: primaryColor,
-                  letterSpacing: 0.8,
+    return GestureDetector(
+      // Tapping anywhere outside the header dismisses the action row.
+      onTap: _showActions ? _dismissActions : null,
+      behavior: HitTestBehavior.translucent,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SizedBox(height: AppSpacing.s4),
+
+          // ── Scene header row ─────────────────────────────────────────────
+          Row(
+            children: [
+              Expanded(child: Divider(color: dividerColor, height: 1)),
+              const SizedBox(width: AppSpacing.s2),
+
+              // The chip is the long-press target. It expands to show actions.
+              GestureDetector(
+                onLongPress: widget.isReadOnly ? null : _toggleActions,
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 180),
+                  switchInCurve: Curves.easeOut,
+                  switchOutCurve: Curves.easeIn,
+                  transitionBuilder: (child, anim) =>
+                      FadeTransition(opacity: anim, child: child),
+                  child: _showActions
+                      // ── Action row ────────────────────────────────────
+                      ? Container(
+                          key: const ValueKey('actions'),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: AppSpacing.s1,
+                            vertical: 1,
+                          ),
+                          decoration: BoxDecoration(
+                            color: isDark
+                                ? AppColors.surfaceOverlayDark
+                                : AppColors.surfaceOverlayLight,
+                            borderRadius:
+                                BorderRadius.circular(AppSizing.radiusSm),
+                            border: Border.all(
+                              color: primaryColor.withValues(alpha: 0.25),
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              // Add before
+                              _ActionChipButton(
+                                icon: LucideIcons.arrowUpCircle,
+                                label: 'Before',
+                                color: primaryColor,
+                                onPressed: _addBefore,
+                              ),
+                              // Scene number label (stays visible in the center)
+                              Padding(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: AppSpacing.s2),
+                                child: Text(
+                                  'Scene ${widget.scene.number}',
+                                  style: AppTextStyles.caption(context)
+                                      .copyWith(color: primaryColor, letterSpacing: 0.6),
+                                ),
+                              ),
+                              // Add after
+                              _ActionChipButton(
+                                icon: LucideIcons.arrowDownCircle,
+                                label: 'After',
+                                color: primaryColor,
+                                onPressed: _addAfter,
+                              ),
+                              Container(
+                                height: 16,
+                                width: 1,
+                                color: isDark
+                                    ? AppColors.borderDefaultDark
+                                    : AppColors.borderDefaultLight,
+                                margin: const EdgeInsets.symmetric(
+                                    horizontal: AppSpacing.s1),
+                              ),
+                              // Delete
+                              _ActionChipButton(
+                                icon: LucideIcons.trash2,
+                                label: 'Delete',
+                                color: canDelete ? errorColor : (isDark ? AppColors.textTertiaryDark : AppColors.textTertiaryLight),
+                                onPressed: canDelete ? _delete : null,
+                              ),
+                            ],
+                          ),
+                        )
+                      // ── Normal chip ───────────────────────────────────
+                      : Container(
+                          key: const ValueKey('chip'),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: AppSpacing.s2,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: primaryColor.withValues(alpha: 0.15),
+                            borderRadius:
+                                BorderRadius.circular(AppSizing.radiusXs),
+                          ),
+                          child: Text(
+                            'SCENE ${widget.scene.number}',
+                            style: AppTextStyles.caption(context).copyWith(
+                              color: primaryColor,
+                              letterSpacing: 0.8,
+                            ),
+                          ),
+                        ),
                 ),
               ),
+
+              const SizedBox(width: AppSpacing.s2),
+              Expanded(child: Divider(color: dividerColor, height: 1)),
+            ],
+          ),
+
+          const SizedBox(height: AppSpacing.s2),
+
+          // ── Scene body text field ────────────────────────────────────────
+          TextField(
+            controller: _controller,
+            enabled: !widget.isReadOnly,
+            maxLines: null,
+            keyboardType: TextInputType.multiline,
+            style: AppTextStyles.bodyLarge(context),
+            decoration: InputDecoration(
+              border: InputBorder.none,
+              hintText: 'Write scene ${widget.scene.number} here...',
+              hintStyle: AppTextStyles.bodyLarge(context).copyWith(
+                color: isDark
+                    ? AppColors.textTertiaryDark
+                    : AppColors.textTertiaryLight,
+              ),
+              contentPadding: EdgeInsets.zero,
             ),
-            const SizedBox(width: AppSpacing.s2),
-            Expanded(child: Divider(color: dividerColor, height: 1)),
+            onChanged: widget.onBodyChanged,
+            onTap: _dismissActions,
+          ),
+          const SizedBox(height: AppSpacing.s2),
+        ],
+      ),
+    );
+  }
+}
+
+/// A compact icon + label button used inside the long-press action row.
+class _ActionChipButton extends StatelessWidget {
+  const _ActionChipButton({
+    required this.icon,
+    required this.label,
+    required this.color,
+    required this.onPressed,
+  });
+
+  final IconData icon;
+  final String label;
+  final Color color;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onPressed,
+      borderRadius: BorderRadius.circular(AppSizing.radiusXs),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.s2,
+          vertical: AppSpacing.s1,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: AppSizing.iconSm, color: color),
+            const SizedBox(height: 2),
+            Text(
+              label,
+              style: AppTextStyles.caption(context).copyWith(
+                fontSize: 9,
+                color: color,
+              ),
+            ),
           ],
         ),
-        const SizedBox(height: AppSpacing.s2),
-        // ── Scene body ───────────────────────────────────────────────────────
-        TextField(
-          controller: _controller,
-          enabled: !widget.isReadOnly,
-          maxLines: null,
-          keyboardType: TextInputType.multiline,
-          style: AppTextStyles.bodyLarge(context),
-          decoration: InputDecoration(
-            border: InputBorder.none,
-            hintText: 'Write scene ${widget.scene.number} here...',
-            hintStyle: AppTextStyles.bodyLarge(context).copyWith(
-              color: isDark ? AppColors.textTertiaryDark : AppColors.textTertiaryLight,
-            ),
-            contentPadding: EdgeInsets.zero,
-          ),
-          onChanged: widget.onBodyChanged,
-        ),
-        const SizedBox(height: AppSpacing.s2),
-      ],
+      ),
     );
   }
 }
@@ -423,6 +639,8 @@ class _EmptySceneBlock extends StatelessWidget {
   Widget build(BuildContext context) {
     return _SceneBlock(
       scene: const StoryScene(number: 1, body: ''),
+      sceneIndex: 0,
+      totalScenes: 1,
       onBodyChanged: onBodyChanged,
     );
   }
