@@ -17,6 +17,9 @@ import logging
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from google.genai._gaos.lib.compat_errors import BadRequestError
+
+from app.services.ai.gemini import ContentBlockedError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -36,6 +39,44 @@ from app.schemas.generation import (
 )
 from app.services.ai.base import AIProvider, RefImage
 from app.services.media_store import MediaStore
+
+
+def _extract_provider_message(e: BadRequestError) -> str:
+    """Pull the human-readable message out of a BadRequestError.
+
+    The SDK serialises the error as:
+        "Error code: 400 - {'error': {'message': '...', 'code': '...'}}"
+    The inner dict uses Python repr (single quotes), not JSON, so json.loads
+    fails.  We use ast.literal_eval which handles Python dict/str literals.
+    Falls back to the raw string if parsing fails.
+    """
+    import ast
+    msg = str(e)
+    try:
+        start = msg.index("{")
+        end = msg.rindex("}") + 1
+        payload = ast.literal_eval(msg[start:end])
+        return str(payload["error"]["message"])
+    except Exception:
+        # Already a clean string or unparseable — return as-is.
+        return msg
+
+
+def _provider_error_http(e: Exception, fallback_detail: str) -> HTTPException:
+    """Convert an AI provider exception to an appropriate HTTPException.
+
+    - BadRequestError (400 from the provider API): content rejected by the
+      provider's safety API — return 400 with the provider's message.
+    - ContentBlockedError: prompt blocked by the model's content policy before
+      generation — also a client-side issue, return 400.
+    - Anything else: opaque provider or server failure → 502 Bad Gateway.
+    """
+    if isinstance(e, BadRequestError):
+        detail = _extract_provider_message(e)
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+    if isinstance(e, ContentBlockedError):
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=fallback_detail)
 
 router = APIRouter(tags=["generation"])
 logger = logging.getLogger(__name__)
@@ -115,9 +156,9 @@ def extract_assets(
     try:
         raw_assets = provider.generate_asset_list(body.story)
     except Exception as e:
-        logger.error("Asset extraction failed: user_id=%s error=%s", user.id, type(e).__name__)
+        logger.error("Asset extraction failed: user_id=%s error=%s", user.id, type(e).__name__, exc_info=True)
         _deduct_credits(db, user, "/assets", provider_name, 0, "refunded")
-        raise HTTPException(status_code=502, detail="AI provider error during asset extraction.")
+        raise _provider_error_http(e, "AI provider error during asset extraction.")
 
     _deduct_credits(db, user, "/assets", provider_name, cost)
     return AssetsResponse(assets=[AssetItem(**a) for a in raw_assets])
@@ -146,9 +187,9 @@ def generate_image_prompt(
     try:
         prompt = provider.generate_image_prompt(body.name, body.type.value, body.description)
     except Exception as e:
-        logger.error("Image prompt generation failed: user_id=%s error=%s", user.id, type(e).__name__)
+        logger.error("Image prompt generation failed: user_id=%s error=%s", user.id, type(e).__name__, exc_info=True)
         _deduct_credits(db, user, "/image-prompt", provider_name, 0, "refunded")
-        raise HTTPException(status_code=502, detail="AI provider error during image prompt generation.")
+        raise _provider_error_http(e, "AI provider error during image prompt generation.")
 
     _deduct_credits(db, user, "/image-prompt", provider_name, cost)
     return ImagePromptResponse(prompt=prompt)
@@ -184,9 +225,9 @@ async def generate_image(
     try:
         img_bytes, mime_type = provider.generate_image(prompt, ref)
     except Exception as e:
-        logger.error("Image generation failed: user_id=%s error=%s", user.id, type(e).__name__)
+        logger.error("Image generation failed: user_id=%s error=%s", user.id, type(e).__name__, exc_info=True)
         _deduct_credits(db, user, "/image", provider_name, 0, "refunded")
-        raise HTTPException(status_code=502, detail="AI provider error during image generation.")
+        raise _provider_error_http(e, "AI provider error during image generation.")
 
     store = MediaStore()
     url = store.save(img_bytes, mime_type)
@@ -301,10 +342,11 @@ async def generate_video(
             _jobs[job_id]["url"] = url
             logger.info("Video job complete: job_id=%s user_id=%s", job_id, user.id)
         except Exception as e:
-            logger.error("Video job failed: job_id=%s user_id=%s error=%s", job_id, user.id, type(e).__name__)
+            logger.error("Video job failed: job_id=%s user_id=%s error=%s", job_id, user.id, type(e).__name__, exc_info=True)
             _deduct_credits(db, user, "/video", provider_name, 0, "refunded")
             _jobs[job_id]["status"] = "failed"
-            _jobs[job_id]["error"] = "Video generation failed. Credits not deducted."
+            err_msg = str(e) if isinstance(e, BadRequestError) else "Video generation failed. Credits not deducted."
+            _jobs[job_id]["error"] = err_msg
 
     asyncio.create_task(_run_job())
     return VideoEnqueueResponse(job_id=job_id)

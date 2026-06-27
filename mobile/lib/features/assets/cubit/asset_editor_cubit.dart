@@ -198,13 +198,35 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
   // ── Utilities ─────────────────────────────────────────────────────────────
 
   /// Extracts a human-readable message from a sealed [ApiError] subtype.
-  static String _apiErrorMessage(ApiError e) => switch (e) {
-        ApiConflict(:final message) => message,
-        ApiValidationError(:final detail) => detail,
-        ApiServerError(:final message) => message,
-        ApiNetworkError(:final message) => message,
-        ApiUnknownError(:final message) => message,
-        ApiInsufficientCredits() => 'Insufficient credits',
-        ApiUnauthorized() => 'Unauthorized',
-      };
+  ///
+  /// Strips any residual SDK wrapper text (e.g. "Error code: 400 - {...}")
+  /// so only the clean provider message is shown to the user.
+  static String _apiErrorMessage(ApiError e) {
+    final raw = switch (e) {
+      ApiConflict(:final message) => message,
+      ApiValidationError(:final detail) => detail,
+      ApiServerError(:final message) => message,
+      ApiNetworkError(:final message) => message,
+      ApiUnknownError(:final message) => message,
+      ApiInsufficientCredits() => 'Insufficient credits',
+      ApiUnauthorized() => 'Unauthorized',
+    };
+    return _cleanProviderMessage(raw);
+  }
+
+  /// Strips SDK error wrappers like "Error code: 400 - {'error': {'message': '...'}}"
+  /// returning just the inner message string.
+  static String _cleanProviderMessage(String raw) {
+    // If the string looks like "Error code: NNN - ..." try to pull out just
+    // the inner "message" value so JSON/dict braces never reach the UI.
+    final dashIdx = raw.indexOf(' - ');
+    if (dashIdx != -1) {
+      final after = raw.substring(dashIdx + 3).trim();
+      // Simple regex extract of "message": "..." or 'message': '...'
+      final match = RegExp(r"""['"]message['"]\s*:\s*['"](.+?)['"]""", dotAll: true)
+          .firstMatch(after);
+      if (match != null) return match.group(1)!;
+    }
+    return raw;
+  }
 }

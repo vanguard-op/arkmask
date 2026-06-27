@@ -21,12 +21,12 @@ dependencies = [
     "firebase-admin==7.4.0",
 
     # Configuration
-    "pydantic==2.11.7",
+    "pydantic==2.13.4",
     "pydantic-settings==2.9.1",
     "pydantic[email]",
 
     # AI providers (ported from solid-work prototype)
-    "google-genai==1.20.0",
+    "google-genai==2.10.0",
     # BytePlus Ark SDK: pip install byteplus-python-sdk-v2
     "byteplus-python-sdk-v2",
     # sniffio is a transitive dep of byteplus-python-sdk-v2 not declared by that package

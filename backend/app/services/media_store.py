@@ -3,6 +3,27 @@ and returns 2-hour TTL presigned download URLs.
 
 In production, boto3 uses the GCS S3-compatible XML API.  In local dev, it
 points at the MinIO container via STORAGE_ENDPOINT_URL.
+
+Two-client strategy for local dev
+----------------------------------
+AWS S3 V4 signatures cover the `Host` header.  When the backend runs inside
+Docker (STORAGE_ENDPOINT_URL = http://minio:9000), boto3 uses `minio` as the
+Host when *both* uploading and presigning.  The resulting presigned URL contains
+`minio` as the hostname — unreachable from Android emulators or physical devices.
+
+Naively rewriting the hostname in the presigned URL after the fact breaks the
+signature (the `Host` value the client sends no longer matches what was signed).
+
+The correct fix: use two separate boto3 clients.
+  • `_upload_client`  — endpoint = STORAGE_ENDPOINT_URL (http://minio:9000)
+                        Used for put_object only.  Talks to MinIO inside Docker.
+  • `_presign_client` — endpoint = STORAGE_PRESIGN_BASE_URL (http://10.0.2.2:9000)
+                        Used for generate_presigned_url only.  Bakes the
+                        externally-routable host into the signature so the URL
+                        works from the emulator / physical device.
+
+When STORAGE_PRESIGN_BASE_URL is empty (production / GCS), a single client
+is used for both operations (standard behaviour).
 """
 
 import uuid
@@ -13,34 +34,63 @@ from botocore.config import Config
 from app.config import get_settings
 
 
+def _make_client(endpoint_url: str, access_key: str, secret_key: str):
+    """Return a boto3 S3 client, optionally scoped to a custom endpoint."""
+    kwargs: dict = dict(
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        config=Config(signature_version="s3v4"),
+    )
+    if endpoint_url:
+        kwargs["endpoint_url"] = endpoint_url
+    return boto3.client("s3", **kwargs)
+
+
 class MediaStore:
     """
     Wraps an S3-compatible bucket (GCS or MinIO).
 
-    Saves raw bytes under a UUID key and returns a presigned GET URL.
-    All objects are deleted automatically by the bucket's lifecycle policy
-    (2 hours in production; no expiry in local dev unless configured manually).
+    Saves raw bytes under a UUID key and returns a presigned GET URL valid for
+    `STORAGE_PRESIGN_TTL` seconds.
+
+    In local dev with Docker, two boto3 clients are used so that:
+      - uploads go to the internal Docker endpoint (http://minio:9000)
+      - presigned URLs are signed with the externally-routable endpoint
+        (http://10.0.2.2:9000) so Android clients can actually fetch them.
     """
 
     def __init__(self):
         settings = get_settings()
-        kwargs: dict = dict(
-            aws_access_key_id=settings.storage_access_key,
-            aws_secret_access_key=settings.storage_secret_key,
-            config=Config(signature_version="s3v4"),
+        upload_endpoint = settings.storage_endpoint_url
+        presign_endpoint = settings.storage_presign_base_url.rstrip("/")
+
+        self._upload_client = _make_client(
+            upload_endpoint,
+            settings.storage_access_key,
+            settings.storage_secret_key,
         )
-        if settings.storage_endpoint_url:
-            # MinIO or any S3-compatible endpoint.
-            kwargs["endpoint_url"] = settings.storage_endpoint_url
-        self._client = boto3.client("s3", **kwargs)
+
+        # If a separate presign base URL is configured, build a dedicated client
+        # whose endpoint matches what external clients will use.  This ensures
+        # the Host header baked into the SigV4 signature matches the request
+        # the Android emulator / device actually sends.
+        if presign_endpoint and presign_endpoint != upload_endpoint:
+            self._presign_client = _make_client(
+                presign_endpoint,
+                settings.storage_access_key,
+                settings.storage_secret_key,
+            )
+        else:
+            self._presign_client = self._upload_client
+
         self._bucket = settings.storage_bucket
         self._ttl = settings.storage_presign_ttl
 
     def save(self, data: bytes, mime_type: str) -> str:
-        """Upload `data` and return a presigned URL valid for `storage_presign_ttl` seconds."""
+        """Upload `data` to the bucket and return a presigned download URL."""
         ext = mime_type.split("/")[-1]
         key = f"{uuid.uuid4()}.{ext}"
-        self._client.put_object(
+        self._upload_client.put_object(
             Bucket=self._bucket,
             Key=key,
             Body=data,
@@ -49,11 +99,11 @@ class MediaStore:
         return self._presign(key)
 
     def presign(self, key: str) -> str:
-        """Generate a fresh presigned URL for an existing object (used when TTL expires)."""
+        """Generate a fresh presigned URL for an existing object (e.g. after TTL expiry)."""
         return self._presign(key)
 
     def _presign(self, key: str) -> str:
-        return self._client.generate_presigned_url(
+        return self._presign_client.generate_presigned_url(
             "get_object",
             Params={"Bucket": self._bucket, "Key": key},
             ExpiresIn=self._ttl,

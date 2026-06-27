@@ -215,6 +215,10 @@ class ArkMaskApiClient {
     return switch (status) {
       401 => ApiUnauthorized(),
       402 => ApiInsufficientCredits(balance: body is Map ? body['credit_balance'] as int? : null),
+      // 400 from a generation endpoint = provider rejected the content (safety
+      // filter, invalid parameter, etc.).  Surface the provider's message so
+      // the user can act on it (e.g. rephrase the prompt).
+      400 => ApiValidationError(detail: message),
       409 => ApiConflict(message: message),
       422 => ApiValidationError(detail: message),
       _ => ApiServerError(statusCode: status ?? 500, message: message),

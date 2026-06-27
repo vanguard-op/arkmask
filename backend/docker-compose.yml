@@ -68,6 +68,11 @@ services:
       STORAGE_ACCESS_KEY: minioadmin
       STORAGE_SECRET_KEY: minioadmin
       STORAGE_PRESIGN_TTL: 7200
+      # Rewrite the internal Docker hostname in presigned URLs so that Android
+      # emulators (10.0.2.2) and physical devices can actually fetch the image.
+      # 10.0.2.2 = host machine as seen from the Android emulator.
+      # Change to your LAN IP (e.g. 192.168.x.x:9000) for physical device testing.
+      STORAGE_PRESIGN_BASE_URL: http://10.0.2.2:9000
       APP_ENV: local
       FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-arkmask-dev}
       FIREBASE_CREDENTIALS_PATH: ${FIREBASE_CREDENTIALS_PATH:-}

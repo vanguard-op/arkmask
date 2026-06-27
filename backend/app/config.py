@@ -18,6 +18,13 @@ class Settings(BaseSettings):
     storage_access_key: str = "minioadmin"
     storage_secret_key: str = "minioadmin"
     storage_presign_ttl: int = 7200       # 2 hours
+    # Optional: override the host used in presigned URLs.
+    # boto3 bakes storage_endpoint_url's hostname into presigned URLs.
+    # When the backend runs in Docker (endpoint = http://minio:9000) but clients
+    # are Android emulators or physical devices that can't resolve 'minio', set
+    # this to the externally reachable address, e.g. http://10.0.2.2:9000.
+    # Leave empty to use the URL boto3 produces unchanged (correct for production GCS).
+    storage_presign_base_url: str = ""
 
     # Firebase
     firebase_project_id: str = "arkmask-dev"
