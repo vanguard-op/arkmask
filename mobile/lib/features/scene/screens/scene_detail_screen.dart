@@ -235,8 +235,18 @@ class _AggregateJobDot extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final sbState = jobManager.stateFor(GenerationJobManager.storyboardKey(sceneDirPath));
-    final vidState = jobManager.stateFor(GenerationJobManager.videoKey(sceneDirPath));
+    var sbState = jobManager.stateFor(GenerationJobManager.storyboardKey(sceneDirPath));
+    var vidState = jobManager.stateFor(GenerationJobManager.videoKey(sceneDirPath));
+
+    // Fall back to on-disk state when no job has run in this session.
+    final hasStoryboard = loaded?.storyboard.storyboardBody.isNotEmpty ?? false;
+    final hasVideo = loaded?.hasVideo ?? false;
+    if (sbState == GenerationJobState.idle && hasStoryboard) {
+      sbState = GenerationJobState.done;
+    }
+    if (vidState == GenerationJobState.idle && hasVideo) {
+      vidState = GenerationJobState.done;
+    }
 
     final worst = _worstState(sbState, vidState);
     final color = switch (worst) {
@@ -731,7 +741,7 @@ class _AssetRow extends StatelessWidget {
                         _jobStateToStepState(
                             jobManager.stateFor(
                                 GenerationJobManager.promptKey(asset.dirPath)),
-                            fallbackDone: false),
+                            fallbackDone: asset.isPromptReady),
                         _jobStateToStepState(
                             jobManager.stateFor(
                                 GenerationJobManager.imageKey(asset.dirPath)),

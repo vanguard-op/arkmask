@@ -200,51 +200,70 @@ class GeminiProvider(AIProvider):
             return "image/gif"
         return "application/octet-stream"
 
+    # Veo 3.1 accepts up to 3 reference images per request (asset type only).
+    # PNG and JPEG are the only accepted formats; WebP and others are rejected.
+    _VEO_MAX_REF_IMAGES = 3
+    _VEO_ACCEPTED_FORMATS = frozenset({"image/png", "image/jpeg"})
+
     def generate_video(self, storyboard: str, ref_images: list[RefImage]) -> tuple[bytes, str]:
         """Generate a video via Veo 3.1 (veo-3.1-generate-preview).
 
-        Uses client.models.generate_videos() with GenerateVideosSource.
-        Veo accepts a single conditioning image (first ref_image) in PNG or JPEG
-        format. The image bytes are passed directly; no multipart upload needed.
+        Uses client.models.generate_videos() with up to 3 reference images passed
+        as VideoGenerationReferenceImage entries in GenerateVideosConfig.reference_images.
+        Reference images use reference_type="asset" — the only type supported by the
+        Developer API as of June 2026.
+
+        Image format handling:
+        - Actual MIME type is sniffed from magic bytes (the declared type from the
+          client may not match what the image model returned).
+        - Only PNG and JPEG are forwarded. WebP/GIF/unknown are skipped with a warning.
+        - Images are capped at _VEO_MAX_REF_IMAGES (3). Excess images are dropped.
+
         Polls the returned operation every VIDEO_POLL_INTERVAL seconds until done.
-        Returns raw video bytes and mime type.
+        Returns raw video bytes and MIME type.
         """
-        # Build source — prompt is required; conditioning image is optional.
-        # Veo only uses one image (the first); additional ref images are ignored.
-        source = types.GenerateVideosSource(prompt=storyboard)
-        if ref_images:
-            img = ref_images[0]
-            # Sniff actual format from magic bytes — the declared mime_type from
-            # the client may not match what Imagen actually returned.
+        # Filter to accepted formats only, cap at the Veo limit.
+        veo_ref_images: list[types.VideoGenerationReferenceImage] = []
+        for img in ref_images:
+            if len(veo_ref_images) >= self._VEO_MAX_REF_IMAGES:
+                logger.info(
+                    "generate_video: dropping ref image — Veo limit of %d reached",
+                    self._VEO_MAX_REF_IMAGES,
+                )
+                break
             actual_mime = self._sniff_mime(img.data)
             logger.info(
-                "generate_video: conditioning image size=%d bytes declared_mime=%s actual_mime=%s",
+                "generate_video: ref image size=%d bytes declared_mime=%s actual_mime=%s",
                 len(img.data), img.mime_type, actual_mime,
             )
-            # Veo rejects WebP and other formats — only PNG and JPEG are safe.
-            # If the image is something else, skip it and fall back to prompt-only.
-            if actual_mime in ("image/png", "image/jpeg"):
-                source = types.GenerateVideosSource(
-                    prompt=storyboard,
-                    image=types.Image(
-                        image_bytes=img.data,
-                        mime_type=actual_mime,
-                    ),
-                )
-            else:
+            if actual_mime not in self._VEO_ACCEPTED_FORMATS:
                 logger.warning(
-                    "generate_video: unsupported image format %s — sending prompt only",
+                    "generate_video: skipping ref image with unsupported format %s",
                     actual_mime,
                 )
+                continue
+            veo_ref_images.append(
+                types.VideoGenerationReferenceImage(
+                    image=types.Image(image_bytes=img.data, mime_type=actual_mime),
+                    reference_type="asset",
+                )
+            )
+
+        logger.info(
+            "generate_video: sending %d/%d ref images to Veo 3.1",
+            len(veo_ref_images), len(ref_images),
+        )
 
         operation = self._client.models.generate_videos(
             model=self.VIDEO_MODEL,
-            source=source,
+            prompt=storyboard,
             config=types.GenerateVideosConfig(
                 number_of_videos=1,
                 duration_seconds=8,
+                # Reference images are passed here — not in the source/prompt field.
                 # enhance_prompt and generate_audio are not supported by
                 # veo-3.1-generate-preview via the standard Developer API.
+                reference_images=veo_ref_images or None,
             ),
         )
 

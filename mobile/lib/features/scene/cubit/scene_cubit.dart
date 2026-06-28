@@ -108,6 +108,12 @@ class SceneCubit extends Cubit<SceneState> {
         }
 
 
+        // For variant assets (@ name + own description), the referenced
+        // asset's image is sent alongside the variant's own image as a
+        // conditioning input. Store refDir so _buildVideoRefImages can use it.
+        final bool isVariant = isRef && node.description.isNotEmpty;
+        final String? conditioningDirPath = isVariant ? refDir : null;
+
         assets.add(SceneAsset(
           name: node.name,
           dirPath: node.directoryPath,
@@ -118,6 +124,7 @@ class SceneCubit extends Cubit<SceneState> {
           description: node.description,
           resolvedPrompt: resolvedPrompt,
           resolvedDirPath: resolvedDirPath,
+          conditioningDirPath: conditioningDirPath,
         ));
       }
 
@@ -298,20 +305,37 @@ class SceneCubit extends Cubit<SceneState> {
   /// Builds the ref_images list for /video.
   ///
   /// Each entry is `{data: <base64 string>, mime_type: 'image/png'}`.
-  /// Images are read from [SceneAsset.resolvedDirPath] — already resolved
-  /// during [load()] to the correct directory (global, scene-local, or own).
+  ///
+  /// Image sourcing per asset type (FEAT-013):
+  /// - **Pass-through** (`@`-name, empty description): `resolvedDirPath` is
+  ///   already the referenced asset's dir — one image from there.
+  /// - **Variant** (`@`-name, non-empty description): sends the variant's own
+  ///   `image.png` from `dirPath` PLUS the referenced asset's `image.png` from
+  ///   `conditioningDirPath` as a conditioning input.
+  /// - **Local** (no `@`): own `image.png` from `resolvedDirPath` (= `dirPath`).
+  ///
   /// Assets without an image file on disk are skipped silently.
   Future<List<Map<String, String>>> _buildVideoRefImages(SceneLoaded s) async {
     final result = <Map<String, String>>[];
-    for (final asset in s.assets) {
-      final imageFile = File(p.join(asset.resolvedDirPath, 'image.png'));
-      if (!await imageFile.exists()) continue;
+
+    Future<void> addIfExists(String dirPath) async {
+      final imageFile = File(p.join(dirPath, 'image.png'));
+      if (!await imageFile.exists()) return;
       final bytes = await imageFile.readAsBytes();
-      result.add({
-        'data': base64Encode(bytes),
-        'mime_type': 'image/png',
-      });
+      result.add({'data': base64Encode(bytes), 'mime_type': 'image/png'});
     }
+
+    for (final asset in s.assets) {
+      if (asset.conditioningDirPath != null) {
+        // Variant: own image first, then referenced conditioning image.
+        await addIfExists(asset.dirPath);
+        await addIfExists(asset.conditioningDirPath!);
+      } else {
+        // Pass-through (resolvedDirPath = refDir) or local (resolvedDirPath = dirPath).
+        await addIfExists(asset.resolvedDirPath);
+      }
+    }
+
     return result;
   }
 

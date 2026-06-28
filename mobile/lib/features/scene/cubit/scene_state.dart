@@ -12,6 +12,7 @@ class SceneAsset {
     required this.description,
     required this.resolvedPrompt,
     required this.resolvedDirPath,
+    this.conditioningDirPath,
   });
 
   /// Display name (from prompt.mdx frontmatter; may start with `@/`).
@@ -45,6 +46,12 @@ class SceneAsset {
   /// directory — where the user should navigate to generate a prompt.
   /// Equals [dirPath] for non-pass-through assets.
   final String resolvedDirPath;
+
+  /// For **variant** assets only (`@`-name + non-empty description): the
+  /// directory of the referenced asset whose image is used as a conditioning
+  /// input alongside the variant's own image during video generation.
+  /// Null for pass-through and local assets.
+  final String? conditioningDirPath;
 
   /// True when a prompt body has been resolved and the asset is ready for
   /// storyboard generation. False means the user still needs to generate
