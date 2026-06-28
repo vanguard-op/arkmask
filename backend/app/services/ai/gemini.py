@@ -187,23 +187,55 @@ class GeminiProvider(AIProvider):
 
         raise ValueError("generate_content returned no image for the given prompt.")
 
+    @staticmethod
+    def _sniff_mime(data: bytes) -> str:
+        """Detect image format from magic bytes."""
+        if data[:8] == b'\x89PNG\r\n\x1a\n':
+            return "image/png"
+        if data[:3] == b'\xff\xd8\xff':
+            return "image/jpeg"
+        if data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+            return "image/webp"
+        if data[:4] in (b'GIF8', b'GIF9'):
+            return "image/gif"
+        return "application/octet-stream"
+
     def generate_video(self, storyboard: str, ref_images: list[RefImage]) -> tuple[bytes, str]:
         """Generate a video via Veo 3.1 (veo-3.1-generate-preview).
 
         Uses client.models.generate_videos() with GenerateVideosSource.
+        Veo accepts a single conditioning image (first ref_image) in PNG or JPEG
+        format. The image bytes are passed directly; no multipart upload needed.
         Polls the returned operation every VIDEO_POLL_INTERVAL seconds until done.
         Returns raw video bytes and mime type.
         """
-        # Build source — prompt is required; first ref image is optional.
+        # Build source — prompt is required; conditioning image is optional.
+        # Veo only uses one image (the first); additional ref images are ignored.
         source = types.GenerateVideosSource(prompt=storyboard)
         if ref_images:
-            source = types.GenerateVideosSource(
-                prompt=storyboard,
-                image=types.Image(
-                    image_bytes=ref_images[0].data,
-                    mime_type=ref_images[0].mime_type,
-                ),
+            img = ref_images[0]
+            # Sniff actual format from magic bytes — the declared mime_type from
+            # the client may not match what Imagen actually returned.
+            actual_mime = self._sniff_mime(img.data)
+            logger.info(
+                "generate_video: conditioning image size=%d bytes declared_mime=%s actual_mime=%s",
+                len(img.data), img.mime_type, actual_mime,
             )
+            # Veo rejects WebP and other formats — only PNG and JPEG are safe.
+            # If the image is something else, skip it and fall back to prompt-only.
+            if actual_mime in ("image/png", "image/jpeg"):
+                source = types.GenerateVideosSource(
+                    prompt=storyboard,
+                    image=types.Image(
+                        image_bytes=img.data,
+                        mime_type=actual_mime,
+                    ),
+                )
+            else:
+                logger.warning(
+                    "generate_video: unsupported image format %s — sending prompt only",
+                    actual_mime,
+                )
 
         operation = self._client.models.generate_videos(
             model=self.VIDEO_MODEL,
