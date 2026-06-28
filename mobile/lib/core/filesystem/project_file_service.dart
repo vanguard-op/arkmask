@@ -424,9 +424,11 @@ class ProjectFileService {
       if (p.basename(entity.path) != 'prompt.mdx') continue;
 
       final content = await entity.readAsString();
-      // Look for an unquoted @ value in the name field: `name: @...`
-      final unquotedRef = RegExp(r'^name:\s*@', caseSensitive: false);
-      if (!unquotedRef.hasMatch(content)) continue;
+      // Look for an unquoted @ value in the name field across any line.
+      final hasUnquotedRef = content
+          .split('\n')
+          .any((line) => RegExp(r'^name:\s*@').hasMatch(line));
+      if (!hasUnquotedRef) continue;
 
       // Re-quote the name field. Process line-by-line to avoid multiline regex.
       final fixed = content.split('\n').map((line) {
