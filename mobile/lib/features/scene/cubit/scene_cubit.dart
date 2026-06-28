@@ -239,9 +239,13 @@ class SceneCubit extends Cubit<SceneState> {
   ///
   /// Only called after [canGenerateStoryboard] is confirmed true, so every
   /// asset is guaranteed to have a non-empty [resolvedPrompt].
+  ///
+  /// Assets are ordered by type priority (background → character → object) so
+  /// the most scene-defining context appears first in the prompt. FCFS order is
+  /// preserved within each type group.
   List<Map<String, String>> _buildAssetPromptList(SceneLoaded s) {
     return [
-      for (final asset in s.assets)
+      for (final asset in _sortedByTypePriority(s.assets))
         if (asset.isPromptReady)
           {
             'name': asset.displayName,
@@ -306,6 +310,11 @@ class SceneCubit extends Cubit<SceneState> {
   /// Returns raw PNG bytes for each asset image — no base64 encoding needed
   /// since /video now uses multipart/form-data (same as /image).
   ///
+  /// Assets are ordered by type priority (background → character → object) so
+  /// the most scene-defining refs are sent first. Models with a hard ref cap
+  /// (e.g. Veo's 3-image limit) will receive the highest-relevance images even
+  /// when the list is truncated. FCFS order is preserved within each type group.
+  ///
   /// Image sourcing per asset type (FEAT-013):
   /// - **Pass-through** (`@`-name, empty description): `resolvedDirPath` is
   ///   already the referenced asset's dir — one image from there.
@@ -324,7 +333,7 @@ class SceneCubit extends Cubit<SceneState> {
       result.add(await imageFile.readAsBytes());
     }
 
-    for (final asset in s.assets) {
+    for (final asset in _sortedByTypePriority(s.assets)) {
       if (asset.conditioningDirPath != null) {
         // Variant: own image first, then referenced conditioning image.
         await addIfExists(asset.dirPath);
@@ -336,6 +345,27 @@ class SceneCubit extends Cubit<SceneState> {
     }
 
     return result;
+  }
+
+  /// Sorts [assets] by type priority: background (0) → character (1) → object (2).
+  ///
+  /// Preserves the original FCFS order within each type group. Assets with a
+  /// null type are placed last. The sort is stable so relative order among
+  /// same-type assets is unchanged.
+  ///
+  /// This ordering ensures that ref lists sent to generation models are ranked
+  /// by scene relevance — backgrounds set the environment, characters carry the
+  /// narrative, objects are incidental — so a hard model cap (e.g. 3 refs)
+  /// always trims the least important assets first.
+  static List<SceneAsset> _sortedByTypePriority(List<SceneAsset> assets) {
+    int priority(AssetType? type) => switch (type) {
+          AssetType.background => 0,
+          AssetType.character => 1,
+          AssetType.object => 2,
+          null => 3,
+        };
+    return [...assets]
+      ..sort((a, b) => priority(a.type).compareTo(priority(b.type)));
   }
 
   // ── Video polling ─────────────────────────────────────────────────────────
