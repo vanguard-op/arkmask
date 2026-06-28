@@ -67,29 +67,41 @@ class SceneCubit extends Cubit<SceneState> {
         final String? refDir = isRef ? _resolveRefDir(projectDir, node.name) : null;
 
         // ── Image resolution ──────────────────────────────────────────────────
+        // pass-through: check referenced dir (has no own image)
+        // variant/local: check own dir
+        // Note: isPassThrough is derived below but we need the ref dir here,
+        // so we temporarily use (isRef && description.isEmpty) inline.
         final bool hasImage;
-        if (isRef) {
+        if (isRef && node.description.isEmpty) {
           hasImage = refDir != null &&
               await File(p.join(refDir, 'image.png')).exists();
         } else {
           hasImage = await fileService.imageFileForAsset(node.directoryPath).exists();
         }
 
+        // ── Asset classification ──────────────────────────────────────────────
+        // pass-through : @-name + empty description → everything from the ref
+        // variant      : @-name + non-empty description → own prompt/image,
+        //                referenced image used only as conditioning input
+        // local        : no @ → fully independent
+        final isPassThrough = isRef && node.description.isEmpty;
+
         // ── Prompt resolution ─────────────────────────────────────────────────
-        // Referenced asset (@): read prompt from the referenced directory.
-        // Scene-local asset:    read prompt from this asset's own directory.
-        // Either way, if the prompt body is empty → asset is not ready.
+        // pass-through → read prompt from the referenced directory
+        // variant/local → read prompt from own directory
+        // Empty prompt body in either case → asset is not ready for storyboard
         final String resolvedPrompt;
         final String resolvedDirPath;
-        if (isRef) {
+        if (isPassThrough) {
           resolvedDirPath = refDir ?? node.directoryPath;
           if (refDir != null) {
             final refPrompt = await fileService.readAssetPrompt(refDir);
             resolvedPrompt = refPrompt.promptBody.trim();
           } else {
-            resolvedPrompt = ''; // ref path could not be parsed → not ready
+            resolvedPrompt = '';
           }
         } else {
+          // variant or local — always use own dir and own prompt
           resolvedDirPath = node.directoryPath;
           final ownPrompt = await fileService.readAssetPrompt(node.directoryPath);
           resolvedPrompt = ownPrompt.promptBody.trim();

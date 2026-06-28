@@ -661,7 +661,13 @@ class _AssetRow extends StatelessWidget {
     final surfaceRaised =
         isDark ? AppColors.surfaceRaisedDark : AppColors.surfaceRaisedLight;
 
-    final imageFile = File(p.join(asset.dirPath, 'image.png'));
+    // Pass-through assets have no own image — show the referenced asset's image.
+    // Variants and local assets always use their own image.
+    final imageFile = File(p.join(asset.resolvedDirPath, 'image.png'));
+
+    // Tapping a pass-through navigates to the referenced asset so the user
+    // can see/edit it. Variants and locals navigate to their own dir.
+    final editorPath = asset.resolvedDirPath;
 
     return Padding(
       padding: const EdgeInsets.only(bottom: AppSpacing.s2),
@@ -672,7 +678,7 @@ class _AssetRow extends StatelessWidget {
           borderRadius: BorderRadius.circular(AppSizing.radiusSm),
           onTap: () => context.push(
             '/project/${Uri.encodeComponent(projectName)}'
-            '/asset/${Uri.encodeComponent(asset.dirPath)}',
+            '/asset/${Uri.encodeComponent(editorPath)}',
           ),
           child: SizedBox(
             height: 56,
