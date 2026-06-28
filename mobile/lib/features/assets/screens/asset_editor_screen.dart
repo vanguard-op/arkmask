@@ -785,6 +785,9 @@ class _ImageSection extends StatelessWidget {
                   borderRadius: BorderRadius.circular(AppSizing.radiusMd),
                   child: Image.file(
                     imageFile,
+                    // Key tied to imageVersion so Flutter discards the cached
+                    // file image and reloads from disk after regeneration.
+                    key: ValueKey(state.imageVersion),
                     fit: BoxFit.cover,
                     height: 240,
                     width: double.infinity,

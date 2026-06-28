@@ -26,6 +26,7 @@ class AssetEditorLoaded extends AssetEditorState {
     required this.prompt,
     required this.hasImage,
     required this.isGlobal,
+    this.imageVersion = 0,
     this.isSaving = false,
     this.isGeneratingPrompt = false,
     this.isGeneratingImage = false,
@@ -38,6 +39,11 @@ class AssetEditorLoaded extends AssetEditorState {
 
   /// Whether `image.png` exists in the asset directory.
   final bool hasImage;
+
+  /// Incremented each time a new image is saved to disk. Used as a cache-bust
+  /// key on [Image.file] so Flutter reloads the file instead of serving the
+  /// stale cached version after regeneration.
+  final int imageVersion;
 
   /// True for assets directly under `assets/` (global scope).
   /// False for assets under `scenes/N/assets/` (scene-local).
@@ -65,6 +71,7 @@ class AssetEditorLoaded extends AssetEditorState {
   AssetEditorLoaded copyWith({
     AssetPrompt? prompt,
     bool? hasImage,
+    int? imageVersion,
     bool? isGlobal,
     bool? isSaving,
     bool? isGeneratingPrompt,
@@ -77,6 +84,7 @@ class AssetEditorLoaded extends AssetEditorState {
     return AssetEditorLoaded(
       prompt: prompt ?? this.prompt,
       hasImage: hasImage ?? this.hasImage,
+      imageVersion: imageVersion ?? this.imageVersion,
       isGlobal: isGlobal ?? this.isGlobal,
       isSaving: isSaving ?? this.isSaving,
       isGeneratingPrompt: isGeneratingPrompt ?? this.isGeneratingPrompt,
@@ -90,6 +98,7 @@ class AssetEditorLoaded extends AssetEditorState {
   List<Object?> get props => [
         prompt,
         hasImage,
+        imageVersion,
         isGlobal,
         isSaving,
         isGeneratingPrompt,

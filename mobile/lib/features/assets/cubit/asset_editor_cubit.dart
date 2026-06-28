@@ -189,9 +189,13 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
       final bytes = await apiClient.downloadBytes(gcsUrl);
       await fileService.saveImageToAssetDir(assetDirPath, bytes);
       jobManager.markDone(key);
-      emit((state as AssetEditorLoaded).copyWith(
+      final current = state as AssetEditorLoaded;
+      emit(current.copyWith(
         hasImage: true,
         isGeneratingImage: false,
+        // Bump imageVersion so Image.file gets a new key and bypasses the
+        // Flutter file-image cache, showing the freshly written image.
+        imageVersion: current.imageVersion + 1,
       ));
     } on ApiInsufficientCredits {
       jobManager.markFailed(key, 'Insufficient credits');
