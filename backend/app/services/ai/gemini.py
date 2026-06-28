@@ -139,6 +139,7 @@ class GeminiProvider(AIProvider):
         """
         # Build the contents list.  Text prompt is always first; ref images follow.
         contents: list = [types.Part.from_text(text=prompt)]
+        print("No of ref images:", len(ref_images))
         for img in ref_images[:14]:
             contents.append(types.Part.from_bytes(data=img.data, mime_type=img.mime_type))
 
@@ -278,9 +279,27 @@ class GeminiProvider(AIProvider):
             time.sleep(self.VIDEO_POLL_INTERVAL)
             operation = self._client.operations.get(operation)
 
-        generated = operation.response.generated_videos
+        # Surface operation-level errors before inspecting the response body.
+        op_error = getattr(operation, "error", None)
+        if op_error:
+            logger.error("generate_video: operation finished with error: %s", repr(op_error))
+            raise ValueError(f"Veo 3.1 operation failed: {op_error}")
+
+        # Log the full operation response so we can diagnose failures where
+        # generated_videos is empty (content block, quota error, etc.).
+        response = operation.response
+        logger.info(
+            "generate_video: operation done — response type=%s repr=%s",
+            type(response).__name__,
+            repr(response)[:1000],
+        )
+
+        generated = getattr(response, "generated_videos", None) or []
         if not generated:
-            raise ValueError("Veo 3.1 returned no generated_videos in response")
+            # Try to surface a reason from the operation metadata if available.
+            error = getattr(operation, "error", None)
+            reason = repr(error) if error else "no generated_videos in response and no error detail"
+            raise ValueError(f"Veo 3.1 returned no video. Reason: {reason}")
 
         video = generated[0].video
         logger.info(
