@@ -145,10 +145,20 @@ class ArkMaskApiClient {
 
   /// POST /video — enqueue a scene video generation job.
   ///
+  /// [prompt] is the storyboard text from `ark.mdx`. [refImages] is a list
+  /// of maps with `data` (base64-encoded PNG bytes) and `mime_type` keys —
+  /// one entry per scene asset that has a generated image on disk.
+  ///
   /// Returns the `job_id` for polling via [getVideoJobStatus].
-  Future<String> generateVideo({required FormData formData}) async {
+  Future<String> generateVideo({
+    required String prompt,
+    required List<Map<String, String>> refImages,
+  }) async {
     final response = await _execute(
-      () => _dio.post('/video', data: formData),
+      () => _dio.post('/video', data: {
+        'prompt': prompt,
+        'ref_images': refImages,
+      }),
     );
     return (response.data as Map<String, dynamic>)['job_id'] as String;
   }

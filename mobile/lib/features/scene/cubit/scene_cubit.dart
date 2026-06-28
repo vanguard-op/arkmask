@@ -1,7 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
-import 'package:dio/dio.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:path/path.dart' as p;
 
@@ -240,10 +240,12 @@ class SceneCubit extends Cubit<SceneState> {
     ));
 
     try {
-      final projectDir = p.dirname(p.dirname(s.sceneDirPath));
-      final formData = await _buildVideoFormData(s, projectDir);
+      final refImages = await _buildVideoRefImages(s);
 
-      final jobId = await apiClient.generateVideo(formData: formData);
+      final jobId = await apiClient.generateVideo(
+        prompt: s.storyboard.storyboardBody,
+        refImages: refImages,
+      );
 
       // Begin polling — runs even if the user navigates away.
       _startPolling(jobId: jobId, sceneDirPath: s.sceneDirPath);
@@ -275,24 +277,24 @@ class SceneCubit extends Cubit<SceneState> {
     }
   }
 
-  Future<FormData> _buildVideoFormData(SceneLoaded s, String projectDir) async {
-    final images = <MultipartFile>[];
+  /// Builds the ref_images list for /video.
+  ///
+  /// Each entry is `{data: <base64 string>, mime_type: 'image/png'}`.
+  /// Images are read from [SceneAsset.resolvedDirPath] — already resolved
+  /// during [load()] to the correct directory (global, scene-local, or own).
+  /// Assets without an image file on disk are skipped silently.
+  Future<List<Map<String, String>>> _buildVideoRefImages(SceneLoaded s) async {
+    final result = <Map<String, String>>[];
     for (final asset in s.assets) {
-      final imagePath = asset.isPassThrough
-          ? p.join(projectDir, 'assets', asset.name.split('/').last, 'image.png')
-          : p.join(asset.dirPath, 'image.png');
-      if (await File(imagePath).exists()) {
-        images.add(await MultipartFile.fromFile(
-          imagePath,
-          filename: '${asset.name.split('/').last}.png',
-        ));
-      }
+      final imageFile = File(p.join(asset.resolvedDirPath, 'image.png'));
+      if (!await imageFile.exists()) continue;
+      final bytes = await imageFile.readAsBytes();
+      result.add({
+        'data': base64Encode(bytes),
+        'mime_type': 'image/png',
+      });
     }
-
-    return FormData.fromMap({
-      'storyboard': s.storyboard.storyboardBody,
-      if (images.isNotEmpty) 'images[]': images,
-    });
+    return result;
   }
 
   // ── Video polling ─────────────────────────────────────────────────────────

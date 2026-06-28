@@ -16,7 +16,7 @@ The logging in this file uses user_id (not the key) for attribution.
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status  # noqa: F401 (Form/File/UploadFile kept for /image)
 from google.genai._gaos.lib.compat_errors import BadRequestError
 
 from app.services.ai.gemini import ContentBlockedError
@@ -35,6 +35,8 @@ from app.schemas.generation import (
     VideoEnqueueResponse,
     VideoPromptRequest,
     VideoPromptResponse,
+    VideoRefImage,
+    VideoRequest,
     VideoStatusEnum,
     VideoStatusResponse,
 )
@@ -300,15 +302,17 @@ _jobs: dict[str, dict[str, Any]] = {}
 
 @router.post("/video", response_model=VideoEnqueueResponse)
 async def generate_video(
-    storyboard: str = Form(...),
-    asset_names: list[str] = Form(default=[], alias="asset_names[]"),
-    asset_images: list[UploadFile] = File(default=[], alias="asset_images[]"),
+    body: VideoRequest,
     user: User = Depends(get_current_user),
     provider: AIProvider = Depends(get_ai_provider),
     db: Session = Depends(get_db),
 ) -> VideoEnqueueResponse:
     """
     Enqueue a scene video generation job.
+
+    Accepts JSON with the storyboard prompt and asset reference images
+    (base64-encoded bytes). Pydantic decodes the base64 `data` fields
+    automatically.
 
     Returns a `job_id` immediately. The Flutter app polls
     `GET /video/{job_id}/status` every 10 seconds until `status = 'success'`
@@ -322,16 +326,22 @@ async def generate_video(
     job_id = str(uuid.uuid4())
     _jobs[job_id] = {"status": "pending", "url": None, "error": None}
 
+    logger.info(
+        "/video received: user_id=%s prompt_len=%d ref_images=%d",
+        user.id, len(body.prompt), len(body.ref_images),
+    )
+
+    # Convert schema VideoRefImages to the provider's RefImage type.
     ref_images = [
-        RefImage(data=await f.read(), mime_type=f.content_type or "image/png")
-        for f in asset_images[:4]
+        RefImage(data=img.data, mime_type=img.mime_type)
+        for img in body.ref_images
     ]
 
     async def _run_job():
         _jobs[job_id]["status"] = "running"
         try:
             video_bytes, mime_type = await asyncio.to_thread(
-                provider.generate_video, storyboard, ref_images
+                provider.generate_video, body.prompt, ref_images
             )
             store = MediaStore()
             url = await asyncio.to_thread(store.save, video_bytes, mime_type)
@@ -340,7 +350,10 @@ async def generate_video(
             _jobs[job_id]["url"] = url
             logger.info("Video job complete: job_id=%s user_id=%s", job_id, user.id)
         except Exception as e:
-            logger.error("Video job failed: job_id=%s user_id=%s error=%s", job_id, user.id, type(e).__name__, exc_info=True)
+            logger.error(
+                "Video job failed: job_id=%s user_id=%s error=%s",
+                job_id, user.id, type(e).__name__, exc_info=True,
+            )
             _deduct_credits(db, user, "/video", provider_name, 0, "refunded")
             _jobs[job_id]["status"] = "failed"
             err_msg = str(e) if isinstance(e, BadRequestError) else "Video generation failed. Credits not deducted."

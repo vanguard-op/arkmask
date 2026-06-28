@@ -65,7 +65,23 @@ class VideoPromptResponse(BaseModel):
     storyboard: str
 
 
-# ── POST /video (multipart/form-data) ─────────────────────────────────────────
+# ── POST /video (application/json) ────────────────────────────────────────────
+
+class VideoRefImage(BaseModel):
+    """A reference image sent as base64-encoded bytes with its MIME type.
+
+    Pydantic v2 automatically decodes base64 strings to bytes when the field
+    type is `bytes`, so the Flutter client just sends a base64 string.
+    """
+    data: bytes
+    mime_type: str = "image/png"
+
+
+class VideoRequest(BaseModel):
+    """Input for /video — storyboard prompt and asset reference images."""
+    prompt: str
+    ref_images: list[VideoRefImage] = Field(default=[], min_length=1)
+
 
 class VideoEnqueueResponse(BaseModel):
     """Returned immediately after enqueueing the video generation job."""
