@@ -253,7 +253,30 @@ class GeminiProvider(AIProvider):
             time.sleep(self.VIDEO_POLL_INTERVAL)
             operation = self._client.operations.get(operation)
 
-        video = operation.response.generated_videos[0].video
-        if video.video_bytes is None:
-            raise ValueError("Veo 3.1 returned no video bytes in response")
-        return video.video_bytes, video.mime_type or "video/mp4"
+        generated = operation.response.generated_videos
+        if not generated:
+            raise ValueError("Veo 3.1 returned no generated_videos in response")
+
+        video = generated[0].video
+        logger.info(
+            "generate_video: response video_bytes=%s uri=%s mime_type=%s",
+            "present" if getattr(video, "video_bytes", None) else "absent",
+            getattr(video, "uri", None),
+            getattr(video, "mime_type", None),
+        )
+
+        # The Developer API returns a GCS URI rather than inline bytes.
+        # Fetch the bytes from the URI using the SDK's file download helper.
+        if getattr(video, "video_bytes", None) is not None:
+            return video.video_bytes, video.mime_type or "video/mp4"
+
+        uri = getattr(video, "uri", None)
+        if uri:
+            logger.info("generate_video: fetching video bytes from URI %s", uri)
+            video_bytes = self._client.files.download(file=uri)
+            return bytes(video_bytes), video.mime_type or "video/mp4"
+
+        raise ValueError(
+            f"Veo 3.1 returned no video bytes and no URI. "
+            f"Full video object: {video!r}"
+        )
