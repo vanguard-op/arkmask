@@ -10,6 +10,7 @@ import 'core/jobs/generation_job_manager.dart';
 import 'core/router/router.dart';
 import 'core/storage/secure_storage_service.dart';
 import 'core/theme/app_theme.dart';
+import 'core/vault/vault_service.dart';
 
 /// Root widget for ArkMask.
 ///
@@ -29,6 +30,7 @@ class _ArkMaskAppState extends State<ArkMaskApp> {
   late final AuthService _authService;
   late final ProjectFileService _fileService;
   late final GenerationJobManager _jobManager;
+  late final VaultService _vaultService;
   late final GoRouterWrapper _routerWrapper;
 
   @override
@@ -40,14 +42,17 @@ class _ArkMaskAppState extends State<ArkMaskApp> {
       storageService: _storage,
       firebaseAuth: FirebaseAuth.instance,
     );
+    _vaultService = VaultService();
     _fileService = ProjectFileService();
-    // Initialize the filesystem root asynchronously; screens wait for this.
-    _fileService.initialize();
+    // Vault initialization and file-service bootstrapping happen lazily inside
+    // the router redirect so they complete before the first navigation.
     _jobManager = GenerationJobManager();
 
     _routerWrapper = GoRouterWrapper(
       storage: _storage,
       firebaseAuth: FirebaseAuth.instance,
+      vaultService: _vaultService,
+      fileService: _fileService,
     );
   }
 
@@ -59,6 +64,7 @@ class _ArkMaskAppState extends State<ArkMaskApp> {
       authService: _authService,
       fileService: _fileService,
       jobManager: _jobManager,
+      vaultService: _vaultService,
       child: MaterialApp.router(
         title: 'ArkMask',
         debugShowCheckedModeBanner: false,
@@ -72,12 +78,19 @@ class _ArkMaskAppState extends State<ArkMaskApp> {
   }
 }
 
-/// Holds the GoRouter instance to keep it stable across rebuilds.
+/// Holds the [GoRouter] instance stable across rebuilds.
 class GoRouterWrapper {
   GoRouterWrapper({
     required SecureStorageService storage,
     required FirebaseAuth firebaseAuth,
-  }) : router = buildRouter(storage: storage, firebaseAuth: firebaseAuth);
+    required VaultService vaultService,
+    required ProjectFileService fileService,
+  }) : router = buildRouter(
+          storage: storage,
+          firebaseAuth: firebaseAuth,
+          vaultService: vaultService,
+          fileService: fileService,
+        );
 
   final GoRouter router;
 }
@@ -99,6 +112,7 @@ class ArkMaskServices extends InheritedWidget {
     required this.authService,
     required this.fileService,
     required this.jobManager,
+    required this.vaultService,
     required super.child,
   });
 
@@ -106,9 +120,13 @@ class ArkMaskServices extends InheritedWidget {
   final ArkMaskApiClient apiClient;
   final AuthService authService;
   final ProjectFileService fileService;
+
   /// Singleton job manager for tracking all in-progress generation steps
   /// (FEAT-017). Widgets listen via [ListenableBuilder].
   final GenerationJobManager jobManager;
+
+  /// Manages the user-chosen vault folder and migration from legacy storage.
+  final VaultService vaultService;
 
   static ArkMaskServices of(BuildContext context) {
     final result = context.dependOnInheritedWidgetOfExactType<ArkMaskServices>();

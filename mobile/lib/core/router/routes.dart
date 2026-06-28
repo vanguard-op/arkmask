@@ -4,6 +4,11 @@
 /// path strings in widget code. Route guards (auth, provider setup) are
 /// implemented as [GoRouter.redirect] callbacks in router.dart.
 abstract final class Routes {
+  // ── Vault ──────────────────────────────────────────────────────────────────
+
+  /// Vault Setup Screen — shown on first launch and from Settings (FEAT-vault).
+  static const String vaultSetup = '/vault-setup';
+
   // ── Auth ───────────────────────────────────────────────────────────────────
 
   /// Splash / Welcome Screen — app entry point and auth router.

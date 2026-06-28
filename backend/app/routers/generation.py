@@ -95,12 +95,14 @@ router = APIRouter(tags=["generation"])
 logger = logging.getLogger(__name__)
 
 # Credit costs per endpoint (see architecture.md provider model mapping).
+# DEV BYPASS: all costs set to 0 so generation works without a balance.
+# Restore real values before going to production.
 CREDIT_COSTS: dict[str, int] = {
-    "/assets": 1,
-    "/image-prompt": 1,
-    "/video-prompt": 3,
-    "/image": 5,
-    "/video": 20,
+    "/assets": 0,
+    "/image-prompt": 0,
+    "/video-prompt": 0,
+    "/image": 0,
+    "/video": 0,
 }
 
 

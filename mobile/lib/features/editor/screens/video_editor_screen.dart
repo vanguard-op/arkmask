@@ -9,6 +9,7 @@ import '../../../core/router/routes.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../../core/models/models.dart';
 import '../cubit/editor_cubit.dart';
 import '../cubit/editor_state.dart';
 
@@ -508,7 +509,13 @@ class _TimelineZone extends StatelessWidget {
     final children = <Widget>[];
     for (var i = 0; i < state.clips.length; i++) {
       if (i > 0) {
-        children.add(const _TransitionIndicator(width: _transitionWidth));
+        // Gap index = i - 1 (gap 0 is between clips 0 and 1).
+        final gapIndex = i - 1;
+        children.add(_TransitionIndicator(
+          width: _transitionWidth,
+          gapIndex: gapIndex,
+          currentType: state.transitionAt(gapIndex),
+        ));
       }
       children.add(_ClipBlock(
         clip: state.clips[i],
@@ -865,37 +872,112 @@ class _NoVideoPlaceholder extends StatelessWidget {
 }
 
 class _TransitionIndicator extends StatelessWidget {
-  const _TransitionIndicator({required this.width});
+  const _TransitionIndicator({
+    required this.width,
+    required this.gapIndex,
+    required this.currentType,
+  });
+
   final double width;
+  final int gapIndex;
+  final TransitionType currentType;
 
   @override
   Widget build(BuildContext context) {
     final isDark = _isDark(context);
-    return SizedBox(
-      width: width,
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            LucideIcons.scissors,
-            size: 12,
-            color: isDark
-                ? AppColors.textTertiaryDark
-                : AppColors.textTertiaryLight,
-          ),
-          Text(
-            'Cut',
-            style: AppTextStyles.caption(context).copyWith(
-              fontSize: 9,
-              color: isDark
-                  ? AppColors.textTertiaryDark
-                  : AppColors.textTertiaryLight,
+    final color = isDark ? AppColors.textTertiaryDark : AppColors.textTertiaryLight;
+    final activeColor = isDark ? AppColors.primaryDark : AppColors.primaryLight;
+    final isActive = currentType != TransitionType.hardCut;
+
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => _showTransitionPicker(context),
+      child: SizedBox(
+        width: width,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              isActive ? LucideIcons.blend : LucideIcons.scissors,
+              size: 12,
+              color: isActive ? activeColor : color,
             ),
-          ),
-        ],
+            Text(
+              currentType.shortLabel,
+              style: AppTextStyles.caption(context).copyWith(
+                fontSize: 8,
+                color: isActive ? activeColor : color,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
+
+  Future<void> _showTransitionPicker(BuildContext context) async {
+    final cubit = context.read<EditorCubit>();
+    final isDark = _isDark(context);
+
+    await showModalBottomSheet<void>(
+      context: context,
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
+                  AppSpacing.s4, AppSpacing.s4, AppSpacing.s4, AppSpacing.s2),
+              child: Text(
+                'Transition',
+                style: AppTextStyles.h3(context),
+              ),
+            ),
+            ...TransitionType.values.map((type) {
+              final isSelected = currentType == type;
+              return ListTile(
+                leading: Icon(
+                  _iconFor(type),
+                  size: AppSizing.iconMd,
+                  color: isSelected
+                      ? (isDark ? AppColors.primaryDark : AppColors.primaryLight)
+                      : null,
+                ),
+                title: Text(
+                  type.label,
+                  style: AppTextStyles.body(context).copyWith(
+                    color: isSelected
+                        ? (isDark ? AppColors.primaryDark : AppColors.primaryLight)
+                        : null,
+                    fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+                  ),
+                ),
+                trailing: isSelected
+                    ? Icon(LucideIcons.check,
+                        size: AppSizing.iconSm,
+                        color: isDark
+                            ? AppColors.primaryDark
+                            : AppColors.primaryLight)
+                    : null,
+                onTap: () {
+                  cubit.setTransition(gapIndex, type);
+                  Navigator.pop(context);
+                },
+              );
+            }),
+            const SizedBox(height: AppSpacing.s2),
+          ],
+        ),
+      ),
+    );
+  }
+
+  IconData _iconFor(TransitionType type) => switch (type) {
+        TransitionType.hardCut => LucideIcons.scissors,
+        TransitionType.fadeBlack => LucideIcons.moon,
+        TransitionType.dissolve => LucideIcons.blend,
+      };
 }
 
 // ── Zone 3: Clip Detail Panel ─────────────────────────────────────────────────

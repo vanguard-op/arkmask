@@ -9,7 +9,7 @@ plugins {
 
 android {
     namespace = "com.arkmask.ark_mask"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

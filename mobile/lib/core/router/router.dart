@@ -11,9 +11,13 @@ import '../../features/projects/screens/home_screen.dart';
 import '../../features/projects/screens/project_file_browser_screen.dart';
 import '../../features/provider_setup/screens/provider_setup_screen.dart';
 import '../../features/settings/screens/settings_screen.dart';
+import '../../features/usage/screens/usage_screen.dart';
+import '../../features/vault_setup/screens/vault_setup_screen.dart';
 import '../../features/scene/screens/scene_detail_screen.dart';
 import '../../features/story/screens/story_editor_screen.dart';
+import '../filesystem/project_file_service.dart';
 import '../storage/secure_storage_service.dart';
+import '../vault/vault_service.dart';
 import 'routes.dart';
 
 /// Placeholder screen for Phase 2+ routes that are declared in the skeleton
@@ -36,9 +40,13 @@ class _PlaceholderScreen extends StatelessWidget {
 
 /// Builds the [GoRouter] for ArkMask.
 ///
-/// Guards:
-/// 1. **Auth guard** — unauthenticated users are redirected to `/`.
-/// 2. **Provider guard** — authenticated users without a provider key are
+/// Guards (evaluated in order on every navigation):
+/// 1. **Vault guard** — redirects to `/vault-setup` until the user has chosen
+///    a vault folder. Also lazily initializes [VaultService] and
+///    [ProjectFileService] on the first navigation so the router can be
+///    constructed synchronously in [initState].
+/// 2. **Auth guard** — unauthenticated users are redirected to `/`.
+/// 3. **Provider guard** — authenticated users without a provider key are
 ///    redirected to `/provider-setup` before accessing `/home` or deeper routes.
 ///
 /// The [FirebaseAuth] stream is used as a listenable so the router re-evaluates
@@ -46,15 +54,35 @@ class _PlaceholderScreen extends StatelessWidget {
 GoRouter buildRouter({
   required SecureStorageService storage,
   required FirebaseAuth firebaseAuth,
+  required VaultService vaultService,
+  required ProjectFileService fileService,
 }) {
   return GoRouter(
     initialLocation: Routes.splash,
     refreshListenable: _AuthNotifier(firebaseAuth),
     redirect: (context, state) async {
-      final isSignedIn = firebaseAuth.currentUser != null;
       final loc = state.matchedLocation;
 
-      // Allow all auth screens without checks.
+      // ── 1. Vault guard ────────────────────────────────────────────────────
+      // Initialize the vault service once (idempotent) and, if a vault path
+      // is known, initialize the file service with it.
+      if (!vaultService.isInitialized) {
+        await vaultService.initialize();
+        if (vaultService.isConfigured) {
+          await fileService.initialize(vaultService.vaultPath!);
+        }
+      }
+
+      final isVaultScreen = loc == Routes.vaultSetup;
+      if (!vaultService.isConfigured && !isVaultScreen) {
+        return Routes.vaultSetup;
+      }
+      // Allow vault setup screen to be reached freely.
+      if (isVaultScreen) return null;
+
+      // ── 2. Auth guard ─────────────────────────────────────────────────────
+      final isSignedIn = firebaseAuth.currentUser != null;
+
       final isAuthScreen = loc == Routes.splash ||
           loc == Routes.login ||
           loc == Routes.register ||
@@ -64,8 +92,8 @@ GoRouter buildRouter({
         return Routes.splash;
       }
 
+      // ── 3. Provider guard ─────────────────────────────────────────────────
       if (isSignedIn && !isAuthScreen) {
-        // Ensure provider credentials are set before deeper routes.
         final hasProvider = await storage.hasProviderCredentials();
         if (!hasProvider && loc != Routes.settings) {
           return Routes.providerSetup;
@@ -75,6 +103,13 @@ GoRouter buildRouter({
       return null; // no redirect
     },
     routes: [
+      GoRoute(
+        path: Routes.vaultSetup,
+        builder: (context, state) {
+          final isChange = state.uri.queryParameters['mode'] == 'change';
+          return VaultSetupScreen(isChange: isChange);
+        },
+      ),
       GoRoute(
         path: Routes.splash,
         builder: (context, state) => const SplashScreen(),
@@ -175,7 +210,7 @@ GoRouter buildRouter({
       ),
       GoRoute(
         path: Routes.usage,
-        builder: (context, state) => const _PlaceholderScreen(title: 'Usage Dashboard'),
+        builder: (context, state) => const UsageScreen(),
       ),
     ],
   );

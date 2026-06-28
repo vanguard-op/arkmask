@@ -67,6 +67,31 @@ class SettingsCubit extends Cubit<SettingsState> {
     emit(s.copyWith(platformKeyRevealed: !s.platformKeyRevealed));
   }
 
+  /// Regenerates the platform API key (FEAT-025).
+  ///
+  /// Calls the backend, saves the new key to secure storage, and updates the
+  /// masked display. Emits an error snackbar if the request fails.
+  Future<void> regenerateKey() async {
+    if (state is! SettingsLoaded) return;
+    final s = state as SettingsLoaded;
+    emit(s.copyWith(isRegeneratingKey: true));
+    try {
+      final newKey = await apiClient.regenerateApiKey();
+      await storage.savePlatformApiKey(newKey);
+      emit((state as SettingsLoaded).copyWith(
+        isRegeneratingKey: false,
+        platformKeyMasked: _maskKey(newKey),
+        platformKeyRevealed: false,
+      ));
+    } catch (_) {
+      // Restore the non-loading state; the screen surfaces the error via listener.
+      if (state is SettingsLoaded) {
+        emit((state as SettingsLoaded).copyWith(isRegeneratingKey: false));
+      }
+      rethrow;
+    }
+  }
+
   /// Signs out — clears credentials and emits [SettingsSignedOut].
   Future<void> signOut() async {
     if (state is! SettingsLoaded) return;

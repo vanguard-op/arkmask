@@ -22,6 +22,7 @@ final class SettingsLoaded extends SettingsState {
     this.creditBalance,
     this.tier,
     this.isSigningOut = false,
+    this.isRegeneratingKey = false,
   });
 
   /// Masked display (e.g. "ark_••••••••1234").
@@ -35,6 +36,9 @@ final class SettingsLoaded extends SettingsState {
   final UserTier? tier;
   final bool isSigningOut;
 
+  /// True while the platform API key regeneration request is in flight.
+  final bool isRegeneratingKey;
+
   SettingsLoaded copyWith({
     String? platformKeyMasked,
     bool? platformKeyRevealed,
@@ -42,6 +46,7 @@ final class SettingsLoaded extends SettingsState {
     int? creditBalance,
     UserTier? tier,
     bool? isSigningOut,
+    bool? isRegeneratingKey,
   }) =>
       SettingsLoaded(
         platformKeyMasked: platformKeyMasked ?? this.platformKeyMasked,
@@ -50,6 +55,7 @@ final class SettingsLoaded extends SettingsState {
         creditBalance: creditBalance ?? this.creditBalance,
         tier: tier ?? this.tier,
         isSigningOut: isSigningOut ?? this.isSigningOut,
+        isRegeneratingKey: isRegeneratingKey ?? this.isRegeneratingKey,
       );
 
   @override
@@ -60,6 +66,7 @@ final class SettingsLoaded extends SettingsState {
         creditBalance,
         tier,
         isSigningOut,
+        isRegeneratingKey,
       ];
 }
 

@@ -255,9 +255,17 @@ enum TransitionType {
   fadeBlack,
   dissolve;
 
+  /// Full display name shown in the transition picker.
   String get label => switch (this) {
-        hardCut => 'Cut',
+        hardCut => 'Hard Cut',
         fadeBlack => 'Fade to Black',
         dissolve => 'Dissolve',
+      };
+
+  /// Abbreviated label shown on the small timeline indicator (≤ 4 chars).
+  String get shortLabel => switch (this) {
+        hardCut => 'Cut',
+        fadeBlack => 'Fade',
+        dissolve => 'Dslv',
       };
 }

@@ -1,7 +1,6 @@
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 import 'package:yaml/yaml.dart';
 
 import '../models/models.dart';
@@ -11,41 +10,62 @@ final _invalidNameChars = RegExp(r'[/\\:*?"<>|]');
 
 /// On-device filesystem operations for ArkMask projects.
 ///
-/// All project files live under `<AppDocuments>/arkmask_projects/`.
-/// The structure per project is:
+/// Projects live directly inside the user-chosen vault directory:
 /// ```
-/// <projectName>/
-///   story.mdx
-///   final.mp4          (written at export time)
-///   assets/
-///     <assetName>/
-///       prompt.mdx
-///       image.png      (optional — written after image generation)
-///   scenes/
-///     <N>/
-///       assets/
-///         <assetName>/
-///           prompt.mdx
-///           image.png  (optional)
-///       ark.mdx
-///       video.mp4      (optional — written after video generation)
+/// <vaultRoot>/
+///   <projectName>/
+///     story.mdx
+///     final.mp4          (written at export time)
+///     assets/
+///       <assetName>/
+///         prompt.mdx
+///         image.png      (optional — written after image generation)
+///     scenes/
+///       <N>/
+///         assets/
+///           <assetName>/
+///             prompt.mdx
+///             image.png  (optional)
+///         ark.mdx
+///         video.mp4      (optional — written after video generation)
 /// ```
+///
+/// The vault root path is set by calling [initialize] with the path chosen
+/// by the user in [VaultSetupScreen]. Call [reinitialize] when the vault is
+/// changed at runtime (e.g. from Settings).
 class ProjectFileService {
   ProjectFileService();
 
-  /// Root directory for all ArkMask project directories.
-  late final Directory _projectsRoot;
+  /// The vault root — all project directories live directly inside this.
+  late Directory _projectsRoot;
   bool _initialized = false;
 
-  /// Must be called once before using any other method.
-  Future<void> initialize() async {
+  /// The absolute path to the current vault root directory.
+  String get projectsRootPath {
+    _assertInit();
+    return _projectsRoot.path;
+  }
+
+  /// Initialises the service with [vaultRootPath] as the projects root.
+  ///
+  /// Creates the directory if it does not exist. Safe to call multiple times
+  /// with the same path — subsequent calls are no-ops.
+  Future<void> initialize(String vaultRootPath) async {
     if (_initialized) return;
-    final docs = await getApplicationDocumentsDirectory();
-    _projectsRoot = Directory(p.join(docs.path, 'arkmask_projects'));
+    _projectsRoot = Directory(vaultRootPath);
     if (!await _projectsRoot.exists()) {
       await _projectsRoot.create(recursive: true);
     }
     _initialized = true;
+  }
+
+  /// Switches the vault root to [vaultRootPath] at runtime.
+  ///
+  /// Called when the user changes the vault from Settings. Any cubits that
+  /// hold project data should be refreshed after this call.
+  Future<void> reinitialize(String vaultRootPath) async {
+    _initialized = false;
+    await initialize(vaultRootPath);
   }
 
   void _assertInit() {

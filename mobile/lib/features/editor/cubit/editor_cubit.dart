@@ -41,12 +41,13 @@ class EditorCubit extends Cubit<EditorState> {
   // ── Load ──────────────────────────────────────────────────────────────────
 
   /// Reads the project tree, initialises video controllers, restores persisted
-  /// trim states, and emits [EditorLoaded].
+  /// trim and transition states, and emits [EditorLoaded].
   Future<void> load(String projectName) async {
     emit(EditorLoading());
     try {
       final tree = await fileService.readProjectTree(projectName);
       final savedTrims = await _loadSavedTrims(projectName);
+      final savedTransitions = await _loadSavedTransitions(projectName);
 
       final clips = <ClipEntry>[];
 
@@ -96,6 +97,7 @@ class EditorCubit extends Cubit<EditorState> {
           clips: clips,
           projectDir: tree.directoryPath,
           projectName: projectName,
+          transitions: savedTransitions,
         ));
       }
     } catch (e) {
@@ -183,14 +185,14 @@ class EditorCubit extends Cubit<EditorState> {
     );
     final updated = _updateClipTrim(s.clips, clipIndex, reset);
     emit(s.copyWith(clips: updated));
-    _persistTrimState(s.projectName, updated);
+    _persistEditorState(s.projectName, updated, s.transitions);
   }
 
   /// Called when a trim drag ends — persists the current trim state.
   void onTrimDragEnd() {
     final s = state;
     if (s is! EditorLoaded) return;
-    _persistTrimState(s.projectName, s.clips);
+    _persistEditorState(s.projectName, s.clips, s.transitions);
   }
 
   // ── Playback ───────────────────────────────────────────────────────────────
@@ -231,6 +233,21 @@ class EditorCubit extends Cubit<EditorState> {
     return File(p.join(s.projectDir, 'final.mp4')).exists();
   }
 
+  // ── Transitions ───────────────────────────────────────────────────────────
+
+  /// Sets the transition type for the gap at [gapIndex] (0 = between clips 0
+  /// and 1). Persists the selection alongside trim state.
+  void setTransition(int gapIndex, TransitionType type) {
+    final s = state;
+    if (s is! EditorLoaded) return;
+    final updated = Map<int, TransitionType>.from(s.transitions)
+      ..[gapIndex] = type;
+    emit(s.copyWith(transitions: updated));
+    _persistEditorState(s.projectName, s.clips, updated);
+  }
+
+  // ── Export ────────────────────────────────────────────────────────────────
+
   /// Runs FFmpeg filter_complex concat, saves to gallery, and emits progress.
   ///
   /// Use [checkExportFile] before calling this to ask the user about overwriting.
@@ -264,7 +281,7 @@ class EditorCubit extends Cubit<EditorState> {
     final outFile = File(outputPath);
     if (await outFile.exists()) await outFile.delete();
 
-    final command = _buildFfmpegCommand(validClips, outputPath);
+    final command = _buildFfmpegCommand(validClips, outputPath, s.transitions);
 
     // Estimate total frames (30 fps assumption) for progress reporting.
     final totalSec =
@@ -328,23 +345,33 @@ class EditorCubit extends Cubit<EditorState> {
 
   // ── Persistence ───────────────────────────────────────────────────────────
 
-  /// Persists the current trim state immediately. Useful when the user
-  /// navigates away (call from PopScope / dispose).
+  /// Persists the current trim and transition state immediately.
+  /// Useful when the user navigates away (called from PopScope / dispose).
   void persistCurrentTrimState() {
     final s = state;
     if (s is! EditorLoaded) return;
-    _persistTrimState(s.projectName, s.clips);
+    _persistEditorState(s.projectName, s.clips, s.transitions);
   }
 
-  Future<void> _persistTrimState(
-      String projectName, List<ClipEntry> clips) async {
+  /// Saves trim states and transition selections to [SharedPreferences].
+  Future<void> _persistEditorState(
+    String projectName,
+    List<ClipEntry> clips,
+    Map<int, TransitionType> transitions,
+  ) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final json =
-          jsonEncode(clips.map((c) => c.trimState.toJson()).toList());
-      await prefs.setString('trim_state_$projectName', json);
+      await prefs.setString(
+        'trim_state_$projectName',
+        jsonEncode(clips.map((c) => c.trimState.toJson()).toList()),
+      );
+      // Persist transitions as {gapIndex: typeName} map.
+      await prefs.setString(
+        'transition_state_$projectName',
+        jsonEncode(transitions.map((k, v) => MapEntry(k.toString(), v.name))),
+      );
     } catch (_) {
-      // Non-fatal — trim state will reset to defaults on next load.
+      // Non-fatal — state will reset to defaults on next load.
     }
   }
 
@@ -365,38 +392,168 @@ class EditorCubit extends Cubit<EditorState> {
     }
   }
 
+  Future<Map<int, TransitionType>> _loadSavedTransitions(
+      String projectName) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString('transition_state_$projectName');
+      if (raw == null) return {};
+      final map = jsonDecode(raw) as Map<String, dynamic>;
+      return {
+        for (final entry in map.entries)
+          int.parse(entry.key):
+              TransitionType.values.byName(entry.value as String),
+      };
+    } catch (_) {
+      return {};
+    }
+  }
+
   // ── FFmpeg ────────────────────────────────────────────────────────────────
 
-  String _buildFfmpegCommand(List<ClipEntry> clips, String outputPath) {
-    final sb = StringBuffer();
+  /// Builds the FFmpeg command for the export.
+  ///
+  /// All three transition types work without xfade (which silently outputs
+  /// black frames on AI-generated VFR clips):
+  ///
+  /// - **Hard Cut** — trim + concat, no filters.
+  /// - **Fade to Black** — `fade=out` on clip A tail + `fade=in` on clip B
+  ///   head, then concat.
+  /// - **Dissolve** — the tail of clip A and the head of clip B are trimmed
+  ///   into a separate overlap segment. Clip B's head is converted to RGBA and
+  ///   faded in from transparent, then overlaid on top of clip A's tail with
+  ///   `overlay`. The result is concatenated between clip A's body and clip B's
+  ///   body, giving a true simultaneous cross-dissolve without xfade.
+  String _buildFfmpegCommand(
+    List<ClipEntry> clips,
+    String outputPath,
+    Map<int, TransitionType> transitions,
+  ) {
+    // Pre-compute the transition duration for every gap.
+    // Clamped to 40 % of each adjacent clip so we never exceed clip length.
+    final gapFd = <int, double>{};
+    for (var g = 0; g < clips.length - 1; g++) {
+      final type = transitions[g] ?? TransitionType.hardCut;
+      if (type == TransitionType.hardCut) {
+        gapFd[g] = 0.0;
+      } else {
+        const desired = 0.5;
+        final dA = clips[g].trimmedDuration;
+        final dB = clips[g + 1].trimmedDuration;
+        gapFd[g] =
+            [desired, dA * 0.4, dB * 0.4].reduce((a, b) => a < b ? a : b);
+      }
+    }
 
-    // Input files
+    final sb = StringBuffer();
     for (final clip in clips) {
       sb.write('-i "${clip.videoPath}" ');
     }
-
     sb.write('-filter_complex "');
 
-    // Per-clip trim filters
+    // Output segment labels collected for the final concat.
+    final vLabels = <String>[];
+    final aLabels = <String>[];
+    var seg = 0; // increments for every output segment
+
     for (var i = 0; i < clips.length; i++) {
-      final trim = clips[i].trimState;
-      final inPt = trim.inPoint.toStringAsFixed(4);
-      final outPt = trim.outPoint.toStringAsFixed(4);
-      sb.write('[$i:v]trim=start=$inPt:end=$outPt,setpts=PTS-STARTPTS[v$i];');
-      sb.write('[$i:a]atrim=start=$inPt:end=$outPt,asetpts=PTS-STARTPTS[a$i];');
+      final trim   = clips[i].trimState;
+      final inPt   = trim.inPoint;
+      final outPt  = trim.outPoint;
+
+      final prevType = i > 0             ? (transitions[i - 1] ?? TransitionType.hardCut) : TransitionType.hardCut;
+      final nextType = i < clips.length - 1 ? (transitions[i]   ?? TransitionType.hardCut) : TransitionType.hardCut;
+
+      final prevFd = i > 0             ? gapFd[i - 1]! : 0.0;
+      final nextFd = i < clips.length - 1 ? gapFd[i]!   : 0.0;
+
+      // Body of this clip. Dissolve overlaps "consume" the ends, so shrink.
+      final bodyIn  = inPt  + (prevType == TransitionType.dissolve ? prevFd : 0.0);
+      final bodyOut = outPt - (nextType == TransitionType.dissolve ? nextFd : 0.0);
+
+      // Fade-to-black fades on the body (dissolve fades live in the blend seg).
+      final fadeInDur  = prevType == TransitionType.fadeBlack ? prevFd : 0.0;
+      final fadeOutDur = nextType == TransitionType.fadeBlack ? nextFd : 0.0;
+
+      // ── Body segment ──────────────────────────────────────────────────────
+      if (bodyOut > bodyIn + 0.001) {
+        final bodyDur = bodyOut - bodyIn;
+        final vl = 's${seg}v';
+        final al = 's${seg}a';
+        final inS  = bodyIn.toStringAsFixed(4);
+        final outS = bodyOut.toStringAsFixed(4);
+
+        final vFadeIn  = fadeInDur > 0
+            ? ',fade=t=in:st=0:d=${fadeInDur.toStringAsFixed(4)}'   : '';
+        final foSt     = (bodyDur - fadeOutDur).toStringAsFixed(4);
+        final vFadeOut = fadeOutDur > 0
+            ? ',fade=t=out:st=$foSt:d=${fadeOutDur.toStringAsFixed(4)}' : '';
+
+        sb.write('[$i:v]trim=start=$inS:end=$outS,setpts=PTS-STARTPTS'
+            '$vFadeIn$vFadeOut,format=yuv420p[$vl];');
+
+        final aFadeIn  = fadeInDur > 0
+            ? ',afade=t=in:st=0:d=${fadeInDur.toStringAsFixed(4)}'   : '';
+        final aFadeOut = fadeOutDur > 0
+            ? ',afade=t=out:st=$foSt:d=${fadeOutDur.toStringAsFixed(4)}' : '';
+
+        sb.write('[$i:a]atrim=start=$inS:end=$outS,asetpts=PTS-STARTPTS'
+            '$aFadeIn$aFadeOut[$al];');
+
+        vLabels.add('[$vl]');
+        aLabels.add('[$al]');
+        seg++;
+      }
+
+      // ── Dissolve segment (inserted between clip[i] body and clip[i+1] body) ─
+      // Overlay B (fading in from transparent) on top of A for the overlap
+      // duration — a true simultaneous cross-dissolve without xfade.
+      if (nextType == TransitionType.dissolve && i < clips.length - 1) {
+        final fd          = nextFd;
+        final fdS         = fd.toStringAsFixed(4);
+        final nextTrimSt  = clips[i + 1].trimState;
+        final tailInS     = (outPt - fd).toStringAsFixed(4);
+        final tailOutS    = outPt.toStringAsFixed(4);
+        final headInS     = nextTrimSt.inPoint.toStringAsFixed(4);
+        final headOutS    = (nextTrimSt.inPoint + fd).toStringAsFixed(4);
+        final vl = 's${seg}v';
+        final al = 's${seg}a';
+
+        // Video: A_tail at yuv420p (base) + B_head fading in as rgba (overlay).
+        // fps=30 normalises both streams to the same frame rate so overlay
+        // receives matching frame counts over the overlap duration.
+        sb.write('[$i:v]trim=start=$tailInS:end=$tailOutS,setpts=PTS-STARTPTS,'
+            'fps=30,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p[dv${seg}base];');
+        sb.write('[${i + 1}:v]trim=start=$headInS:end=$headOutS,setpts=PTS-STARTPTS,'
+            'fps=30,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=rgba,'
+            'fade=t=in:st=0:d=$fdS:alpha=1[dv${seg}top];');
+        sb.write('[dv${seg}base][dv${seg}top]overlay=format=auto,format=yuv420p[$vl];');
+
+        // Audio: A_tail fades out, B_head fades in, amix combines them.
+        sb.write('[$i:a]atrim=start=$tailInS:end=$tailOutS,asetpts=PTS-STARTPTS,'
+            'afade=t=out:st=0:d=$fdS[da${seg}a];');
+        sb.write('[${i + 1}:a]atrim=start=$headInS:end=$headOutS,asetpts=PTS-STARTPTS,'
+            'afade=t=in:st=0:d=$fdS[da${seg}b];');
+        sb.write('[da${seg}a][da${seg}b]amix=inputs=2:normalize=0:duration=longest[$al];');
+
+        vLabels.add('[$vl]');
+        aLabels.add('[$al]');
+        seg++;
+      }
     }
 
-    // Concat
-    final concatInputs =
-        List.generate(clips.length, (i) => '[v$i][a$i]').join('');
-    sb.write(
-        '${concatInputs}concat=n=${clips.length}:v=1:a=1[vout][aout]" ');
-
-    // Output
-    sb.write(
-        '-map [vout] -map [aout] -c:v libx264 -c:a aac -movflags +faststart ');
+    // Concat all collected segments — same proven path as hard-cut export.
+    final n     = vLabels.length;
+    final pairs = List.generate(n, (k) => '${vLabels[k]}${aLabels[k]}').join('');
+    sb.write('${pairs}concat=n=$n:v=1:a=1[vout][aout]" ');
+    // CRF 18 — near-source quality (default CRF 23 is noticeably softer than
+    // the high-bitrate clips produced by AI video generators).
+    // preset=fast balances encode speed vs compression on mobile hardware.
+    sb.write('-map [vout] -map [aout] '
+        '-c:v libx264 -crf 18 -preset fast '
+        '-c:a aac -b:a 192k '
+        '-movflags +faststart ');
     sb.write('"$outputPath"');
-
     return sb.toString();
   }
 

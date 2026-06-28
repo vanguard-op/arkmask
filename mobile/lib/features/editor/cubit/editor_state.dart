@@ -46,7 +46,8 @@ class EditorLoaded extends EditorState {
     this.exportProgress = 0.0,
     this.exportError,
     this.exportedFilePath,
-  });
+    Map<int, TransitionType>? transitions,
+  }) : transitions = transitions ?? const {};
 
   final List<ClipEntry> clips;
   final String projectDir;
@@ -57,11 +58,19 @@ class EditorLoaded extends EditorState {
   final String? exportError;
   final String? exportedFilePath;
 
+  /// Maps gap index → transition type. Gap 0 is between clips[0] and clips[1].
+  /// Absent entries default to [TransitionType.hardCut].
+  final Map<int, TransitionType> transitions;
+
   ClipEntry? get selectedClip =>
       selectedClipIndex != null ? clips[selectedClipIndex!] : null;
 
   double get totalTrimmedDuration =>
       clips.fold(0.0, (sum, c) => sum + c.trimmedDuration);
+
+  /// Returns the transition for gap [gapIndex], defaulting to hard cut.
+  TransitionType transitionAt(int gapIndex) =>
+      transitions[gapIndex] ?? TransitionType.hardCut;
 
   EditorLoaded copyWith({
     List<ClipEntry>? clips,
@@ -70,6 +79,7 @@ class EditorLoaded extends EditorState {
     double? exportProgress,
     Object? exportError = _sentinel,
     Object? exportedFilePath = _sentinel,
+    Map<int, TransitionType>? transitions,
   }) =>
       EditorLoaded(
         clips: clips ?? this.clips,
@@ -86,6 +96,7 @@ class EditorLoaded extends EditorState {
         exportedFilePath: identical(exportedFilePath, _sentinel)
             ? this.exportedFilePath
             : exportedFilePath as String?,
+        transitions: transitions ?? this.transitions,
       );
 }
 
