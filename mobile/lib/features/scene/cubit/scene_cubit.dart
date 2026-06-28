@@ -75,7 +75,8 @@ class SceneCubit extends Cubit<SceneState> {
       }
 
       final storyboard = await fileService.readArkMdx(sceneDirPath);
-      final sceneText = await fileService.readStory(projectName);
+      final fullStory = await fileService.readStory(projectName);
+      final sceneText = _extractSceneText(fullStory, sceneNumber);
       final hasVideo = await fileService.videoFileForScene(sceneDirPath).exists();
 
       emit(SceneLoaded(
@@ -366,6 +367,35 @@ class SceneCubit extends Cubit<SceneState> {
         ApiInsufficientCredits() => 'Insufficient credits',
         ApiUnauthorized() => 'Unauthorized',
       };
+
+  /// Extracts the body text for [sceneNumber] from the full `story.mdx` content.
+  ///
+  /// The story format uses `# N` headings as scene delimiters. Everything
+  /// between `# N` and the next `# N+1` heading (or end of file) is the
+  /// body for scene N.
+  static String _extractSceneText(String fullStory, int sceneNumber) {
+    // Split on lines starting with "# " followed by a number.
+    final lines = fullStory.split('\n');
+    final body = StringBuffer();
+    bool inScene = false;
+
+    for (final line in lines) {
+      final heading = RegExp(r'^#\s+(\d+)\s*$').firstMatch(line.trim());
+      if (heading != null) {
+        final n = int.parse(heading.group(1)!);
+        if (n == sceneNumber) {
+          inScene = true;
+          continue; // skip the heading line itself
+        } else if (inScene) {
+          break; // reached the next scene heading — stop
+        }
+      } else if (inScene) {
+        body.writeln(line);
+      }
+    }
+
+    return body.toString().trim();
+  }
 
   @override
   Future<void> close() {
