@@ -61,7 +61,6 @@ class EditorCubit extends Cubit<EditorState> {
           try {
             await ctrl.initialize();
             await ctrl.seekTo(Duration.zero);
-            await ctrl.setVolume(0);
             duration = ctrl.value.duration.inMilliseconds / 1000.0;
             _controllers[scene.sceneNumber] = ctrl;
           } catch (_) {
