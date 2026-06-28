@@ -140,9 +140,18 @@ class BytePlusProvider(AIProvider):
         Returns:
             Tuple of (raw PNG bytes, ``"image/png"``).
         """
+        # Seedream has no separate system-instruction field.  When reference
+        # images are attached, prepend the variant instruction to the prompt so
+        # the model knows to anchor its output to the provided visuals.
+        effective_prompt = (
+            f"{self.IMAGE_VARIANT_INSTRUCTION}\n\n---\n\n{prompt}"
+            if ref_images
+            else prompt
+        )
+
         kwargs: dict = dict(
             model=self.IMAGE_MODEL,
-            prompt=prompt,
+            prompt=effective_prompt,
             size="2K",
             response_format="url",
             watermark=False,

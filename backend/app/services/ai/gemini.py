@@ -147,14 +147,20 @@ class GeminiProvider(AIProvider):
             self.IMAGE_MODEL, len(ref_images),
         )
 
+        # Include a system instruction when reference images are attached so the
+        # model knows to treat them as authoritative visual references rather
+        # than ignoring or de-prioritising them.
+        config = types.GenerateContentConfig(
+            response_modalities=["IMAGE"],
+            safety_settings=self._SAFETY_SETTINGS,
+            system_instruction=self.IMAGE_VARIANT_INSTRUCTION if ref_images else None,
+        )
+
         try:
             response = self._client.models.generate_content(
                 model=self.IMAGE_MODEL,
                 contents=contents,
-                config=types.GenerateContentConfig(
-                    response_modalities=["IMAGE"],
-                    safety_settings=self._SAFETY_SETTINGS,
-                ),
+                config=config,
             )
         except Exception:
             logger.error("generate_image: generate_content raised an exception", exc_info=True)
