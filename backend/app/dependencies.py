@@ -42,8 +42,13 @@ def get_firebase_uid(authorization: str = Header(...)) -> str:
     try:
         claims = verify_id_token(id_token)
         return claims["uid"]
-    except Exception:
-        # Do not surface the raw exception — it may contain token content.
+    except Exception as e:
+        # Log the exception type and message but never the token itself.
+        logger.warning(
+            "Firebase token verification failed: %s — %s",
+            type(e).__name__,
+            str(e),
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Firebase ID token is invalid or expired.",

@@ -75,12 +75,16 @@ services:
       STORAGE_PRESIGN_BASE_URL: http://10.0.2.2:9000
       APP_ENV: local
       FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-arkmask-dev}
-      FIREBASE_CREDENTIALS_PATH: ${FIREBASE_CREDENTIALS_PATH:-}
+      # Absolute path inside the container where the service account JSON is mounted.
+      # The file is bind-mounted below; this env var tells the app where to find it.
+      FIREBASE_CREDENTIALS_PATH: /run/secrets/firebase-credentials.json
     ports:
       - "8000:8000"
     volumes:
       - ./app:/app/app          # hot-reload in dev
       - ./instructions:/app/instructions
+      # Mount the Firebase service account JSON (never committed — local file only).
+      - ./arkmask-firebase.json:/run/secrets/firebase-credentials.json:ro
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 volumes:

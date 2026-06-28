@@ -10,3 +10,4 @@ build/
 .mypy_cache/
 *.sqlite
 firebase-credentials.json
+arkmask-firebase.json
