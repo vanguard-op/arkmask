@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -265,11 +264,11 @@ class SceneCubit extends Cubit<SceneState> {
     ));
 
     try {
-      final refImages = await _buildVideoRefImages(s);
+      final refImageBytes = await _buildVideoRefImages(s);
 
       final jobId = await apiClient.generateVideo(
         prompt: s.storyboard.storyboardBody,
-        refImages: refImages,
+        refImageBytes: refImageBytes,
       );
 
       // Begin polling — runs even if the user navigates away.
@@ -302,9 +301,10 @@ class SceneCubit extends Cubit<SceneState> {
     }
   }
 
-  /// Builds the ref_images list for /video.
+  /// Builds the ref image byte lists for /video.
   ///
-  /// Each entry is `{data: <base64 string>, mime_type: 'image/png'}`.
+  /// Returns raw PNG bytes for each asset image — no base64 encoding needed
+  /// since /video now uses multipart/form-data (same as /image).
   ///
   /// Image sourcing per asset type (FEAT-013):
   /// - **Pass-through** (`@`-name, empty description): `resolvedDirPath` is
@@ -315,14 +315,13 @@ class SceneCubit extends Cubit<SceneState> {
   /// - **Local** (no `@`): own `image.png` from `resolvedDirPath` (= `dirPath`).
   ///
   /// Assets without an image file on disk are skipped silently.
-  Future<List<Map<String, String>>> _buildVideoRefImages(SceneLoaded s) async {
-    final result = <Map<String, String>>[];
+  Future<List<List<int>>> _buildVideoRefImages(SceneLoaded s) async {
+    final result = <List<int>>[];
 
     Future<void> addIfExists(String dirPath) async {
       final imageFile = File(p.join(dirPath, 'image.png'));
       if (!await imageFile.exists()) return;
-      final bytes = await imageFile.readAsBytes();
-      result.add({'data': base64Encode(bytes), 'mime_type': 'image/png'});
+      result.add(await imageFile.readAsBytes());
     }
 
     for (final asset in s.assets) {

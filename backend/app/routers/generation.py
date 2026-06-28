@@ -36,8 +36,6 @@ from app.schemas.generation import (
     VideoEnqueueResponse,
     VideoPromptRequest,
     VideoPromptResponse,
-    VideoRefImage,
-    VideoRequest,
     VideoStatusEnum,
     VideoStatusResponse,
 )
@@ -312,7 +310,8 @@ _jobs: dict[str, dict[str, Any]] = {}
 
 @router.post("/video", response_model=VideoEnqueueResponse)
 async def generate_video(
-    body: VideoRequest,
+    prompt: str = Form(...),
+    ref_images: list[UploadFile] = File(default=[]),
     user: User = Depends(get_current_user),
     provider: AIProvider = Depends(get_ai_provider),
     db: Session = Depends(get_db),
@@ -320,9 +319,9 @@ async def generate_video(
     """
     Enqueue a scene video generation job.
 
-    Accepts JSON with the storyboard prompt and asset reference images
-    (base64-encoded bytes). Pydantic decodes the base64 `data` fields
-    automatically.
+    Accepts multipart/form-data matching the /image endpoint pattern:
+    - `prompt`: the storyboard text (Form field)
+    - `ref_images`: asset reference images as file uploads (File fields)
 
     Returns a `job_id` immediately. The Flutter app polls
     `GET /video/{job_id}/status` every 10 seconds until `status = 'success'`
@@ -338,20 +337,20 @@ async def generate_video(
 
     logger.info(
         "/video received: user_id=%s prompt_len=%d ref_images=%d",
-        user.id, len(body.prompt), len(body.ref_images),
+        user.id, len(prompt), len(ref_images),
     )
 
-    # Convert schema VideoRefImages to the provider's RefImage type.
-    ref_images = [
-        RefImage(data=img.data, mime_type=img.mime_type)
-        for img in body.ref_images
+    # Read uploaded file bytes into RefImage objects for the provider.
+    ref = [
+        RefImage(data=await f.read(), mime_type=f.content_type or "image/png")
+        for f in ref_images
     ]
 
     async def _run_job():
         _jobs[job_id]["status"] = "running"
         try:
             video_bytes, mime_type = await asyncio.to_thread(
-                provider.generate_video, body.prompt, ref_images
+                provider.generate_video, prompt, ref
             )
             store = MediaStore()
             url = await asyncio.to_thread(store.save, video_bytes, mime_type)
