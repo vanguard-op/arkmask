@@ -171,9 +171,18 @@ GoRouter buildRouter({
           final assetDirPath = Uri.decodeComponent(
             state.pathParameters['assetPath'] ?? '',
           );
+          // conditioningPath is passed as a query parameter when navigating to
+          // a variant asset — it is the directory of the referenced asset whose
+          // image.png is attached as a visual conditioning input.
+          final rawConditioning = state.uri.queryParameters['conditioningPath'];
+          final conditioningDirPath =
+              rawConditioning != null && rawConditioning.isNotEmpty
+                  ? Uri.decodeComponent(rawConditioning)
+                  : null;
           return AssetEditorScreen(
             projectName: projectName,
             assetDirPath: assetDirPath,
+            conditioningDirPath: conditioningDirPath,
           );
         },
       ),

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:path/path.dart' as p;
 
@@ -13,15 +15,25 @@ import 'asset_editor_state.dart';
 /// Owns the read/write lifecycle for a single `prompt.mdx` file.
 /// Generation calls update the [GenerationJobManager] for cross-screen
 /// status visibility (FEAT-017).
+///
+/// [conditioningDirPath] is the directory of the referenced (global or prior-
+/// scene) asset whose `image.png` is sent as a visual conditioning input when
+/// generating an image for a variant asset. Null for global and local assets.
 class AssetEditorCubit extends Cubit<AssetEditorState> {
   AssetEditorCubit({
     required this.assetDirPath,
     required this.fileService,
     required this.apiClient,
     required this.jobManager,
+    this.conditioningDirPath,
   }) : super(const AssetEditorLoading());
 
   final String assetDirPath;
+
+  /// Path to the referenced asset directory used as a conditioning image source
+  /// for variant generation. Null when not a variant.
+  final String? conditioningDirPath;
+
   final ProjectFileService fileService;
   final ArkMaskApiClient apiClient;
   final GenerationJobManager jobManager;
@@ -160,7 +172,20 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
     ));
 
     try {
-      final gcsUrl = await apiClient.generateImage(promptBody: s.prompt.promptBody);
+      // For variant assets, load the conditioning image bytes from the
+      // referenced asset directory and attach them as visual reference inputs.
+      final refImageBytes = <List<int>>[];
+      if (conditioningDirPath != null) {
+        final condFile = File(p.join(conditioningDirPath!, 'image.png'));
+        if (await condFile.exists()) {
+          refImageBytes.add(await condFile.readAsBytes());
+        }
+      }
+
+      final gcsUrl = await apiClient.generateImage(
+        promptBody: s.prompt.promptBody,
+        refImageBytes: refImageBytes,
+      );
       final bytes = await apiClient.downloadBytes(gcsUrl);
       await fileService.saveImageToAssetDir(assetDirPath, bytes);
       jobManager.markDone(key);

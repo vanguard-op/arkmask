@@ -122,9 +122,24 @@ class ArkMaskApiClient {
 
   /// POST /image — generate a reference image for an asset.
   ///
+  /// [refImageBytes] is an optional list of raw PNG bytes to attach as
+  /// reference images (variant generation). When non-empty they are uploaded
+  /// as multipart files under the `ref_images` field so the backend AI
+  /// provider can use them as visual conditioning inputs.
+  ///
   /// Returns the GCS presigned URL (2-hour TTL) for downloading the image.
-  Future<String> generateImage({required String promptBody}) async {
-    final formData = FormData.fromMap({'prompt': promptBody});
+  Future<String> generateImage({
+    required String promptBody,
+    List<List<int>> refImageBytes = const [],
+  }) async {
+    final fields = <String, dynamic>{'prompt': promptBody};
+    for (final bytes in refImageBytes) {
+      // Dio MultipartFile.fromBytes attaches each image as a separate
+      // `ref_images` field — FastAPI receives them as list[UploadFile].
+      fields['ref_images'] = (fields['ref_images'] as List<MultipartFile>? ?? [])
+        ..add(MultipartFile.fromBytes(bytes, filename: 'ref.png', contentType: DioMediaType('image', 'png')));
+    }
+    final formData = FormData.fromMap(fields);
     final response = await _execute(
       () => _dio.post('/image', data: formData),
     );

@@ -26,10 +26,16 @@ class AssetEditorScreen extends StatelessWidget {
     super.key,
     required this.projectName,
     required this.assetDirPath,
+    this.conditioningDirPath,
   });
 
   final String projectName;
   final String assetDirPath;
+
+  /// Path to the referenced asset directory whose `image.png` is used as a
+  /// conditioning input during variant image generation. Null for non-variant
+  /// assets (global assets, pass-throughs, independent scene-local assets).
+  final String? conditioningDirPath;
 
   @override
   Widget build(BuildContext context) {
@@ -37,6 +43,7 @@ class AssetEditorScreen extends StatelessWidget {
     return BlocProvider(
       create: (_) => AssetEditorCubit(
         assetDirPath: assetDirPath,
+        conditioningDirPath: conditioningDirPath,
         fileService: services.fileService,
         apiClient: services.apiClient,
         jobManager: services.jobManager,

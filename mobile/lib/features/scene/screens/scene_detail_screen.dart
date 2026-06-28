@@ -542,8 +542,13 @@ class _MissingImagesBanner extends StatelessWidget {
           const SizedBox(height: AppSpacing.s2),
           ...missing.map((asset) => GestureDetector(
                 onTap: () => context.push(
-                  '/project/${Uri.encodeComponent(projectName)}'
-                  '/asset/${Uri.encodeComponent(asset.dirPath)}',
+                  Uri(
+                    path: '/project/${Uri.encodeComponent(projectName)}'
+                        '/asset/${Uri.encodeComponent(asset.dirPath)}',
+                    queryParameters: asset.conditioningDirPath != null
+                        ? {'conditioningPath': Uri.encodeComponent(asset.conditioningDirPath!)}
+                        : null,
+                  ).toString(),
                 ),
                 child: Padding(
                   padding: const EdgeInsets.only(top: AppSpacing.s1),
@@ -676,8 +681,13 @@ class _AssetRow extends StatelessWidget {
         child: InkWell(
           borderRadius: BorderRadius.circular(AppSizing.radiusSm),
           onTap: () => context.push(
-            '/project/${Uri.encodeComponent(projectName)}'
-            '/asset/${Uri.encodeComponent(editorPath)}',
+            Uri(
+              path: '/project/${Uri.encodeComponent(projectName)}'
+                  '/asset/${Uri.encodeComponent(editorPath)}',
+              queryParameters: asset.conditioningDirPath != null
+                  ? {'conditioningPath': Uri.encodeComponent(asset.conditioningDirPath!)}
+                  : null,
+            ).toString(),
           ),
           child: SizedBox(
             height: 56,
