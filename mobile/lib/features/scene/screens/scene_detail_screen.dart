@@ -715,8 +715,7 @@ class _AssetRow extends StatelessWidget {
                         ),
                         const SizedBox(height: 2),
                         _AssetBadge(
-                          isGlobal: asset.isGlobal,
-                          isPassThrough: asset.isPassThrough,
+                          asset: asset,
                           primaryColor: primaryColor,
                         ),
                       ],
@@ -778,27 +777,44 @@ class _AssetRow extends StatelessWidget {
 
 class _AssetBadge extends StatelessWidget {
   const _AssetBadge({
-    required this.isGlobal,
-    required this.isPassThrough,
+    required this.asset,
     required this.primaryColor,
   });
 
-  final bool isGlobal;
-  final bool isPassThrough;
+  final SceneAsset asset;
   final Color primaryColor;
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final isGlobalScope = isGlobal || isPassThrough;
 
-    final bgColor = isGlobalScope
-        ? primaryColor.withValues(alpha: 0.15)
-        : (isDark ? AppColors.surfaceOverlayDark : AppColors.surfaceOverlayLight);
-    final textColor = isGlobalScope
-        ? primaryColor
-        : (isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight);
-    final label = isGlobalScope ? 'Global' : 'Variant';
+    // Badge classification:
+    //   Global   — asset lives in the global pool, or is a pass-through ref
+    //              (delegates everything to a global/prior-scene asset)
+    //   Variant  — @-named asset that has its own description/prompt/image
+    //   Scene    — plain local asset with no reference
+    final bool isGlobalOrPassThrough =
+        asset.isGlobal || (asset.isPassThrough && asset.name.startsWith('@'));
+    final bool isVariant =
+        asset.name.startsWith('@') && asset.description.isNotEmpty;
+
+    final String label;
+    final Color bgColor;
+    final Color textColor;
+
+    if (isGlobalOrPassThrough) {
+      label = 'Global';
+      bgColor = primaryColor.withValues(alpha: 0.15);
+      textColor = primaryColor;
+    } else if (isVariant) {
+      label = 'Variant';
+      bgColor = isDark ? AppColors.surfaceOverlayDark : AppColors.surfaceOverlayLight;
+      textColor = isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight;
+    } else {
+      label = 'Scene';
+      bgColor = isDark ? AppColors.surfaceOverlayDark : AppColors.surfaceOverlayLight;
+      textColor = isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight;
+    }
 
     return Container(
       padding: const EdgeInsets.symmetric(
