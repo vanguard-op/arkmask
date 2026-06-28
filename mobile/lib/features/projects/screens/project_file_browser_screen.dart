@@ -222,7 +222,10 @@ class _TreeView extends StatelessWidget {
                 icon: LucideIcons.image,
                 depth: 2,
                 isSelected: state.selectedPath == asset.directoryPath,
-                badge: AssetReferenceBadge(isPassThrough: asset.isPassThrough),
+                badge: AssetReferenceBadge(
+                  assetName: asset.name,
+                  description: asset.description,
+                ),
                 steps: asset.isPassThrough
                     ? null
                     : [

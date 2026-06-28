@@ -128,16 +128,47 @@ class FileBrowserRow extends StatelessWidget {
 }
 
 /// Small pill badge for scene-local asset reference mode.
+///
+/// Badge logic:
+///   Global   — pass-through ref (@-name, empty description): uses referenced asset
+///   Variant  — @-name with own description/prompt/image
+///   Scene    — plain local asset (no @ prefix)
 class AssetReferenceBadge extends StatelessWidget {
-  const AssetReferenceBadge({super.key, required this.isPassThrough});
+  const AssetReferenceBadge({
+    super.key,
+    required this.assetName,
+    required this.description,
+  });
 
-  /// True = "Global" (using global image), false = "Variant" (own image).
-  final bool isPassThrough;
+  final String assetName;
+  final String description;
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final primaryColor = isDark ? AppColors.primaryDark : AppColors.primaryLight;
+
+    final bool isRef = assetName.startsWith('@');
+    final bool isPassThrough = isRef && description.isEmpty;
+    final bool isVariant = isRef && description.isNotEmpty;
+
+    final String label;
+    final Color bgColor;
+    final Color textColor;
+
+    if (isPassThrough) {
+      label = 'Global';
+      bgColor = isDark ? AppColors.primarySubtleDark : AppColors.primarySubtleLight;
+      textColor = primaryColor;
+    } else if (isVariant) {
+      label = 'Variant';
+      bgColor = isDark ? AppColors.surfaceOverlayDark : AppColors.surfaceOverlayLight;
+      textColor = isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight;
+    } else {
+      label = 'Scene';
+      bgColor = isDark ? AppColors.surfaceOverlayDark : AppColors.surfaceOverlayLight;
+      textColor = isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight;
+    }
 
     return Container(
       padding: const EdgeInsets.symmetric(
@@ -145,17 +176,13 @@ class AssetReferenceBadge extends StatelessWidget {
         vertical: 2,
       ),
       decoration: BoxDecoration(
-        color: isPassThrough
-            ? (isDark ? AppColors.primarySubtleDark : AppColors.primarySubtleLight)
-            : (isDark ? AppColors.surfaceOverlayDark : AppColors.surfaceOverlayLight),
+        color: bgColor,
         borderRadius: BorderRadius.circular(AppSizing.radiusXs),
       ),
       child: Text(
-        isPassThrough ? 'Global' : 'Variant',
+        label,
         style: AppTextStyles.caption(context).copyWith(
-          color: isPassThrough
-              ? primaryColor
-              : (isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight),
+          color: textColor,
           fontSize: 10,
         ),
       ),
