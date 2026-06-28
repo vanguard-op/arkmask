@@ -212,7 +212,8 @@ class GeminiProvider(AIProvider):
                 number_of_videos=1,
                 duration_seconds=8,
                 enhance_prompt=True,
-                generate_audio=True,
+                # generate_audio is only supported in Gemini Enterprise /
+                # Vertex AI mode — not available in the standard Developer API.
             ),
         )
 
