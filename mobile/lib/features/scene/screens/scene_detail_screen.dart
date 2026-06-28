@@ -410,8 +410,9 @@ class _AssetsTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final missing = state.missingVariantAssets;
-    final hasMissing = missing.isNotEmpty;
+    final missingImages = state.missingVariantAssets;
+    final missingPrompts = state.missingPromptAssets;
+    final hasMissing = missingImages.isNotEmpty || missingPrompts.isNotEmpty;
 
     return Column(
       children: [
@@ -440,12 +441,21 @@ class _AssetsTab extends StatelessWidget {
               ),
               const SizedBox(height: AppSpacing.s3),
 
-              // Warning banner.
-              if (hasMissing)
+              // Missing images warning.
+              if (missingImages.isNotEmpty)
                 _MissingImagesBanner(
-                  missing: missing,
+                  missing: missingImages,
                   projectName: projectName,
                 ),
+
+              // Missing prompts warning.
+              if (missingPrompts.isNotEmpty) ...[
+                if (missingImages.isNotEmpty) const SizedBox(height: AppSpacing.s2),
+                _MissingPromptsBanner(
+                  missing: missingPrompts,
+                  projectName: projectName,
+                ),
+              ],
 
               // Asset list.
               if (state.assets.isEmpty)
@@ -480,7 +490,7 @@ class _AssetsTab extends StatelessWidget {
         // Generate Storyboard button pinned to bottom.
         _GenerateStoryboardButton(
           state: state,
-          hasMissing: hasMissing,
+          isBlocked: hasMissing,
         ),
       ],
     );
@@ -539,7 +549,83 @@ class _MissingImagesBanner extends StatelessWidget {
                 child: Padding(
                   padding: const EdgeInsets.only(top: AppSpacing.s1),
                   child: Text(
-                    asset.name,
+                    asset.displayName,
+                    style: AppTextStyles.bodySmall(context).copyWith(
+                      color: isDark ? AppColors.primaryDark : AppColors.primaryLight,
+                      decoration: TextDecoration.underline,
+                      decorationColor:
+                          isDark ? AppColors.primaryDark : AppColors.primaryLight,
+                    ),
+                  ),
+                ),
+              )),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Missing prompts warning banner ────────────────────────────────────────────
+
+class _MissingPromptsBanner extends StatelessWidget {
+  const _MissingPromptsBanner({
+    required this.missing,
+    required this.projectName,
+  });
+
+  final List<SceneAsset> missing;
+  final String projectName;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final warningColor = isDark ? AppColors.warningDark : AppColors.warningLight;
+    final surfaceOverlay =
+        isDark ? AppColors.surfaceOverlayDark : AppColors.surfaceOverlayLight;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: AppSpacing.s3),
+      decoration: BoxDecoration(
+        color: surfaceOverlay,
+        borderRadius: BorderRadius.circular(AppSizing.radiusMd),
+        border: Border(left: BorderSide(color: warningColor, width: 3)),
+      ),
+      padding: const EdgeInsets.all(AppSpacing.s3),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(LucideIcons.triangleAlert,
+                  size: AppSizing.iconSm, color: warningColor),
+              const SizedBox(width: AppSpacing.s2),
+              Expanded(
+                child: Text(
+                  '${missing.length} asset${missing.length == 1 ? '' : 's'} '
+                  '${missing.length == 1 ? 'has' : 'have'} no image prompt. '
+                  'Generate a prompt for each asset first.',
+                  style: AppTextStyles.bodySmall(context)
+                      .copyWith(color: warningColor),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: AppSpacing.s2),
+          ...missing.map((asset) => GestureDetector(
+                onTap: () {
+                  // Navigate to the asset's editor so the user can generate a prompt.
+                  final dirPath = asset.isPassThrough
+                      ? asset.dirPath // global dir resolved during load
+                      : asset.dirPath;
+                  context.push(
+                    '/project/${Uri.encodeComponent(projectName)}'
+                    '/asset/${Uri.encodeComponent(dirPath)}',
+                  );
+                },
+                child: Padding(
+                  padding: const EdgeInsets.only(top: AppSpacing.s1),
+                  child: Text(
+                    asset.displayName,
                     style: AppTextStyles.bodySmall(context).copyWith(
                       color: isDark ? AppColors.primaryDark : AppColors.primaryLight,
                       decoration: TextDecoration.underline,
@@ -762,18 +848,20 @@ class _SceneTextTile extends StatelessWidget {
 class _GenerateStoryboardButton extends StatelessWidget {
   const _GenerateStoryboardButton({
     required this.state,
-    required this.hasMissing,
+    required this.isBlocked,
   });
 
   final SceneLoaded state;
-  final bool hasMissing;
+
+  /// True when missing images or missing prompts block storyboard generation.
+  final bool isBlocked;
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final primaryColor = isDark ? AppColors.primaryDark : AppColors.primaryLight;
     final isGenerating = state.isGeneratingStoryboard;
-    final isDisabled = hasMissing || isGenerating;
+    final isDisabled = isBlocked || isGenerating;
     final hasExisting = state.storyboard.storyboardBody.isNotEmpty;
 
     final button = ElevatedButton(
@@ -828,9 +916,9 @@ class _GenerateStoryboardButton extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (hasMissing)
+            if (isBlocked)
               Tooltip(
-                message: 'Add reference images to all variant assets first.',
+                message: 'Resolve all warnings above before generating a storyboard.',
                 child: button,
               )
             else

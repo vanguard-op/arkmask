@@ -48,20 +48,35 @@ class SceneCubit extends Cubit<SceneState> {
       final sceneDirPath = sceneNode.directoryPath;
       final projectDir = p.dirname(p.dirname(sceneDirPath)); // scenes/N → scenes → project
 
-      // Build scene assets with resolved image availability.
+      // Build scene assets with resolved image and prompt availability.
       final assets = <SceneAsset>[];
       for (final node in sceneNode.assets) {
         final isPassThrough = node.isPassThrough;
-        bool hasImage;
+        final lastName = node.name.contains('/') ? node.name.split('/').last : node.name;
 
+        // ── Image resolution ──────────────────────────────────────────────────
+        bool hasImage;
         if (isPassThrough) {
-          // Global pass-through: resolve image from global assets dir.
-          final lastSegment = node.name.contains('/') ? node.name.split('/').last : node.name;
-          final globalImagePath = p.join(projectDir, 'assets', lastSegment, 'image.png');
+          final globalImagePath = p.join(projectDir, 'assets', lastName, 'image.png');
           hasImage = await File(globalImagePath).exists();
         } else {
           hasImage = await fileService.imageFileForAsset(node.directoryPath).exists();
         }
+
+        // ── Prompt resolution ─────────────────────────────────────────────────
+        // 1. Try the asset's own prompt.mdx body.
+        // 2. If empty and this is a pass-through, try the global asset's prompt.
+        // 3. If still empty → not ready (resolvedPrompt stays '').
+        String resolvedPrompt = '';
+        final ownPrompt = await fileService.readAssetPrompt(node.directoryPath);
+        if (ownPrompt.promptBody.trim().isNotEmpty) {
+          resolvedPrompt = ownPrompt.promptBody.trim();
+        } else if (isPassThrough) {
+          final globalDirPath = p.join(projectDir, 'assets', lastName);
+          final globalPrompt = await fileService.readAssetPrompt(globalDirPath);
+          resolvedPrompt = globalPrompt.promptBody.trim();
+        }
+        // If resolvedPrompt is still '' → asset is not ready.
 
         assets.add(SceneAsset(
           name: node.name,
@@ -71,6 +86,7 @@ class SceneCubit extends Cubit<SceneState> {
           isPassThrough: isPassThrough,
           type: node.type,
           description: node.description,
+          resolvedPrompt: resolvedPrompt,
         ));
       }
 
@@ -132,8 +148,7 @@ class SceneCubit extends Cubit<SceneState> {
     ));
 
     try {
-      final projectDir = p.dirname(p.dirname(s.sceneDirPath));
-      final assets = await _buildAssetPromptList(s, projectDir);
+      final assets = _buildAssetPromptList(s);
 
       final storyboardBody = await apiClient.generateVideoPrompt(
         scene: s.sceneText,
@@ -183,29 +198,19 @@ class SceneCubit extends Cubit<SceneState> {
     }
   }
 
-  /// Builds the asset list for /video-prompt: each asset's name + prompt body
-  /// read from its prompt.mdx. Assets without a prompt body are skipped.
-  Future<List<Map<String, String>>> _buildAssetPromptList(
-    SceneLoaded s,
-    String projectDir,
-  ) async {
-    final result = <Map<String, String>>[];
-    for (final asset in s.assets) {
-      // Resolve the directory where prompt.mdx lives.
-      // Pass-through assets reference the global asset dir.
-      final assetDirPath = asset.isPassThrough
-          ? p.join(projectDir, 'assets', asset.name.split('/').last)
-          : asset.dirPath;
-
-      final prompt = await fileService.readAssetPrompt(assetDirPath);
-      if (prompt.promptBody.trim().isEmpty) continue;
-
-      result.add({
-        'name': asset.name.split('/').last, // display name without @/scenes/N/ prefix
-        'prompt': prompt.promptBody.trim(),
-      });
-    }
-    return result;
+  /// Builds the asset list for /video-prompt using already-resolved prompts.
+  ///
+  /// Only called after [canGenerateStoryboard] is confirmed true, so every
+  /// asset is guaranteed to have a non-empty [resolvedPrompt].
+  List<Map<String, String>> _buildAssetPromptList(SceneLoaded s) {
+    return [
+      for (final asset in s.assets)
+        if (asset.isPromptReady)
+          {
+            'name': asset.displayName,
+            'prompt': asset.resolvedPrompt,
+          },
+    ];
   }
 
   // ── Generate Video (FEAT-016) ─────────────────────────────────────────────

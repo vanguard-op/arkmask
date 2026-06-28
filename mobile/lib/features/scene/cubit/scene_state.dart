@@ -10,6 +10,7 @@ class SceneAsset {
     required this.isPassThrough,
     required this.type,
     required this.description,
+    required this.resolvedPrompt,
   });
 
   /// Display name (from prompt.mdx frontmatter; may start with `@/`).
@@ -31,6 +32,21 @@ class SceneAsset {
 
   final AssetType? type;
   final String description;
+
+  /// The prompt body to send to /video-prompt, resolved as follows:
+  /// - Own prompt body if non-empty.
+  /// - Referenced global asset's prompt body if this is a pass-through.
+  /// - Empty string if neither is available (asset is not ready).
+  final String resolvedPrompt;
+
+  /// True when a prompt body has been resolved and the asset is ready for
+  /// storyboard generation. False means the user still needs to generate
+  /// a prompt for this asset (or its referenced global asset).
+  bool get isPromptReady => resolvedPrompt.isNotEmpty;
+
+  /// Short display name — strips the `@/scenes/N/` prefix for references.
+  String get displayName =>
+      name.contains('/') ? name.split('/').last : name;
 }
 
 // ── States ─────────────────────────────────────────────────────────────────────
@@ -80,9 +96,19 @@ class SceneLoaded extends SceneState {
   /// sentinel for the credit-exhaustion dialog.
   final String? videoError;
 
-  /// Number of variant assets (non-empty description) that are missing an image.
+  /// Variant assets (non-empty description) that are missing a generated image.
   List<SceneAsset> get missingVariantAssets =>
       assets.where((a) => !a.isPassThrough && !a.hasImage).toList();
+
+  /// Assets that do not have a usable prompt body — either own prompt is empty
+  /// and there is no referenced global prompt to fall back to. Storyboard
+  /// generation is blocked until this list is empty.
+  List<SceneAsset> get missingPromptAssets =>
+      assets.where((a) => !a.isPromptReady).toList();
+
+  /// True when all preconditions for storyboard generation are met.
+  bool get canGenerateStoryboard =>
+      missingVariantAssets.isEmpty && missingPromptAssets.isEmpty;
 
   SceneLoaded copyWith({
     SceneStoryboard? storyboard,
