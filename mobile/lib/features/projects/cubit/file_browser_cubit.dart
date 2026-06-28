@@ -1,4 +1,7 @@
+import 'dart:io';
+
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:path/path.dart' as p;
 
 import '../../../core/filesystem/project_file_service.dart';
 import 'file_browser_state.dart';
@@ -12,14 +15,17 @@ class FileBrowserCubit extends Cubit<FileBrowserState> {
 
   final ProjectFileService fileService;
 
-  /// Loads the project file tree from device storage.
+  /// Loads the project file tree and storage size from device storage (FEAT-027).
   Future<void> load(String projectName) async {
     emit(const FileBrowserLoading());
     try {
       final tree = await fileService.readProjectTree(projectName);
+      final projectDir = Directory(p.join(fileService.projectsRootPath, projectName));
+      final totalSizeBytes = await fileService.computeDirectorySize(projectDir);
       emit(FileBrowserLoaded(
         tree: tree,
         expandedPaths: const {},
+        totalSizeBytes: totalSizeBytes,
       ));
     } catch (e) {
       emit(FileBrowserError(message: 'Failed to read project: $e'));

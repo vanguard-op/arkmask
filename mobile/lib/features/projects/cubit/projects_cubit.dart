@@ -62,6 +62,28 @@ class ProjectsCubit extends Cubit<ProjectsState> {
     }
   }
 
+  /// Renames a project and updates the list in place (FEAT-028).
+  ///
+  /// Shows a [SnackBar] on failure so the user knows the operation did not
+  /// complete — the list is not modified when an error occurs.
+  Future<void> renameProject(String oldName, String newName) async {
+    if (state is! ProjectsLoaded) return;
+    final current = state as ProjectsLoaded;
+
+    try {
+      final updated = await fileService.renameProject(oldName, newName);
+      final updatedList = current.projects
+          .map((p) => p.name == oldName ? updated : p)
+          .toList();
+      emit(current.copyWith(projects: updatedList));
+    } catch (e) {
+      // Re-emit the same state so the UI can surface the error via SnackBar.
+      emit(current.copyWith(renameError: e.toString(), clearRenameError: false));
+      // Immediately clear the error flag so it is consumed only once.
+      emit((state as ProjectsLoaded).copyWith(clearRenameError: true));
+    }
+  }
+
   /// Refreshes the project list after a new project is created.
   Future<void> refresh() => load();
 }

@@ -112,13 +112,35 @@ class ProjectFileService {
       }
     }
 
+    final totalSizeBytes = await computeDirectorySize(dir);
+
     return ProjectMeta(
       name: name,
       directoryPath: dir.path,
       lastModified: lastModified,
       sceneCount: sceneCount,
       completedSceneCount: completedSceneCount,
+      totalSizeBytes: totalSizeBytes,
     );
+  }
+
+  /// Recursively sums the byte size of every file under [dir].
+  ///
+  /// Returns 0 if the directory does not exist or cannot be read.
+  Future<int> computeDirectorySize(Directory dir) async {
+    if (!await dir.exists()) return 0;
+    var total = 0;
+    await for (final entity in dir.list(recursive: true, followLinks: false)) {
+      if (entity is File) {
+        try {
+          final stat = await entity.stat();
+          total += stat.size;
+        } catch (_) {
+          // Skip files that cannot be stat-ted (e.g. permission error).
+        }
+      }
+    }
+    return total;
   }
 
   // ── Project creation ───────────────────────────────────────────────────────
@@ -169,6 +191,29 @@ class ProjectFileService {
     if (await dir.exists()) await dir.delete(recursive: true);
   }
 
+  // ── Project rename ─────────────────────────────────────────────────────────
+
+  /// Renames a project directory from [oldName] to [newName].
+  ///
+  /// Throws a [StateError] if [newName] already exists, or a
+  /// [FileSystemException] if the rename fails at the filesystem level.
+  Future<ProjectMeta> renameProject(String oldName, String newName) async {
+    _assertInit();
+    final sanitized = newName.trim();
+    final error = validateProjectName(sanitized);
+    if (error != null) throw StateError(error);
+
+    final oldDir = Directory(p.join(_projectsRoot.path, oldName));
+    final newDir = Directory(p.join(_projectsRoot.path, sanitized));
+
+    if (await newDir.exists()) {
+      throw StateError('A project named "$sanitized" already exists.');
+    }
+
+    await oldDir.rename(newDir.path);
+    return _readProjectMeta(newDir);
+  }
+
   // ── File tree ─────────────────────────────────────────────────────────────
 
   /// Returns a [ProjectTree] representing the current on-device file structure
@@ -207,6 +252,8 @@ class ProjectFileService {
       }
     }
 
+    final finalVideo = File(p.join(projectDir.path, 'final.mp4'));
+
     return ProjectTree(
       projectName: projectName,
       directoryPath: projectDir.path,
@@ -214,6 +261,7 @@ class ProjectFileService {
       storyHasContent: storyExists && (await storyFile.readAsString()).trim().isNotEmpty,
       globalAssets: globalAssets,
       scenes: scenes,
+      hasFinalVideo: await finalVideo.exists(),
     );
   }
 
@@ -489,6 +537,7 @@ class ProjectTree {
     required this.storyHasContent,
     required this.globalAssets,
     required this.scenes,
+    this.hasFinalVideo = false,
   });
 
   final String projectName;
@@ -497,6 +546,9 @@ class ProjectTree {
   final bool storyHasContent;
   final List<AssetNode> globalAssets;
   final List<SceneNode> scenes;
+
+  /// True when `final.mp4` exists in the project root (written by export).
+  final bool hasFinalVideo;
 
   bool get isBlank => globalAssets.isEmpty && scenes.isEmpty;
 }

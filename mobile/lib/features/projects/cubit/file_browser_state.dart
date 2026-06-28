@@ -19,6 +19,7 @@ final class FileBrowserLoaded extends FileBrowserState {
     required this.tree,
     required this.expandedPaths,
     this.selectedPath,
+    this.totalSizeBytes,
   });
 
   final ProjectTree tree;
@@ -29,20 +30,25 @@ final class FileBrowserLoaded extends FileBrowserState {
   /// The currently active / highlighted node path.
   final String? selectedPath;
 
+  /// Total on-device size of the project directory in bytes (FEAT-027).
+  final int? totalSizeBytes;
+
   FileBrowserLoaded copyWith({
     ProjectTree? tree,
     Set<String>? expandedPaths,
     String? selectedPath,
     bool clearSelectedPath = false,
+    int? totalSizeBytes,
   }) =>
       FileBrowserLoaded(
         tree: tree ?? this.tree,
         expandedPaths: expandedPaths ?? this.expandedPaths,
         selectedPath: clearSelectedPath ? null : (selectedPath ?? this.selectedPath),
+        totalSizeBytes: totalSizeBytes ?? this.totalSizeBytes,
       );
 
   @override
-  List<Object?> get props => [tree, expandedPaths, selectedPath];
+  List<Object?> get props => [tree, expandedPaths, selectedPath, totalSizeBytes];
 }
 
 final class FileBrowserError extends FileBrowserState {

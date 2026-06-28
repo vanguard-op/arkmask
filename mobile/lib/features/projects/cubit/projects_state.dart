@@ -20,6 +20,7 @@ final class ProjectsLoaded extends ProjectsState {
     this.creditBalance,
     this.tier,
     this.deletingName,
+    this.renameError,
   });
 
   final List<ProjectMeta> projects;
@@ -29,22 +30,28 @@ final class ProjectsLoaded extends ProjectsState {
   /// The project name currently being deleted (shows loading on that card).
   final String? deletingName;
 
+  /// Non-null when a rename operation failed; consumed once and cleared.
+  final String? renameError;
+
   ProjectsLoaded copyWith({
     List<ProjectMeta>? projects,
     int? creditBalance,
     UserTier? tier,
     String? deletingName,
     bool clearDeletingName = false,
+    String? renameError,
+    bool clearRenameError = false,
   }) =>
       ProjectsLoaded(
         projects: projects ?? this.projects,
         creditBalance: creditBalance ?? this.creditBalance,
         tier: tier ?? this.tier,
         deletingName: clearDeletingName ? null : (deletingName ?? this.deletingName),
+        renameError: clearRenameError ? null : (renameError ?? this.renameError),
       );
 
   @override
-  List<Object?> get props => [projects, creditBalance, tier, deletingName];
+  List<Object?> get props => [projects, creditBalance, tier, deletingName, renameError];
 }
 
 final class ProjectsError extends ProjectsState {

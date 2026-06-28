@@ -8,6 +8,7 @@ import '../../../core/router/routes.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../../core/utils/formatters.dart';
 import '../cubit/file_browser_cubit.dart';
 import '../cubit/file_browser_state.dart';
 import '../widgets/file_browser_row.dart';
@@ -51,11 +52,28 @@ class _FileBrowserView extends StatelessWidget {
               tooltip: 'Back to projects',
               onPressed: () => context.go(Routes.home),
             ),
-            title: Text(
-              projectName,
-              style: AppTextStyles.h2(context),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+            title: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  projectName,
+                  style: AppTextStyles.h2(context),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                // Storage size shown when loaded (FEAT-027).
+                if (state case FileBrowserLoaded(:final totalSizeBytes?)
+                  when totalSizeBytes > 0)
+                  Text(
+                    formatFileSize(totalSizeBytes),
+                    style: AppTextStyles.caption(context).copyWith(
+                      color: Theme.of(context).brightness == Brightness.dark
+                          ? AppColors.textSecondaryDark
+                          : AppColors.textSecondaryLight,
+                    ),
+                  ),
+              ],
             ),
             actions: [
               IconButton(
@@ -142,6 +160,25 @@ class _TreeView extends StatelessWidget {
         }
       },
     ));
+
+    // ── final.mp4 (shown when export has completed) ───────────────────────────
+    if (tree.hasFinalVideo) {
+      final finalVideoPath = '${tree.directoryPath}/final.mp4';
+      rows.add(FileBrowserRow(
+        label: 'final.mp4',
+        icon: LucideIcons.fileVideo,
+        depth: 0,
+        onTap: () => context.push(
+          Uri(
+            path: Routes.videoPlayer,
+            queryParameters: {
+              'path': Uri.encodeComponent(finalVideoPath),
+              'title': 'final.mp4',
+            },
+          ).toString(),
+        ),
+      ));
+    }
 
     // ── assets/ ────────────────────────────────────────────────────────────────
     rows.add(FileBrowserRow(
@@ -251,11 +288,20 @@ class _TreeView extends StatelessWidget {
             ));
             // video.mp4 (only if exists)
             if (scene.hasVideo) {
+              final videoPath = '${scene.directoryPath}/video.mp4';
               rows.add(FileBrowserRow(
                 label: 'video.mp4',
                 icon: LucideIcons.video,
                 depth: 2,
-                onTap: () => context.push(Routes.videoPlayer),
+                onTap: () => context.push(
+                  Uri(
+                    path: Routes.videoPlayer,
+                    queryParameters: {
+                      'path': Uri.encodeComponent(videoPath),
+                      'title': 'Scene ${scene.sceneNumber}',
+                    },
+                  ).toString(),
+                ),
               ));
             }
           }

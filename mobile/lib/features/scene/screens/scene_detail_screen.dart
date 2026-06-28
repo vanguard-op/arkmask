@@ -1343,11 +1343,17 @@ class _VideoPreviewArea extends StatelessWidget {
     // with a play icon overlay.
     return GestureDetector(
       onTap: () => context.push(
-        '/player',
-        extra: {'videoPath': videoFile.path},
+        Uri(
+          path: '/player',
+          queryParameters: {
+            'path': Uri.encodeComponent(videoFile.path),
+            'title': 'Scene ${p.basename(sceneDirPath)}',
+          },
+        ).toString(),
       ),
       child: Container(
         margin: const EdgeInsets.symmetric(horizontal: AppSpacing.s4),
+        width: double.infinity,
         height: 180,
         decoration: BoxDecoration(
           color: isDark ? AppColors.surfaceSunkenDark : AppColors.surfaceSunkenLight,

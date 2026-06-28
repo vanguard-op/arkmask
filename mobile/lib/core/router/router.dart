@@ -7,6 +7,7 @@ import '../../features/auth/screens/login_screen.dart';
 import '../../features/editor/screens/video_editor_screen.dart';
 import '../../features/auth/screens/registration_screen.dart';
 import '../../features/auth/screens/splash_screen.dart';
+import '../../features/player/screens/video_player_screen.dart';
 import '../../features/projects/screens/home_screen.dart';
 import '../../features/projects/screens/project_file_browser_screen.dart';
 import '../../features/provider_setup/screens/provider_setup_screen.dart';
@@ -202,7 +203,15 @@ GoRouter buildRouter({
       ),
       GoRoute(
         path: Routes.videoPlayer,
-        builder: (context, state) => const _PlaceholderScreen(title: 'Video Player'),
+        builder: (context, state) {
+          // `path` query param carries the absolute filesystem path (URL-encoded).
+          final videoPath = state.uri.queryParameters['path'] ?? '';
+          final title = state.uri.queryParameters['title'];
+          return VideoPlayerScreen(
+            videoPath: Uri.decodeComponent(videoPath),
+            title: title,
+          );
+        },
       ),
       GoRoute(
         path: Routes.upgrade,

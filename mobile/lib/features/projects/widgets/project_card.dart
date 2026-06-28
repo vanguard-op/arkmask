@@ -9,21 +9,25 @@ import '../../../core/utils/formatters.dart';
 
 /// Project card displayed on the Home Screen.
 ///
-/// Shows: project name, scene count, last modified date, and a thin
-/// generation progress bar at the bottom edge.
-/// Long-press reveals a "Delete" option.
+/// Shows: project name, scene count, last modified date, storage size, and a
+/// thin generation progress bar at the bottom edge.
+/// Long-press reveals "Rename" and "Delete" options.
 class ProjectCard extends StatelessWidget {
   const ProjectCard({
     super.key,
     required this.project,
     required this.onTap,
     required this.onDeleteConfirmed,
+    required this.onRenameConfirmed,
     this.isDeleting = false,
   });
 
   final ProjectMeta project;
   final VoidCallback onTap;
   final VoidCallback onDeleteConfirmed;
+
+  /// Called with the new name after the user confirms a rename.
+  final ValueChanged<String> onRenameConfirmed;
 
   /// True while the delete operation is in progress for this card.
   final bool isDeleting;
@@ -79,17 +83,18 @@ class ProjectCard extends StatelessWidget {
                     '${project.sceneCount} ${project.sceneCount == 1 ? "scene" : "scenes"}',
                     style: AppTextStyles.bodySmall(context).copyWith(color: textSecondary),
                   ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: AppSpacing.s2),
-                    child: Text(
-                      '·',
-                      style: AppTextStyles.bodySmall(context).copyWith(color: textSecondary),
-                    ),
-                  ),
+                  _dot(context, textSecondary),
                   Text(
                     formatLastModified(project.lastModified),
                     style: AppTextStyles.bodySmall(context).copyWith(color: textSecondary),
                   ),
+                  if (project.totalSizeBytes != null) ...[
+                    _dot(context, textSecondary),
+                    Text(
+                      formatFileSize(project.totalSizeBytes!),
+                      style: AppTextStyles.bodySmall(context).copyWith(color: textSecondary),
+                    ),
+                  ],
                 ],
               ),
               // ── Progress bar ──────────────────────────────────────────────
@@ -111,11 +116,31 @@ class ProjectCard extends StatelessWidget {
     );
   }
 
+  Widget _dot(BuildContext context, Color color) => Padding(
+        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.s2),
+        child: Text('·', style: AppTextStyles.bodySmall(context).copyWith(color: color)),
+      );
+
   Future<void> _showContextMenu(BuildContext context) async {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     final result = await showMenu<String>(
       context: context,
       position: _menuPosition(context),
       items: [
+        PopupMenuItem(
+          value: 'rename',
+          child: Row(
+            children: [
+              Icon(
+                LucideIcons.pencil,
+                size: AppSizing.iconSm,
+                color: isDark ? AppColors.textPrimaryDark : AppColors.textPrimaryLight,
+              ),
+              const SizedBox(width: AppSpacing.s3),
+              const Text('Rename'),
+            ],
+          ),
+        ),
         PopupMenuItem(
           value: 'delete',
           child: Row(
@@ -123,9 +148,7 @@ class ProjectCard extends StatelessWidget {
               Icon(
                 LucideIcons.trash2,
                 size: AppSizing.iconSm,
-                color: Theme.of(context).brightness == Brightness.dark
-                    ? AppColors.errorDark
-                    : AppColors.errorLight,
+                color: isDark ? AppColors.errorDark : AppColors.errorLight,
               ),
               const SizedBox(width: AppSpacing.s3),
               const Text('Delete'),
@@ -135,9 +158,68 @@ class ProjectCard extends StatelessWidget {
       ],
     );
 
-    if (result == 'delete' && context.mounted) {
-      _confirmDelete(context);
+    if (!context.mounted) return;
+    if (result == 'rename') _showRenameDialog(context);
+    if (result == 'delete') _confirmDelete(context);
+  }
+
+  /// Shows an inline dialog to rename the project (FEAT-028).
+  ///
+  /// Pre-fills with the current project name; validates on confirm.
+  /// Calls [onRenameConfirmed] with the trimmed new name on success.
+  Future<void> _showRenameDialog(BuildContext context) async {
+    final controller = TextEditingController(text: project.name);
+    String? errorText;
+
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: const Text('Rename Project'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            maxLength: 60,
+            decoration: InputDecoration(
+              labelText: 'Project name',
+              errorText: errorText,
+            ),
+            onSubmitted: (_) => _doRename(ctx, controller, setDialogState),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => _doRename(ctx, controller, setDialogState),
+              child: const Text('Rename'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    controller.dispose();
+  }
+
+  void _doRename(
+    BuildContext ctx,
+    TextEditingController controller,
+    StateSetter setDialogState,
+  ) {
+    final newName = controller.text.trim();
+    // Basic validation — full validation is enforced in the cubit.
+    if (newName.isEmpty) {
+      setDialogState(() {}); // trigger rebuild to show empty-name error
+      return;
     }
+    if (newName == project.name) {
+      Navigator.pop(ctx);
+      return;
+    }
+    Navigator.pop(ctx);
+    onRenameConfirmed(newName);
   }
 
   RelativeRect _menuPosition(BuildContext context) {

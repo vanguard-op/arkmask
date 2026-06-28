@@ -178,6 +178,17 @@ class _ProjectList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Surface rename errors as a one-time SnackBar.
+    if (state.renameError != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Rename failed: ${state.renameError}')),
+          );
+        }
+      });
+    }
+
     return ListView.separated(
       padding: const EdgeInsets.symmetric(
         horizontal: AppSpacing.s4,
@@ -197,6 +208,8 @@ class _ProjectList extends StatelessWidget {
           ),
           onDeleteConfirmed: () =>
               context.read<ProjectsCubit>().deleteProject(project.name),
+          onRenameConfirmed: (newName) =>
+              context.read<ProjectsCubit>().renameProject(project.name, newName),
         );
       },
     );
