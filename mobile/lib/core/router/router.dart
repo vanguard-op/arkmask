@@ -11,6 +11,7 @@ import '../../features/player/screens/video_player_screen.dart';
 import '../../features/projects/screens/home_screen.dart';
 import '../../features/projects/screens/project_file_browser_screen.dart';
 import '../../features/provider_setup/screens/provider_setup_screen.dart';
+import '../../features/billing/screens/upgrade_screen.dart';
 import '../../features/settings/screens/settings_screen.dart';
 import '../../features/usage/screens/usage_screen.dart';
 import '../../features/vault_setup/screens/vault_setup_screen.dart';
@@ -215,7 +216,10 @@ GoRouter buildRouter({
       ),
       GoRoute(
         path: Routes.upgrade,
-        builder: (context, state) => const _PlaceholderScreen(title: 'Upgrade'),
+        builder: (context, state) {
+          final highlight = state.uri.queryParameters['highlight'];
+          return UpgradeScreen(highlightPlan: highlight);
+        },
       ),
       GoRoute(
         path: Routes.usage,

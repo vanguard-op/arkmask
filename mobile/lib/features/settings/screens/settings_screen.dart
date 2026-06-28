@@ -4,7 +4,10 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_flutter/lucide_flutter.dart';
 
+import 'package:url_launcher/url_launcher.dart';
+
 import '../../../app.dart';
+import '../../../core/models/models.dart';
 import '../../../core/router/routes.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
@@ -129,7 +132,7 @@ class _SettingsList extends StatelessWidget {
         ListTile(
           title: const Text('Platform API Key'),
           subtitle: Text(
-            state.platformKeyMasked,
+            state.platformKeyDisplay,
             style: AppTextStyles.monoSmall(context),
           ),
           trailing: Row(
@@ -140,16 +143,17 @@ class _SettingsList extends StatelessWidget {
                   state.platformKeyRevealed ? LucideIcons.eyeOff : LucideIcons.eye,
                   size: AppSizing.iconSm,
                 ),
-                tooltip: state.platformKeyRevealed ? 'Hide key' : 'Show key',
+                tooltip: state.platformKeyRevealed ? 'Hide key' : 'Reveal key',
                 onPressed: () =>
                     context.read<SettingsCubit>().toggleKeyVisibility(),
               ),
+              // Copy button always copies the real key, regardless of reveal state.
               IconButton(
                 icon: const Icon(LucideIcons.copy, size: AppSizing.iconSm),
-                tooltip: 'Copy to clipboard',
+                tooltip: 'Copy key to clipboard',
                 onPressed: () async {
                   await Clipboard.setData(
-                    ClipboardData(text: state.platformKeyMasked),
+                    ClipboardData(text: state.platformKeyRaw),
                   );
                   if (context.mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
@@ -209,8 +213,8 @@ class _SettingsList extends StatelessWidget {
         }),
         const Divider(height: 1),
 
-        // ── Credits ───────────────────────────────────────────────────────────
-        _SectionHeader(label: 'Credits', isDark: isDark),
+        // ── Credits & Subscription ────────────────────────────────────────────
+        _SectionHeader(label: 'Plan & Credits', isDark: isDark),
         ListTile(
           title: const Text('Credit Balance'),
           trailing: state.creditBalance != null
@@ -250,6 +254,27 @@ class _SettingsList extends StatelessWidget {
                 )
               : Text('--', style: AppTextStyles.body(context).copyWith(color: textSecondary)),
         ),
+        // Show "Upgrade" for free users, "Manage Subscription" for paying users.
+        if (state.tier == UserTier.free || state.tier == null)
+          ListTile(
+            title: Text(
+              'Upgrade Plan',
+              style: AppTextStyles.body(context)
+                  .copyWith(color: primaryColor, fontWeight: FontWeight.w600),
+            ),
+            leading: Icon(LucideIcons.zap, color: primaryColor, size: AppSizing.iconMd),
+            subtitle: const Text('Get more credits and unlock features.'),
+            trailing: const Icon(LucideIcons.chevronRight, size: AppSizing.iconSm),
+            onTap: () => context.push(Routes.upgrade),
+          )
+        else
+          ListTile(
+            title: const Text('Manage Subscription'),
+            leading: const Icon(LucideIcons.creditCard, size: AppSizing.iconMd),
+            subtitle: const Text('Cancel, downgrade, or update payment method.'),
+            trailing: const Icon(LucideIcons.chevronRight, size: AppSizing.iconSm),
+            onTap: () => _openBillingPortal(context),
+          ),
         const Divider(height: 1),
 
         // ── Session ───────────────────────────────────────────────────────────
@@ -267,6 +292,27 @@ class _SettingsList extends StatelessWidget {
         const SizedBox(height: AppSpacing.s8),
       ],
     );
+  }
+
+  /// Opens the Stripe Customer Portal in the system browser so the user can
+  /// manage or cancel their subscription.
+  Future<void> _openBillingPortal(BuildContext context) async {
+    try {
+      final apiClient = ArkMaskServices.of(context).apiClient;
+      final url = await apiClient.createPortalSession();
+      final uri = Uri.parse(url);
+      if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+        throw Exception('Could not open billing portal.');
+      }
+    } catch (_) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not open billing portal. Please try again.'),
+          ),
+        );
+      }
+    }
   }
 
   /// Shows a warning dialog before regenerating the platform API key.

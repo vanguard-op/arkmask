@@ -7,6 +7,7 @@ import '../../../app.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../billing/widgets/credits_exhausted_dialog.dart';
 import '../cubit/story_cubit.dart';
 import '../cubit/story_state.dart';
 
@@ -45,9 +46,7 @@ class _StoryEditorView extends StatelessWidget {
       listener: (context, state) {
         if (state is StoryLoaded && state.extractError != null) {
           if (state.extractError == '__credits__') {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Insufficient credits to extract assets.')),
-            );
+            showCreditsExhaustedDialog(context);
           } else {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(

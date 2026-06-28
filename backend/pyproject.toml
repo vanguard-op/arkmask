@@ -37,6 +37,9 @@ dependencies = [
 
     # HTTP client for downloading AI-generated media
     "httpx==0.28.1",
+
+    # Billing
+    "stripe==12.2.0",
 ]
 
 [project.optional-dependencies]

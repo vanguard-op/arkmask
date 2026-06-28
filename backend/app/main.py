@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import get_settings
-from app.routers import account, auth, generation
+from app.routers import account, auth, billing, generation
 
 settings = get_settings()
 
@@ -52,6 +52,7 @@ if settings.is_local:
 
 app.include_router(auth.router)
 app.include_router(account.router)
+app.include_router(billing.router)
 app.include_router(generation.router)
 
 

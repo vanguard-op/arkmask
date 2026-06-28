@@ -61,7 +61,11 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+    env_file:
+      - .env          # all secrets and config live here; never committed
     environment:
+      # These override or supplement .env with values that are either
+      # static for local dev or derived from other Docker service hostnames.
       DATABASE_URL: postgresql://arkmask:arkmask@postgres:5432/arkmask
       STORAGE_BUCKET: arkmask-local
       STORAGE_ENDPOINT_URL: http://minio:9000
@@ -70,11 +74,9 @@ services:
       STORAGE_PRESIGN_TTL: 7200
       # Rewrite the internal Docker hostname in presigned URLs so that Android
       # emulators (10.0.2.2) and physical devices can actually fetch the image.
-      # 10.0.2.2 = host machine as seen from the Android emulator.
       # Change to your LAN IP (e.g. 192.168.x.x:9000) for physical device testing.
       STORAGE_PRESIGN_BASE_URL: http://10.0.2.2:9000
       APP_ENV: local
-      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-arkmask-dev}
       # Absolute path inside the container where the service account JSON is mounted.
       # The file is bind-mounted below; this env var tells the app where to find it.
       FIREBASE_CREDENTIALS_PATH: /run/secrets/firebase-credentials.json

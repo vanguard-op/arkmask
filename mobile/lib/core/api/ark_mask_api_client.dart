@@ -14,10 +14,17 @@ import 'credential_interceptor.dart';
 /// - Local dev (Android emulator): `http://10.0.2.2:8000` (host machine loopback)
 /// - Local dev (physical device / iOS sim): `http://localhost:8000`
 /// - Production: Cloud Run URL (set via env / build config)
+/// Base URL injected at build time via --dart-define-from-file=.env.json.
+/// Defaults to the Android emulator loopback address for local development.
+const _kApiBaseUrl = String.fromEnvironment(
+  'API_BASE_URL',
+  defaultValue: 'http://10.0.2.2:8000',
+);
+
 class ArkMaskApiClient {
   ArkMaskApiClient({
     required SecureStorageService storage,
-    String baseUrl = 'http://10.0.2.2:8000',
+    String baseUrl = _kApiBaseUrl,
   }) : _dio = _buildDio(baseUrl: baseUrl, storage: storage);
 
   final Dio _dio;
@@ -181,6 +188,31 @@ class ArkMaskApiClient {
   Future<String> regenerateApiKey() async {
     final response = await _execute(() => _dio.post('/keys/regenerate'));
     return (response.data as Map<String, dynamic>)['platform_api_key'] as String;
+  }
+
+  // ── Billing endpoints ──────────────────────────────────────────────────────
+
+  /// POST /billing/checkout — create a Stripe Checkout Session for [priceId].
+  ///
+  /// Returns the hosted Stripe Checkout URL. The caller opens it in the system
+  /// browser via `url_launcher`. On completion Stripe fires a webhook that
+  /// updates the user's tier and credits automatically.
+  Future<String> createCheckoutSession({required String priceId}) async {
+    final response = await _execute(
+      () => _dio.post('/billing/checkout', data: {'price_id': priceId}),
+    );
+    return (response.data as Map<String, dynamic>)['url'] as String;
+  }
+
+  /// POST /billing/portal — create a Stripe Customer Portal session URL.
+  ///
+  /// Returns the hosted portal URL where the user can manage or cancel their
+  /// subscription. Opens in the system browser.
+  ///
+  /// Throws [ApiInsufficientCredits] (402) if the user has no active subscription.
+  Future<String> createPortalSession() async {
+    final response = await _execute(() => _dio.post('/billing/portal'));
+    return (response.data as Map<String, dynamic>)['url'] as String;
   }
 
   // ── File download ──────────────────────────────────────────────────────────

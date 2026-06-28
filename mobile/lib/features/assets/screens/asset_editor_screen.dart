@@ -10,6 +10,7 @@ import '../../../app.dart';
 import '../../../core/jobs/generation_job_manager.dart';
 import '../../../core/models/models.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../billing/widgets/credits_exhausted_dialog.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../cubit/asset_editor_cubit.dart';
@@ -75,9 +76,7 @@ class _AssetEditorView extends StatelessWidget {
             context.read<AssetEditorCubit>().clearPromptError();
           }
           if (state.promptError == '__credits__') {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Insufficient credits to generate prompt.')),
-            );
+            showCreditsExhaustedDialog(context);
             context.read<AssetEditorCubit>().clearPromptError();
           }
           if (state.imageError != null && state.imageError != '__credits__') {
@@ -93,9 +92,7 @@ class _AssetEditorView extends StatelessWidget {
             context.read<AssetEditorCubit>().clearImageError();
           }
           if (state.imageError == '__credits__') {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Insufficient credits to generate image.')),
-            );
+            showCreditsExhaustedDialog(context);
             context.read<AssetEditorCubit>().clearImageError();
           }
         }
@@ -771,15 +768,22 @@ class _ImageSection extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Image preview or placeholder
+          // Image preview — tap to view fullscreen.
           if (state.hasImage && !state.isGeneratingImage)
-            ClipRRect(
-              borderRadius: BorderRadius.circular(AppSizing.radiusMd),
-              child: Image.file(
-                imageFile,
-                fit: BoxFit.cover,
-                height: 240,
-                errorBuilder: (context, err, stack) => _ImagePlaceholder(isDark: isDark),
+            GestureDetector(
+              onTap: () => _openFullscreen(context, imageFile),
+              child: Hero(
+                tag: 'asset-image-${imageFile.path}',
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(AppSizing.radiusMd),
+                  child: Image.file(
+                    imageFile,
+                    fit: BoxFit.cover,
+                    height: 240,
+                    width: double.infinity,
+                    errorBuilder: (context, err, stack) => _ImagePlaceholder(isDark: isDark),
+                  ),
+                ),
               ),
             )
           else if (state.isGeneratingImage)
@@ -860,6 +864,22 @@ class _ImageSection extends StatelessWidget {
     );
   }
 
+  /// Opens the generated image fullscreen with a hero animation.
+  /// Pinch-to-zoom and pan are supported via [InteractiveViewer].
+  void _openFullscreen(BuildContext context, File imageFile) {
+    Navigator.of(context).push(
+      PageRouteBuilder<void>(
+        opaque: false,
+        barrierColor: Colors.black87,
+        barrierDismissible: true,
+        pageBuilder: (context, animation, _) => FadeTransition(
+          opacity: animation,
+          child: _FullscreenImageViewer(imageFile: imageFile),
+        ),
+      ),
+    );
+  }
+
   Future<bool> _confirmOverwrite(BuildContext context, String message) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -879,6 +899,68 @@ class _ImageSection extends StatelessWidget {
       ),
     );
     return confirmed ?? false;
+  }
+}
+
+// ── Fullscreen image viewer ───────────────────────────────────────────────────
+
+class _FullscreenImageViewer extends StatelessWidget {
+  const _FullscreenImageViewer({required this.imageFile});
+
+  final File imageFile;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      // Close on tap outside the image (the AppBar close button also works).
+      body: GestureDetector(
+        onTap: () => Navigator.of(context).pop(),
+        behavior: HitTestBehavior.opaque,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            // Pinch-to-zoom + pan via InteractiveViewer.
+            InteractiveViewer(
+              minScale: 0.5,
+              maxScale: 6.0,
+              child: Center(
+                child: Hero(
+                  tag: 'asset-image-${imageFile.path}',
+                  child: Image.file(
+                    imageFile,
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, __, ___) => const Icon(
+                      Icons.broken_image_outlined,
+                      color: Colors.white54,
+                      size: 64,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+            // Close button top-right.
+            Positioned(
+              top: MediaQuery.of(context).padding.top + 8,
+              right: 12,
+              child: GestureDetector(
+                // Stop the tap bubbling up to the background dismissal detector.
+                onTap: () => Navigator.of(context).pop(),
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.black54,
+                    borderRadius: BorderRadius.circular(AppSizing.radiusFull),
+                  ),
+                  padding: const EdgeInsets.all(AppSpacing.s2),
+                  child: const Icon(LucideIcons.x, color: Colors.white, size: 20),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

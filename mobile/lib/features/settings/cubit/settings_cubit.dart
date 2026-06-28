@@ -28,10 +28,12 @@ class SettingsCubit extends Cubit<SettingsState> {
       final platformKey = await storage.readPlatformApiKey();
       final providerType = await storage.readProviderType();
 
-      final masked = _maskKey(platformKey ?? '');
+      final raw = platformKey ?? '';
+      final masked = _maskKey(raw);
 
       emit(SettingsLoaded(
         platformKeyMasked: masked,
+        platformKeyRaw: raw,
         platformKeyRevealed: false,
         providerType: providerType,
       ));
@@ -80,6 +82,7 @@ class SettingsCubit extends Cubit<SettingsState> {
       await storage.savePlatformApiKey(newKey);
       emit((state as SettingsLoaded).copyWith(
         isRegeneratingKey: false,
+        platformKeyRaw: newKey,
         platformKeyMasked: _maskKey(newKey),
         platformKeyRevealed: false,
       ));

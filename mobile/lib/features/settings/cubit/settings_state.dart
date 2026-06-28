@@ -17,6 +17,7 @@ final class SettingsLoading extends SettingsState {
 final class SettingsLoaded extends SettingsState {
   const SettingsLoaded({
     required this.platformKeyMasked,
+    required this.platformKeyRaw,
     required this.platformKeyRevealed,
     this.providerType,
     this.creditBalance,
@@ -25,11 +26,18 @@ final class SettingsLoaded extends SettingsState {
     this.isRegeneratingKey = false,
   });
 
-  /// Masked display (e.g. "ark_••••••••1234").
+  /// Masked display (e.g. "••••••••1a2b"). Shown when [platformKeyRevealed] is false.
   final String platformKeyMasked;
+
+  /// The actual raw key, read from secure storage. Never logged or sent anywhere.
+  final String platformKeyRaw;
 
   /// Whether the key is currently revealed in the UI.
   final bool platformKeyRevealed;
+
+  /// The value currently shown in the key tile — raw when revealed, masked otherwise.
+  String get platformKeyDisplay =>
+      platformKeyRevealed ? platformKeyRaw : platformKeyMasked;
 
   final ProviderType? providerType;
   final int? creditBalance;
@@ -41,6 +49,7 @@ final class SettingsLoaded extends SettingsState {
 
   SettingsLoaded copyWith({
     String? platformKeyMasked,
+    String? platformKeyRaw,
     bool? platformKeyRevealed,
     ProviderType? providerType,
     int? creditBalance,
@@ -50,6 +59,7 @@ final class SettingsLoaded extends SettingsState {
   }) =>
       SettingsLoaded(
         platformKeyMasked: platformKeyMasked ?? this.platformKeyMasked,
+        platformKeyRaw: platformKeyRaw ?? this.platformKeyRaw,
         platformKeyRevealed: platformKeyRevealed ?? this.platformKeyRevealed,
         providerType: providerType ?? this.providerType,
         creditBalance: creditBalance ?? this.creditBalance,
@@ -61,6 +71,7 @@ final class SettingsLoaded extends SettingsState {
   @override
   List<Object?> get props => [
         platformKeyMasked,
+        platformKeyRaw,
         platformKeyRevealed,
         providerType,
         creditBalance,

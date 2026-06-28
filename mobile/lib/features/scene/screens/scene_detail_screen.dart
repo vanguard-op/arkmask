@@ -12,6 +12,7 @@ import '../../../core/models/models.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../billing/widgets/credits_exhausted_dialog.dart';
 import '../../projects/widgets/generation_step_dots.dart';
 import '../cubit/scene_cubit.dart';
 import '../cubit/scene_state.dart';
@@ -158,19 +159,7 @@ class _SceneDetailViewState extends State<_SceneDetailView>
   }
 
   void _showCreditsDialog(BuildContext context, String message) {
-    showDialog<void>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Insufficient Credits'),
-        content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('OK'),
-          ),
-        ],
-      ),
-    );
+    showCreditsExhaustedDialog(context);
   }
 }
 

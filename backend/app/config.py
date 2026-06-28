@@ -30,6 +30,21 @@ class Settings(BaseSettings):
     firebase_project_id: str = "arkmask-dev"
     firebase_credentials_path: str = ""   # path to service account JSON; empty = ADC
 
+    # Stripe billing
+    stripe_secret_key: str = ""
+    stripe_publishable_key: str = ""   # not used server-side; stored so .env is valid
+    stripe_webhook_secret: str = ""
+    stripe_price_creator_monthly: str = ""
+    stripe_price_creator_annual: str = ""
+    stripe_price_studio_monthly: str = ""
+    stripe_price_studio_annual: str = ""
+    # URLs Stripe redirects to after hosted checkout completes or is cancelled.
+    # Point these at a hosted landing page or a deep-link URL for the mobile app.
+    stripe_billing_success_url: str = "https://arkmask.app/billing/success"
+    stripe_billing_cancel_url: str = "https://arkmask.app/billing/cancel"
+    # URL shown as the "Return to app" link inside the Customer Portal.
+    stripe_billing_portal_return_url: str = "https://arkmask.app/billing"
+
     # Environment
     app_env: str = "local"
 

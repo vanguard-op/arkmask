@@ -46,3 +46,6 @@ app.*.map.json
 
 # FVM Version Cache
 .fvm/
+
+# Environment variables — copy .env.example.json → .env.json, never commit .env.json
+.env.json
