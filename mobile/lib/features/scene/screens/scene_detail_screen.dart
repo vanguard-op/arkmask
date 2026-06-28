@@ -613,13 +613,13 @@ class _MissingPromptsBanner extends StatelessWidget {
           const SizedBox(height: AppSpacing.s2),
           ...missing.map((asset) => GestureDetector(
                 onTap: () {
-                  // Navigate to the asset's editor so the user can generate a prompt.
-                  final dirPath = asset.isPassThrough
-                      ? asset.dirPath // global dir resolved during load
-                      : asset.dirPath;
+                  // Navigate to the referenced asset editor so the user can
+                  // generate a prompt there. For pass-through assets this is
+                  // the global or scene-local referenced dir, not the
+                  // placeholder dir owned by this scene.
                   context.push(
                     '/project/${Uri.encodeComponent(projectName)}'
-                    '/asset/${Uri.encodeComponent(dirPath)}',
+                    '/asset/${Uri.encodeComponent(asset.resolvedDirPath)}',
                   );
                 },
                 child: Padding(

@@ -11,6 +11,7 @@ class SceneAsset {
     required this.type,
     required this.description,
     required this.resolvedPrompt,
+    required this.resolvedDirPath,
   });
 
   /// Display name (from prompt.mdx frontmatter; may start with `@/`).
@@ -35,13 +36,19 @@ class SceneAsset {
 
   /// The prompt body to send to /video-prompt, resolved as follows:
   /// - Own prompt body if non-empty.
-  /// - Referenced global asset's prompt body if this is a pass-through.
+  /// - Referenced asset's prompt body if this is a pass-through
+  ///   (`@/scenes/0/<name>` → global, `@/scenes/N/<name>` → scene N local).
   /// - Empty string if neither is available (asset is not ready).
   final String resolvedPrompt;
 
+  /// For pass-through assets, the absolute path to the *referenced* asset
+  /// directory — where the user should navigate to generate a prompt.
+  /// Equals [dirPath] for non-pass-through assets.
+  final String resolvedDirPath;
+
   /// True when a prompt body has been resolved and the asset is ready for
   /// storyboard generation. False means the user still needs to generate
-  /// a prompt for this asset (or its referenced global asset).
+  /// a prompt for this asset (or its referenced asset).
   bool get isPromptReady => resolvedPrompt.isNotEmpty;
 
   /// Short display name — strips the `@/scenes/N/` prefix for references.

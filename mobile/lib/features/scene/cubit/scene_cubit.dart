@@ -52,31 +52,46 @@ class SceneCubit extends Cubit<SceneState> {
       final assets = <SceneAsset>[];
       for (final node in sceneNode.assets) {
         final isPassThrough = node.isPassThrough;
-        final lastName = node.name.contains('/') ? node.name.split('/').last : node.name;
 
         // ── Image resolution ──────────────────────────────────────────────────
         bool hasImage;
         if (isPassThrough) {
-          final globalImagePath = p.join(projectDir, 'assets', lastName, 'image.png');
-          hasImage = await File(globalImagePath).exists();
+          final refDir = _resolveRefDir(projectDir, node.name);
+          if (refDir != null) {
+            hasImage = await File(p.join(refDir, 'image.png')).exists();
+          } else {
+            hasImage = false;
+          }
         } else {
           hasImage = await fileService.imageFileForAsset(node.directoryPath).exists();
         }
 
         // ── Prompt resolution ─────────────────────────────────────────────────
         // 1. Try the asset's own prompt.mdx body.
-        // 2. If empty and this is a pass-through, try the global asset's prompt.
+        // 2. If empty and this is a pass-through, resolve the referenced asset
+        //    directory and read its prompt.mdx.
+        //    - @/scenes/0/<name>  → global: <project>/assets/<name>/
+        //    - @/scenes/N/<name>  → scene-local: <project>/scenes/N/assets/<name>/
         // 3. If still empty → not ready (resolvedPrompt stays '').
         String resolvedPrompt = '';
         final ownPrompt = await fileService.readAssetPrompt(node.directoryPath);
         if (ownPrompt.promptBody.trim().isNotEmpty) {
           resolvedPrompt = ownPrompt.promptBody.trim();
         } else if (isPassThrough) {
-          final globalDirPath = p.join(projectDir, 'assets', lastName);
-          final globalPrompt = await fileService.readAssetPrompt(globalDirPath);
-          resolvedPrompt = globalPrompt.promptBody.trim();
+          final refDir = _resolveRefDir(projectDir, node.name);
+          if (refDir != null) {
+            final refPrompt = await fileService.readAssetPrompt(refDir);
+            resolvedPrompt = refPrompt.promptBody.trim();
+          }
         }
         // If resolvedPrompt is still '' → asset is not ready.
+
+        // For pass-through assets, resolvedDirPath points to the referenced
+        // asset directory so the UI can navigate the user there for prompt
+        // generation. Falls back to dirPath if the ref cannot be parsed.
+        final resolvedDirPath = isPassThrough
+            ? (_resolveRefDir(projectDir, node.name) ?? node.directoryPath)
+            : node.directoryPath;
 
         assets.add(SceneAsset(
           name: node.name,
@@ -87,6 +102,7 @@ class SceneCubit extends Cubit<SceneState> {
           type: node.type,
           description: node.description,
           resolvedPrompt: resolvedPrompt,
+          resolvedDirPath: resolvedDirPath,
         ));
       }
 
@@ -372,6 +388,36 @@ class SceneCubit extends Cubit<SceneState> {
   /// Extracts the body text for [sceneNumber] from the full `story.mdx` content.
   ///
   /// The story format uses `# N` headings as scene delimiters. Everything
+  /// Resolves a pass-through asset reference to the absolute directory path
+  /// of the referenced asset on disk.
+  ///
+  /// Reference format: `@/scenes/<N>/<assetName>`
+  /// - N = 0  → global asset: `<projectDir>/assets/<assetName>/`
+  /// - N > 0  → scene-local: `<projectDir>/scenes/<N>/assets/<assetName>/`
+  ///
+  /// Returns `null` when the name does not match the expected pattern so the
+  /// caller can treat the asset as not-ready rather than crashing.
+  static String? _resolveRefDir(String projectDir, String assetName) {
+    // Strip leading '@' — name is stored as '@/scenes/N/assetName'.
+    final withoutAt = assetName.startsWith('@') ? assetName.substring(1) : assetName;
+    // Expected segments after stripping: ['', 'scenes', 'N', 'assetName']
+    final parts = withoutAt.split('/').where((s) => s.isNotEmpty).toList();
+    // parts == ['scenes', 'N', 'assetName']
+    if (parts.length < 3 || parts[0] != 'scenes') return null;
+
+    final sceneNum = int.tryParse(parts[1]);
+    if (sceneNum == null) return null;
+
+    final name = parts.sublist(2).join('/'); // handles names that may contain '/'
+    if (sceneNum == 0) {
+      // Scene 0 is the global asset pool.
+      return p.join(projectDir, 'assets', name);
+    } else {
+      // Scene-local asset in scenes/<N>/assets/<name>/.
+      return p.join(projectDir, 'scenes', parts[1], 'assets', name);
+    }
+  }
+
   /// between `# N` and the next `# N+1` heading (or end of file) is the
   /// body for scene N.
   static String _extractSceneText(String fullStory, int sceneNumber) {
