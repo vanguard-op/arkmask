@@ -711,10 +711,10 @@ class _ClipBlock extends StatelessWidget {
                 bottom: 0,
                 child: _TrimHandle(
                   color: primaryColor,
-                  onPanUpdate: (details) => context
+                  onDragUpdate: (details) => context
                       .read<EditorCubit>()
                       .updateInPoint(clipIndex, details.delta.dx),
-                  onPanEnd: (_) =>
+                  onDragEnd: (_) =>
                       context.read<EditorCubit>().onTrimDragEnd(),
                 ),
               ),
@@ -727,10 +727,10 @@ class _ClipBlock extends StatelessWidget {
                 bottom: 0,
                 child: _TrimHandle(
                   color: primaryColor,
-                  onPanUpdate: (details) => context
+                  onDragUpdate: (details) => context
                       .read<EditorCubit>()
                       .updateOutPoint(clipIndex, details.delta.dx),
-                  onPanEnd: (_) =>
+                  onDragEnd: (_) =>
                       context.read<EditorCubit>().onTrimDragEnd(),
                 ),
               ),
@@ -773,30 +773,36 @@ class _ClipThumbnail extends StatelessWidget {
 class _TrimHandle extends StatelessWidget {
   const _TrimHandle({
     required this.color,
-    required this.onPanUpdate,
-    required this.onPanEnd,
+    required this.onDragUpdate,
+    required this.onDragEnd,
   });
 
   final Color color;
-  final GestureDragUpdateCallback onPanUpdate;
-  final GestureDragEndCallback onPanEnd;
+  final GestureDragUpdateCallback onDragUpdate;
+  final GestureDragEndCallback onDragEnd;
 
   @override
   Widget build(BuildContext context) {
+    // Uses onHorizontalDragUpdate (not onPanUpdate) so this recognizer competes
+    // in the same gesture category as the parent SingleChildScrollView. Flutter's
+    // arena resolves ties depth-first, so the deeper widget (this handle) wins
+    // and the scroll view defers — allowing the drag to register correctly.
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
-      onPanUpdate: onPanUpdate,
-      onPanEnd: onPanEnd,
+      onHorizontalDragUpdate: onDragUpdate,
+      onHorizontalDragEnd: onDragEnd,
       child: Container(
-        width: 12, // Touch target
-        height: AppSizing.touchMin,
+        // 24 px gives a finger-sized touch target even though the visual bar
+        // is only 4 px wide.
+        width: 24,
+        height: double.infinity,
         alignment: Alignment.center,
         child: Container(
-          width: 3,
-          height: AppSizing.touchMin,
+          width: 4,
+          height: 32,
           decoration: BoxDecoration(
             color: color,
-            borderRadius: BorderRadius.circular(1.5),
+            borderRadius: BorderRadius.circular(2),
           ),
         ),
       ),
