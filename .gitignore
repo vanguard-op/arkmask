@@ -5,3 +5,9 @@ docs/ArkMask
 .fvm/
 
 backend/arkmask-firebase.json
+
+# Claude Code workspace metadata
+.claude/
+
+# Flutter/Android build output
+mobile/android/build/
