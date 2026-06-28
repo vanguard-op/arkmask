@@ -125,9 +125,20 @@ class ArkMaskApiClient {
   }
 
   /// POST /video-prompt — generate a scene storyboard prompt.
-  Future<String> generateVideoPrompt({required FormData formData}) async {
+  ///
+  /// [scene] is the scene's story text. [assets] is a list of maps with
+  /// `name` and `prompt` keys (the asset's name and its generated image prompt
+  /// body from prompt.mdx). No images are sent — the AI uses the prompt text
+  /// as the visual reference.
+  Future<String> generateVideoPrompt({
+    required String scene,
+    required List<Map<String, String>> assets,
+  }) async {
     final response = await _execute(
-      () => _dio.post('/video-prompt', data: formData),
+      () => _dio.post('/video-prompt', data: {
+        'scene': scene,
+        'assets': assets,
+      }),
     );
     return (response.data as Map<String, dynamic>)['storyboard'] as String;
   }

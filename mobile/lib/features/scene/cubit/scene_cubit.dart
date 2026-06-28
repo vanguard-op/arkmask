@@ -133,9 +133,12 @@ class SceneCubit extends Cubit<SceneState> {
 
     try {
       final projectDir = p.dirname(p.dirname(s.sceneDirPath));
-      final formData = await _buildStoryboardFormData(s, projectDir);
+      final assets = await _buildAssetPromptList(s, projectDir);
 
-      final storyboardBody = await apiClient.generateVideoPrompt(formData: formData);
+      final storyboardBody = await apiClient.generateVideoPrompt(
+        scene: s.sceneText,
+        assets: assets,
+      );
 
       // Persist to ark.mdx.
       final storyboard = SceneStoryboard(
@@ -180,28 +183,29 @@ class SceneCubit extends Cubit<SceneState> {
     }
   }
 
-  Future<FormData> _buildStoryboardFormData(SceneLoaded s, String projectDir) async {
-    // Append subtitle suppression to scene text.
-    final sceneTextWithInstruction =
-        '${s.sceneText}\n\nKeep it subtitle-free, avoid generating any text or subtitles in the video.';
-
-    // Collect resolved images into a list so FormData.fromMap can send
-    // multiple files under the same key without deduplication.
-    final images = <MultipartFile>[];
+  /// Builds the asset list for /video-prompt: each asset's name + prompt body
+  /// read from its prompt.mdx. Assets without a prompt body are skipped.
+  Future<List<Map<String, String>>> _buildAssetPromptList(
+    SceneLoaded s,
+    String projectDir,
+  ) async {
+    final result = <Map<String, String>>[];
     for (final asset in s.assets) {
-      final imagePath = _resolveImagePath(asset, projectDir);
-      if (await File(imagePath).exists()) {
-        images.add(await MultipartFile.fromFile(
-          imagePath,
-          filename: '${asset.name.split('/').last}.png',
-        ));
-      }
-    }
+      // Resolve the directory where prompt.mdx lives.
+      // Pass-through assets reference the global asset dir.
+      final assetDirPath = asset.isPassThrough
+          ? p.join(projectDir, 'assets', asset.name.split('/').last)
+          : asset.dirPath;
 
-    return FormData.fromMap({
-      'scene_text': sceneTextWithInstruction,
-      if (images.isNotEmpty) 'images[]': images,
-    });
+      final prompt = await fileService.readAssetPrompt(assetDirPath);
+      if (prompt.promptBody.trim().isEmpty) continue;
+
+      result.add({
+        'name': asset.name.split('/').last, // display name without @/scenes/N/ prefix
+        'prompt': prompt.promptBody.trim(),
+      });
+    }
+    return result;
   }
 
   // ── Generate Video (FEAT-016) ─────────────────────────────────────────────
@@ -256,7 +260,9 @@ class SceneCubit extends Cubit<SceneState> {
   Future<FormData> _buildVideoFormData(SceneLoaded s, String projectDir) async {
     final images = <MultipartFile>[];
     for (final asset in s.assets) {
-      final imagePath = _resolveImagePath(asset, projectDir);
+      final imagePath = asset.isPassThrough
+          ? p.join(projectDir, 'assets', asset.name.split('/').last, 'image.png')
+          : p.join(asset.dirPath, 'image.png');
       if (await File(imagePath).exists()) {
         images.add(await MultipartFile.fromFile(
           imagePath,
@@ -269,16 +275,6 @@ class SceneCubit extends Cubit<SceneState> {
       'storyboard': s.storyboard.storyboardBody,
       if (images.isNotEmpty) 'images[]': images,
     });
-  }
-
-  /// Resolves the image file path for an asset given the project dir.
-  String _resolveImagePath(SceneAsset asset, String projectDir) {
-    if (asset.isPassThrough) {
-      final lastSegment =
-          asset.name.contains('/') ? asset.name.split('/').last : asset.name;
-      return p.join(projectDir, 'assets', lastSegment, 'image.png');
-    }
-    return p.join(asset.dirPath, 'image.png');
   }
 
   // ── Video polling ─────────────────────────────────────────────────────────
