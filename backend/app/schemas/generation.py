@@ -47,7 +47,19 @@ class ImageResponse(BaseModel):
     url: str
 
 
-# ── POST /video-prompt (multipart/form-data) ──────────────────────────────────
+# ── POST /video-prompt (application/json) ─────────────────────────────────────
+
+class AssetPrompt(BaseModel):
+    """A single asset's name and its generated image prompt body."""
+    name: str
+    prompt: str
+
+
+class VideoPromptRequest(BaseModel):
+    """Input for /video-prompt — scene text and the asset prompts for that scene."""
+    scene: str
+    assets: list[AssetPrompt]
+
 
 class VideoPromptResponse(BaseModel):
     storyboard: str

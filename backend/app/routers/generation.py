@@ -33,6 +33,7 @@ from app.schemas.generation import (
     ImagePromptResponse,
     ImageResponse,
     VideoEnqueueResponse,
+    VideoPromptRequest,
     VideoPromptResponse,
     VideoStatusEnum,
     VideoStatusResponse,
@@ -239,10 +240,7 @@ async def generate_image(
 
 @router.post("/video-prompt", response_model=VideoPromptResponse)
 async def generate_video_prompt(
-    scene_text: str = Form(...),
-    asset_names: list[str] = Form(default=[], alias="asset_names[]"),
-    asset_types: list[str] = Form(default=[], alias="asset_types[]"),
-    asset_images: list[UploadFile] = File(default=[], alias="asset_images[]"),
+    body: VideoPromptRequest,
     user: User = Depends(get_current_user),
     provider: AIProvider = Depends(get_ai_provider),
     db: Session = Depends(get_db),
@@ -250,8 +248,7 @@ async def generate_video_prompt(
     """
     Generate a scene storyboard prompt (written to ark.mdx body).
 
-    Accepts the scene's story text and up to 4 asset images as reference.
-    The storyboard prompt includes subtitle suppression instructions.
+    Accepts JSON with the scene text and a list of asset name+prompt pairs.
     (FEAT-014)
 
     Credits deducted: 3 (on success only).
@@ -259,23 +256,24 @@ async def generate_video_prompt(
     cost = _check_credits(user, "/video-prompt")
     provider_name = type(provider).__name__.replace("Provider", "").lower()
 
-    assets_meta = [
-        {"name": name, "type": type_}
-        for name, type_ in zip(asset_names, asset_types)
-    ]
+    logger.info(
+        "/video-prompt received: user_id=%s scene_len=%d assets=%s",
+        user.id,
+        len(body.scene),
+        [a.name for a in body.assets],
+    )
+    logger.debug("/video-prompt scene=%r", body.scene[:500])
+    for a in body.assets:
+        logger.debug("/video-prompt asset name=%r prompt_len=%d", a.name, len(a.prompt))
 
-    # Read the uploaded asset images.
-    ref_images = [
-        RefImage(data=await f.read(), mime_type=f.content_type or "image/png")
-        for f in asset_images[:4]  # cap at 4 per architecture constraint
-    ]
+    assets_payload = [{"name": a.name, "prompt": a.prompt} for a in body.assets]
 
     try:
-        storyboard = provider.generate_video_prompt(scene_text, assets_meta)
+        storyboard = provider.generate_video_prompt(body.scene, assets_payload)
     except Exception as e:
         logger.error("Video prompt generation failed: user_id=%s error=%s", user.id, type(e).__name__)
         _deduct_credits(db, user, "/video-prompt", provider_name, 0, "refunded")
-        raise HTTPException(status_code=502, detail="AI provider error during storyboard generation.")
+        raise _provider_error_http(e, "AI provider error during storyboard generation.")
 
     _deduct_credits(db, user, "/video-prompt", provider_name, cost)
     return VideoPromptResponse(storyboard=storyboard)
