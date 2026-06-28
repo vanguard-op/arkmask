@@ -211,9 +211,8 @@ class GeminiProvider(AIProvider):
             config=types.GenerateVideosConfig(
                 number_of_videos=1,
                 duration_seconds=8,
-                enhance_prompt=True,
-                # generate_audio is only supported in Gemini Enterprise /
-                # Vertex AI mode — not available in the standard Developer API.
+                # enhance_prompt and generate_audio are not supported by
+                # veo-3.1-generate-preview via the standard Developer API.
             ),
         )
 

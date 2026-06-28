@@ -18,6 +18,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status  # noqa: F401 (Form/File/UploadFile kept for /image)
 from google.genai._gaos.lib.compat_errors import BadRequestError
+from google.genai.errors import ClientError as GenaiClientError
 
 from app.services.ai.gemini import ContentBlockedError
 from sqlalchemy.orm import Session
@@ -68,12 +69,21 @@ def _extract_provider_message(e: BadRequestError) -> str:
 def _provider_error_http(e: Exception, fallback_detail: str) -> HTTPException:
     """Convert an AI provider exception to an appropriate HTTPException.
 
-    - BadRequestError (400 from the provider API): content rejected by the
-      provider's safety API — return 400 with the provider's message.
-    - ContentBlockedError: prompt blocked by the model's content policy before
-      generation — also a client-side issue, return 400.
+    - GenaiClientError (4xx from the Gemini SDK): invalid argument, unsupported
+      parameter, or quota exceeded — return 400 with the API's message.
+    - BadRequestError (400 from the legacy compat layer): content rejected by
+      the provider's safety API — return 400 with the provider's message.
+    - ContentBlockedError: prompt blocked by the model's content policy —
+      also a client-side issue, return 400.
     - Anything else: opaque provider or server failure → 502 Bad Gateway.
     """
+    if isinstance(e, GenaiClientError):
+        # The SDK stores the error body in e.message or str(e).
+        try:
+            detail = e.message  # type: ignore[attr-defined]
+        except AttributeError:
+            detail = str(e)
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
     if isinstance(e, BadRequestError):
         detail = _extract_provider_message(e)
         return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
