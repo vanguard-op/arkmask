@@ -31,6 +31,9 @@ Produce a single JSON array:
 - If the `name` is a reference BUT the asset has been visually modified in this scene (different clothing, expression, lighting, state, etc.), write a **complete** description of the asset as it appears in this scene — take the base appearance from the referenced asset and bake the modifications into it. Do not describe only the delta. The description must be self-contained and paint the full picture of the asset as it looks right now.
 - For scene 0 (root) assets, always write a full description.
 
+> **Variant discipline — avoid over-generating asset variants.**
+> Only create a new variant (i.e. a reference entry with a non-empty description) when the visual change is **obvious and meaningful to a viewer** — something a person watching the story would immediately notice and that matters to the scene. Qualifying changes include: a completely different outfit, a major injury or physical transformation, a drastically different emotional state (e.g. sobbing vs. neutral), or a key prop visibly attached to or altering the character. Do **not** create variants for subtle shifts that a viewer would not consciously register: a slightly different posture, a minor facial expression change, ambient lighting tinting, or incidental repositioning. When in doubt, reuse the reference with `description: ""` rather than generating a variant.
+
 **`type`**
 - `"character"` — any person, creature, or animate entity with agency.
 - `"background"` — the setting or environment of a scene (there is typically one per scene).
@@ -122,6 +125,7 @@ Before outputting, verify:
 - [ ] Every narratively significant object has an entry.
 - [ ] Root assets (scene 0) have full descriptions.
 - [ ] References have `description: ""` unless a modification is described in the story.
+- [ ] Every variant (reference with a non-empty description) represents a change that a viewer would obviously and immediately notice — minor pose, expression, or lighting shifts are NOT sufficient grounds for a variant.
 - [ ] No description mentions another asset, location, or relational context — each describes only the asset itself.
 - [ ] `type` values are exactly `"character"`, `"background"`, or `"object"`.
 - [ ] `scene_number` values are non-negative integers.
