@@ -48,57 +48,54 @@ class SceneCubit extends Cubit<SceneState> {
       final sceneDirPath = sceneNode.directoryPath;
       final projectDir = p.dirname(p.dirname(sceneDirPath)); // scenes/N → scenes → project
 
-      // Build scene assets with resolved image and prompt availability.
+      // Build scene assets with resolved image, prompt, and dir availability.
       final assets = <SceneAsset>[];
       for (final node in sceneNode.assets) {
-        final isPassThrough = node.isPassThrough;
+        final isRef = node.name.startsWith('@');
+
+        // ── Reference resolution ──────────────────────────────────────────────
+        // If the name starts with '@' the asset references another asset
+        // (global or in a previous scene). Resolve its directory on disk.
+        //   @/scenes/0/<name>  → <project>/assets/<name>/
+        //   @/scenes/N/<name>  → <project>/scenes/N/assets/<name>/
+        // If the name does not start with '@' the asset lives in this scene.
+        final String? refDir = isRef ? _resolveRefDir(projectDir, node.name) : null;
 
         // ── Image resolution ──────────────────────────────────────────────────
-        bool hasImage;
-        if (isPassThrough) {
-          final refDir = _resolveRefDir(projectDir, node.name);
-          if (refDir != null) {
-            hasImage = await File(p.join(refDir, 'image.png')).exists();
-          } else {
-            hasImage = false;
-          }
+        final bool hasImage;
+        if (isRef) {
+          hasImage = refDir != null &&
+              await File(p.join(refDir, 'image.png')).exists();
         } else {
           hasImage = await fileService.imageFileForAsset(node.directoryPath).exists();
         }
 
         // ── Prompt resolution ─────────────────────────────────────────────────
-        // 1. Try the asset's own prompt.mdx body.
-        // 2. If empty and this is a pass-through, resolve the referenced asset
-        //    directory and read its prompt.mdx.
-        //    - @/scenes/0/<name>  → global: <project>/assets/<name>/
-        //    - @/scenes/N/<name>  → scene-local: <project>/scenes/N/assets/<name>/
-        // 3. If still empty → not ready (resolvedPrompt stays '').
-        String resolvedPrompt = '';
-        final ownPrompt = await fileService.readAssetPrompt(node.directoryPath);
-        if (ownPrompt.promptBody.trim().isNotEmpty) {
-          resolvedPrompt = ownPrompt.promptBody.trim();
-        } else if (isPassThrough) {
-          final refDir = _resolveRefDir(projectDir, node.name);
+        // Referenced asset (@): read prompt from the referenced directory.
+        // Scene-local asset:    read prompt from this asset's own directory.
+        // Either way, if the prompt body is empty → asset is not ready.
+        final String resolvedPrompt;
+        final String resolvedDirPath;
+        if (isRef) {
+          resolvedDirPath = refDir ?? node.directoryPath;
           if (refDir != null) {
             final refPrompt = await fileService.readAssetPrompt(refDir);
             resolvedPrompt = refPrompt.promptBody.trim();
+          } else {
+            resolvedPrompt = ''; // ref path could not be parsed → not ready
           }
+        } else {
+          resolvedDirPath = node.directoryPath;
+          final ownPrompt = await fileService.readAssetPrompt(node.directoryPath);
+          resolvedPrompt = ownPrompt.promptBody.trim();
         }
-        // If resolvedPrompt is still '' → asset is not ready.
-
-        // For pass-through assets, resolvedDirPath points to the referenced
-        // asset directory so the UI can navigate the user there for prompt
-        // generation. Falls back to dirPath if the ref cannot be parsed.
-        final resolvedDirPath = isPassThrough
-            ? (_resolveRefDir(projectDir, node.name) ?? node.directoryPath)
-            : node.directoryPath;
 
         assets.add(SceneAsset(
           name: node.name,
           dirPath: node.directoryPath,
           hasImage: hasImage,
           isGlobal: node.isGlobal,
-          isPassThrough: isPassThrough,
+          isPassThrough: node.isPassThrough,
           type: node.type,
           description: node.description,
           resolvedPrompt: resolvedPrompt,
