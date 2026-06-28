@@ -3,3 +3,5 @@ docs/ArkMask
 
 # FVM Version Cache
 .fvm/
+
+backend/arkmask-firebase.json
