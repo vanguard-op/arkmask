@@ -132,14 +132,18 @@ class ArkMaskApiClient {
     required String promptBody,
     List<List<int>> refImageBytes = const [],
   }) async {
-    final fields = <String, dynamic>{'prompt': promptBody};
+    // Build multipart body explicitly — fromMap with List<MultipartFile> is
+    // unreliable in Dio. Using formData.files.add() guarantees each image is
+    // sent as a separate `ref_images` file field that FastAPI can receive as
+    // list[UploadFile].
+    final formData = FormData();
+    formData.fields.add(MapEntry('prompt', promptBody));
     for (final bytes in refImageBytes) {
-      // Dio MultipartFile.fromBytes attaches each image as a separate
-      // `ref_images` field — FastAPI receives them as list[UploadFile].
-      fields['ref_images'] = (fields['ref_images'] as List<MultipartFile>? ?? [])
-        ..add(MultipartFile.fromBytes(bytes, filename: 'ref.png', contentType: DioMediaType('image', 'png')));
+      formData.files.add(MapEntry(
+        'ref_images',
+        MultipartFile.fromBytes(bytes, filename: 'ref.png', contentType: DioMediaType('image', 'png')),
+      ));
     }
-    final formData = FormData.fromMap(fields);
     final response = await _execute(
       () => _dio.post('/image', data: formData),
     );
@@ -177,12 +181,14 @@ class ArkMaskApiClient {
     required String prompt,
     required List<List<int>> refImageBytes,
   }) async {
-    final fields = <String, dynamic>{'prompt': prompt};
+    final formData = FormData();
+    formData.fields.add(MapEntry('prompt', prompt));
     for (final bytes in refImageBytes) {
-      fields['ref_images'] = (fields['ref_images'] as List<MultipartFile>? ?? [])
-        ..add(MultipartFile.fromBytes(bytes, filename: 'ref.png', contentType: DioMediaType('image', 'png')));
+      formData.files.add(MapEntry(
+        'ref_images',
+        MultipartFile.fromBytes(bytes, filename: 'ref.png', contentType: DioMediaType('image', 'png')),
+      ));
     }
-    final formData = FormData.fromMap(fields);
     final response = await _execute(
       () => _dio.post('/video', data: formData),
     );
