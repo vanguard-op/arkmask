@@ -39,6 +39,11 @@ class SceneCubit extends Cubit<SceneState> {
   Future<void> load() async {
     emit(SceneLoading());
     try {
+      // Repair any prompt.mdx files where the `name` field was written without
+      // quotes and contained `@` (YAML reserved), causing the frontmatter parser
+      // to fail silently and lose the reference path. Safe no-op when clean.
+      await fileService.repairUnquotedRefNames(projectName);
+
       final tree = await fileService.readProjectTree(projectName);
       final sceneNode = tree.scenes.firstWhere(
         (s) => s.sceneNumber == sceneNumber,
@@ -287,13 +292,24 @@ class SceneCubit extends Cubit<SceneState> {
     final result = <Map<String, String>>[];
     for (final asset in s.assets) {
       final imageFile = File(p.join(asset.resolvedDirPath, 'image.png'));
-      if (!await imageFile.exists()) continue;
+      final exists = await imageFile.exists();
+      // Temporary diagnostic — remove once ref-image resolution is confirmed.
+      // ignore: avoid_print
+      print(
+        '[VideoRefImages] asset=${asset.displayName} '
+        'ref=${asset.name.startsWith("@")} '
+        'resolvedDir=${asset.resolvedDirPath} '
+        'imageExists=$exists',
+      );
+      if (!exists) continue;
       final bytes = await imageFile.readAsBytes();
       result.add({
         'data': base64Encode(bytes),
         'mime_type': 'image/png',
       });
     }
+    // ignore: avoid_print
+    print('[VideoRefImages] total images included: ${result.length}');
     return result;
   }
 

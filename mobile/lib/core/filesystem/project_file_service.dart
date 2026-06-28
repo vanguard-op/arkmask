@@ -312,11 +312,12 @@ class ProjectFileService {
           : p.join(projectDir, 'scenes', '${asset.sceneNumber}', 'assets', dirName);
       await Directory(dirPath).create(recursive: true);
 
-      // Write initial prompt.mdx. The frontmatter `name` stores the full
-      // reference path (e.g. "@/scenes/0/lyra") so the UI can display it.
+      // Write initial prompt.mdx. Always quote `name` — values starting with
+      // '@' are reserved in YAML and must be quoted or the parser returns null,
+      // which would cause the reference path to be lost on read-back.
       final promptFile = File(p.join(dirPath, 'prompt.mdx'));
       await promptFile.writeAsString(
-        '---\nname: ${asset.name}\ntype: ${asset.type.value}\ndescription: "${asset.description}"\n---\n',
+        '---\nname: "${_escapeYamlString(asset.name)}"\ntype: ${asset.type.value}\ndescription: "${_escapeYamlString(asset.description)}"\n---\n',
       );
     }
   }
@@ -349,7 +350,7 @@ class ProjectFileService {
     _assertInit();
     final file = File(p.join(assetDirPath, 'prompt.mdx'));
     final content =
-        '---\nname: ${prompt.name}\ntype: ${prompt.type.value}\ndescription: "${_escapeYamlString(prompt.description)}"\n---\n${prompt.promptBody}';
+        '---\nname: "${_escapeYamlString(prompt.name)}"\ntype: ${prompt.type.value}\ndescription: "${_escapeYamlString(prompt.description)}"\n---\n${prompt.promptBody}';
     await file.writeAsString(content);
   }
 
@@ -402,6 +403,39 @@ class ProjectFileService {
     final parts = content.split('---');
     if (parts.length < 3) return content.trim();
     return parts.sublist(2).join('---').trimLeft();
+  }
+
+  /// Repairs prompt.mdx files where the `name` field was written unquoted
+  /// and contained a YAML-reserved character (`@`), causing the frontmatter
+  /// parser to return `{}` and the name to fall back to the directory basename.
+  ///
+  /// Detects broken files by checking: if the parsed `name` equals the
+  /// directory basename AND the raw frontmatter contains an unquoted `@` value.
+  /// Rewrites the file with the name properly quoted so future reads are correct.
+  ///
+  /// Safe to call on startup; no-op when nothing is broken.
+  Future<void> repairUnquotedRefNames(String projectName) async {
+    _assertInit();
+    final projectDir = Directory(p.join(_projectsRoot.path, projectName));
+    if (!await projectDir.exists()) return;
+
+    await for (final entity in projectDir.list(recursive: true, followLinks: false)) {
+      if (entity is! File) continue;
+      if (p.basename(entity.path) != 'prompt.mdx') continue;
+
+      final content = await entity.readAsString();
+      // Look for an unquoted @ value in the name field: `name: @...`
+      final unquotedRef = RegExp(r'^name:\s*@', caseSensitive: false);
+      if (!unquotedRef.hasMatch(content)) continue;
+
+      // Re-quote the name field. Process line-by-line to avoid multiline regex.
+      final fixed = content.split('\n').map((line) {
+        final match = RegExp(r'^(name:\s*)(@.*)$').firstMatch(line);
+        if (match == null) return line;
+        return '${match[1]}"${match[2]}"';
+      }).join('\n');
+      await entity.writeAsString(fixed);
+    }
   }
 
   /// Escapes double-quotes for YAML inline string values.
