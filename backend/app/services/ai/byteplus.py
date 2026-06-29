@@ -202,10 +202,13 @@ class BytePlusProvider(AIProvider):
             raise ValueError("At least one reference image is required for video generation")
 
         # Build the content array: text prompt + reference images (up to 9).
+        # Per BytePlus Seedance API: text items have no role; image_url items require
+        # role="reference_image" (other valid roles: "first_frame", "last_frame").
         capped = ref_images[:self._SEEDANCE_MAX_REF_IMAGES]
         content: list[dict] = [{"type": "text", "text": storyboard}]
         for img in capped:
             content.append({
+                "role": "reference_image",
                 "type": "image_url",
                 "image_url": {"url": _to_data_uri(img.data, img.mime_type)},
             })
