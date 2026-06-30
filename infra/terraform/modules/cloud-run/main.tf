@@ -7,6 +7,13 @@
 #   API:     allow_unauthenticated=true, low timeout, 1 min instance in prod
 #   Workers: allow_unauthenticated=false, high timeout (1800s for FFmpeg),
 #            higher memory (4Gi for merge worker), invoked via Cloud Tasks OIDC
+#
+# Image lifecycle:
+#   Terraform creates the service once using var.image (a public placeholder on
+#   first apply if the real image does not yet exist in Artifact Registry).
+#   After that, the GitHub Actions deploy workflow owns the image — it calls
+#   `gcloud run deploy` to update the revision.  The ignore_changes lifecycle
+#   rule prevents Terraform from ever reverting the image CI/CD deployed.
 
 resource "google_cloud_run_v2_service" "service" {
   name     = var.name
@@ -69,6 +76,15 @@ resource "google_cloud_run_v2_service" "service" {
   traffic {
     type    = "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST"
     percent = 100
+  }
+
+  lifecycle {
+    # CI/CD (gcloud run deploy) owns the image after the first apply.
+    # Without this, every `terraform apply` would revert the image back to
+    # whatever is in var.image, undoing the latest CI/CD deployment.
+    ignore_changes = [
+      template[0].containers[0].image,
+    ]
   }
 }
 

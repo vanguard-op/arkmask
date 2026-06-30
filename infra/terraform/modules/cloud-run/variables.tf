@@ -13,8 +13,9 @@ variable "name" {
 }
 
 variable "image" {
-  description = "Full Docker image reference including tag (e.g. europe-west1-docker.pkg.dev/my-project/arkmask/api:latest)."
+  description = "Full Docker image reference including tag (e.g. europe-west1-docker.pkg.dev/my-project/arkmask/api:latest). Defaults to the public Cloud Run placeholder so the first terraform apply succeeds before CI has pushed a real image. CI/CD (gcloud run deploy) replaces this on first deployment; the lifecycle rule then prevents Terraform from reverting it."
   type        = string
+  default     = "us-docker.pkg.dev/cloudrun/container/hello"
 }
 
 variable "service_account_email" {
