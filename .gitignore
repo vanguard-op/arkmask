@@ -6,6 +6,29 @@ docs/ArkMask
 
 backend/arkmask-firebase.json
 
+# ── Infra ─────────────────────────────────────────────────────────────────────
+
+# Terraform local state and backup (remote state lives in GCS)
+infra/terraform/**/*.tfstate
+infra/terraform/**/*.tfstate.backup
+
+# Terraform working directory — providers, module cache, plan files
+# CI runs its own `terraform init` so these are never needed remotely
+infra/terraform/**/.terraform/
+infra/terraform/**/.terraform.lock.hcl
+infra/terraform/**/tfplan
+
+# Local variable overrides (never commit secrets or personal tfvars)
+infra/terraform/**/*.auto.tfvars
+infra/terraform/**/terraform.tfvars
+
+# Firebase local credentials (service account JSON)
+infra/firebase/*.json
+
+# SETUP scratch files that may contain real secret values
+infra/*.json
+infra/*.env
+
 # Claude Code workspace metadata
 .claude/
 
