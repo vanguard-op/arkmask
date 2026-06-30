@@ -275,6 +275,42 @@ class ArkMaskApiClient {
     return (response.data as Map<String, dynamic>)['job_id'] as String;
   }
 
+  /// POST /merge — enqueue a cloud video merge job (FEAT-021).
+  ///
+  /// Sends the ordered list of scenes with per-clip trim points and transition
+  /// types. The merge worker reads all scene `video.mp4` files directly from
+  /// GCS, runs FFmpeg server-side (no on-device processing), and saves
+  /// `final.mp4` to GCS at `users/{uid}/{projectSlug}/final.mp4`.
+  ///
+  /// On completion the worker sets `gcs_final_path` on the Firestore project
+  /// root document; the Flutter Firestore listener fires and the editor enables
+  /// the "Download to Camera Roll" button. A FCM push notification also fires.
+  ///
+  /// [scenes] is the ordered list of scene entries — one per scene that should
+  /// be included in the export (scenes without `gcs_video_path` are excluded by
+  /// the caller). Each entry carries:
+  ///   - `scene_index` (int) — the scene number / Firestore doc ID
+  ///   - `trim_in` (double) — start offset in seconds
+  ///   - `trim_out` (double) — end offset in seconds
+  ///   - `transition_to_next` (String) — the gap transition to the next clip
+  ///     (`"hard_cut"` | `"fade_black"` | `"dissolve"`); ignored for the last
+  ///     scene entry.
+  ///
+  /// Returns the `job_id` immediately. The caller writes a [JobRegistryEntry]
+  /// with `type: "merge"` and waits for the Firestore `gcs_final_path` update.
+  Future<String> mergeClips({
+    required String projectSlug,
+    required List<Map<String, dynamic>> scenes,
+  }) async {
+    final response = await _execute(
+      () => _dio.post('/merge', data: {
+        'project_slug': projectSlug,
+        'scenes': scenes,
+      }),
+    );
+    return (response.data as Map<String, dynamic>)['job_id'] as String;
+  }
+
   /// GET /job/{jobId}/status — poll for any generation job's status.
   ///
   /// Used on foreground return to recover job state for any entry in the

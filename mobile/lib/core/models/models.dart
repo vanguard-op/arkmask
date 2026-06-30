@@ -194,6 +194,8 @@ abstract final class CreditCost {
   static const int imageGeneration = 5;
   static const int videoPrompt = 3;
   static const int videoGeneration = 20;
+  /// Cloud FFmpeg merge — flat fee regardless of scene count.
+  static const int merge = 5;
 }
 
 // ── Firestore-backed project document ────────────────────────────────────────
@@ -479,5 +481,12 @@ enum TransitionType {
         hardCut => 'Cut',
         fadeBlack => 'Fade',
         dissolve => 'Dslv',
+      };
+
+  /// JSON-safe string sent to `POST /merge` as `transition_to_next`.
+  String get apiValue => switch (this) {
+        hardCut => 'hard_cut',
+        fadeBlack => 'fade_black',
+        dissolve => 'dissolve',
       };
 }

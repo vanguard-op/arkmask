@@ -1,106 +1,287 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
-import 'package:ffmpeg_kit_flutter_new/return_code.dart';
-import 'package:ffmpeg_kit_flutter_new/statistics.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:gal/gal.dart';
 import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
 
-import '../../../core/filesystem/project_file_service.dart';
+import '../../../core/api/api_error.dart';
+import '../../../core/api/ark_mask_api_client.dart';
+import '../../../core/jobs/job_registry_service.dart';
 import '../../../core/models/models.dart';
 import 'editor_state.dart';
 
 /// Cubit for the Video Editor Screen (FEAT-018, FEAT-019, FEAT-021).
 ///
-/// Responsibilities:
-/// - Read project tree and initialize [VideoPlayerController]s for each clip.
-/// - Persist and restore trim state via [SharedPreferences].
-/// - Run FFmpeg filter_complex concat for multi-clip export.
-/// - Save exported video to the device gallery via [Gal].
+/// Phase 3 cloud-first rewrite:
+/// - Reads scene clips from Firestore `scenes/` subcollection real-time listener.
+/// - Streams video via presigned URLs (no local file downloads during editing).
+/// - Export sends `POST /merge` to cloud worker; listens for `gcs_final_path`
+///   on the Firestore project root document to know when the job completes.
+/// - Download to gallery fetches the final presigned URL and saves bytes to a
+///   temp file, then hands it to [Gal.putVideo].
 ///
-/// [VideoPlayerController]s are stored as an instance field (not in state)
-/// because they are mutable, disposable, and not serializable.
+/// No FFmpeg runs on-device. No [ProjectFileService] dependency.
 class EditorCubit extends Cubit<EditorState> {
-  EditorCubit({required this.fileService}) : super(EditorLoading());
+  EditorCubit({
+    required this.projectSlug,
+    required this.apiClient,
+    required this.jobRegistryService,
+  }) : super(EditorLoading());
 
-  final ProjectFileService fileService;
+  final String projectSlug;
+  final ArkMaskApiClient apiClient;
+  final JobRegistryService jobRegistryService;
 
-  /// Keyed by scene number. Populated during [load]; disposed on [close].
+  /// [VideoPlayerController]s keyed by scene number. Created lazily when the
+  /// clip is selected or played; disposed on [close].
   final Map<int, VideoPlayerController> _controllers = {};
 
-  /// Returns the [VideoPlayerController] for the given [sceneNumber], or null
-  /// if the scene has no video or the controller failed to initialize.
+  /// Active Firestore subscriptions — cancelled in [close].
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _projectSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _scenesSub;
+
+  /// Returns the [VideoPlayerController] for [sceneNumber], or null if the
+  /// scene has no presigned URL yet or the controller failed to initialise.
   VideoPlayerController? controllerFor(int sceneNumber) =>
       _controllers[sceneNumber];
 
-  // ── Load ──────────────────────────────────────────────────────────────────
+  // ── Load ───────────────────────────────────────────────────────────────────
 
-  /// Reads the project tree, initialises video controllers, restores persisted
-  /// trim and transition states, and emits [EditorLoaded].
-  Future<void> load(String projectName) async {
+  /// Opens two Firestore real-time listeners (project root + scenes
+  /// subcollection) and emits [EditorLoaded] immediately with whatever data is
+  /// already available, patching clips as presigned URLs and durations resolve.
+  Future<void> load() async {
     emit(EditorLoading());
-    try {
-      final tree = await fileService.readProjectTree(projectName);
-      final savedTrims = await _loadSavedTrims(projectName);
-      final savedTransitions = await _loadSavedTransitions(projectName);
 
-      final clips = <ClipEntry>[];
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      emit(EditorError(message: 'Not signed in.'));
+      return;
+    }
 
-      for (final scene in tree.scenes) {
-        final videoFile = fileService.videoFileForScene(scene.directoryPath);
-        final hasVideo = await videoFile.exists();
+    final firestore = FirebaseFirestore.instance;
+    final projectRef = firestore
+        .collection('users')
+        .doc(uid)
+        .collection('projects')
+        .doc(projectSlug);
 
-        double duration = 0.0;
-        if (hasVideo) {
-          final ctrl = VideoPlayerController.file(videoFile);
-          try {
-            await ctrl.initialize();
-            await ctrl.seekTo(Duration.zero);
-            duration = ctrl.value.duration.inMilliseconds / 1000.0;
-            _controllers[scene.sceneNumber] = ctrl;
-          } catch (_) {
-            // Controller failed (corrupt file, unsupported codec, etc.).
-            // The clip will appear without a thumbnail.
-            await ctrl.dispose();
-          }
+    // ── 1. Project root listener — watches gcs_final_path ──────────────────
+    _projectSub = projectRef.snapshots().listen((snap) {
+      if (isClosed) return;
+      final data = snap.data();
+      final gcsPath = data?['gcs_final_path'] as String?;
+
+      final s = state;
+      if (s is EditorLoaded) {
+        final wasMerging = s.isMerging;
+        if (wasMerging && gcsPath != null) {
+          // Merge completed — clear the merging flag and update the job entry.
+          _resolveActiveMergeJob();
         }
+        if (s.gcsExportPath != gcsPath) {
+          emit(s.copyWith(
+            isMerging: gcsPath != null ? false : s.isMerging,
+            gcsExportPath: gcsPath,
+          ));
+        }
+      }
+    });
 
-        // Restore saved trim if the total duration matches; otherwise default.
-        final saved = savedTrims[scene.sceneNumber];
-        final trimState = (saved != null &&
-                (saved.totalDuration - duration).abs() < 0.1 &&
-                duration > 0)
-            ? saved
-            : ClipTrimState(
-                sceneNumber: scene.sceneNumber,
-                inPoint: 0,
-                outPoint: duration,
-                totalDuration: duration,
-              );
+    // ── 2. Scenes subcollection listener ────────────────────────────────────
+    _scenesSub = projectRef
+        .collection('scenes')
+        .snapshots()
+        .listen((snap) async {
+      if (isClosed) return;
+
+      // Parse documents → SceneDocument list sorted by scene_number.
+      final sceneDocs = snap.docs
+          .map((d) => SceneDocument.fromFirestore(d.id, d.data()))
+          .toList()
+        ..sort((a, b) => a.sceneNumber.compareTo(b.sceneNumber));
+
+      final savedTrims = await _loadSavedTrims(projectSlug);
+      final savedTransitions = await _loadSavedTransitions(projectSlug);
+
+      // Preserve gcsExportPath from project listener if already loaded.
+      final currentExportPath = state is EditorLoaded
+          ? (state as EditorLoaded).gcsExportPath
+          : null;
+      final currentIsMerging = state is EditorLoaded
+          ? (state as EditorLoaded).isMerging
+          : false;
+
+      // Build the clip list. Presigned URL and duration may not yet be known;
+      // emit immediately with nulls and patch each clip asynchronously.
+      final clips = <ClipEntry>[];
+      for (final scene in sceneDocs) {
+        // Use 0.0 as the duration placeholder until the probe resolves.
+        // Saved trim is applied in _fetchAndPatchClip after the duration is known.
+        const placeholder = 0.0;
+        final trimState = ClipTrimState(
+          sceneNumber: scene.sceneNumber,
+          inPoint: 0,
+          outPoint: placeholder,
+          totalDuration: placeholder,
+        );
+
+        // Determine if a video generation job is active for this scene.
+        final isGenerating = jobRegistryService
+            .activeForProject(projectSlug)
+            .any((j) => j.sceneIndex == scene.sceneNumber && j.type == 'video');
 
         clips.add(ClipEntry(
           sceneNumber: scene.sceneNumber,
-          videoPath: hasVideo ? videoFile.path : null,
-          totalDuration: duration,
+          gcsVideoPath: scene.gcsVideoPath,
+          presignedUrl: null, // filled in below asynchronously
+          totalDuration: placeholder,
           trimState: trimState,
+          isGenerating: isGenerating,
         ));
       }
 
-      if (!isClosed) {
-        emit(EditorLoaded(
-          clips: clips,
-          projectDir: tree.directoryPath,
-          projectName: projectName,
-          transitions: savedTransitions,
-        ));
+      if (isClosed) return;
+      emit(EditorLoaded(
+        projectSlug: projectSlug,
+        clips: clips,
+        gcsExportPath: currentExportPath,
+        isMerging: currentIsMerging,
+        transitions: savedTransitions,
+      ));
+
+      // ── 3. Async URL fetch + duration probe per clip ─────────────────────
+      // Each clip is resolved independently so the UI updates incrementally.
+      for (var i = 0; i < sceneDocs.length; i++) {
+        final scene = sceneDocs[i];
+        if (scene.gcsVideoPath == null) continue;
+
+        // Kick off URL fetch without blocking other clips.
+        _fetchAndPatchClip(
+          clipIndex: i,
+          scene: scene,
+          savedTrims: savedTrims,
+        );
       }
-    } catch (e) {
-      if (!isClosed) emit(EditorError(message: e.toString()));
+    });
+  }
+
+  /// Fetches a presigned URL for [scene] and probes the clip duration, then
+  /// patches the clip in state at [clipIndex].
+  Future<void> _fetchAndPatchClip({
+    required int clipIndex,
+    required SceneDocument scene,
+    required Map<int, ClipTrimState> savedTrims,
+  }) async {
+    if (scene.gcsVideoPath == null) return;
+
+    String presignedUrl;
+    try {
+      presignedUrl =
+          await apiClient.getPresignedUrl(gcsPath: scene.gcsVideoPath!);
+    } catch (_) {
+      // URL fetch failed — leave clip as no-video placeholder for now.
+      return;
+    }
+
+    if (isClosed) return;
+
+    // Probe duration by initialising a network player controller briefly.
+    final duration = await _probeDuration(presignedUrl);
+
+    if (isClosed) return;
+
+    // Restore saved trim state if the duration matches within 100ms.
+    final saved = savedTrims[scene.sceneNumber];
+    final trimState = (saved != null &&
+            (saved.totalDuration - duration).abs() < 0.1 &&
+            duration > 0)
+        ? saved
+        : ClipTrimState(
+            sceneNumber: scene.sceneNumber,
+            inPoint: 0,
+            outPoint: duration,
+            totalDuration: duration,
+          );
+
+    final s = state;
+    if (s is! EditorLoaded) return;
+    if (clipIndex >= s.clips.length) return;
+
+    final updatedClips = List<ClipEntry>.from(s.clips);
+    updatedClips[clipIndex] = updatedClips[clipIndex].copyWith(
+      presignedUrl: presignedUrl,
+      totalDuration: duration,
+      trimState: trimState,
+    );
+    emit(s.copyWith(clips: updatedClips));
+
+    // Lazily create a VideoPlayerController for this clip (for thumbnail +
+    // playback). We create it after the URL is known so we don't spin up
+    // controllers for clips that are still being generated.
+    await _ensureController(scene.sceneNumber, presignedUrl);
+  }
+
+  /// Creates and initialises a [VideoPlayerController] for [sceneNumber] if
+  /// one does not already exist. Safe to call multiple times.
+  Future<void> _ensureController(int sceneNumber, String presignedUrl) async {
+    if (_controllers.containsKey(sceneNumber)) return;
+    final ctrl =
+        VideoPlayerController.networkUrl(Uri.parse(presignedUrl));
+    _controllers[sceneNumber] = ctrl;
+    try {
+      await ctrl.initialize();
+      // Seek to frame 0 so the thumbnail shows the first frame.
+      await ctrl.seekTo(Duration.zero);
+    } catch (_) {
+      // Non-fatal: thumbnail will be absent but playback can be retried.
+    }
+    // Trigger a rebuild so the thumbnail appears.
+    if (!isClosed && state is EditorLoaded) {
+      emit(state); // same state, new identity → rebuilds video thumbnail
+    }
+  }
+
+  /// Probes the duration of a presigned-URL video clip.
+  ///
+  /// Creates a [VideoPlayerController], initialises it (which fetches just the
+  /// media headers from GCS), reads the duration, then disposes immediately.
+  Future<double> _probeDuration(String presignedUrl) async {
+    final ctrl =
+        VideoPlayerController.networkUrl(Uri.parse(presignedUrl));
+    try {
+      await ctrl.initialize();
+      return ctrl.value.duration.inMilliseconds / 1000.0;
+    } catch (_) {
+      return 0.0;
+    } finally {
+      await ctrl.dispose();
+    }
+  }
+
+  /// Marks the active merge job as succeeded in the job registry.
+  void _resolveActiveMergeJob() {
+    final mergeJob = jobRegistryService
+        .all
+        .where((e) =>
+            e.projectId == projectSlug &&
+            e.type == 'merge' &&
+            e.isPending)
+        .firstOrNull;
+    if (mergeJob != null) {
+      jobRegistryService.updateStatus(
+        mergeJob.jobId,
+        'success',
+        resolvedAt: DateTime.now(),
+      );
     }
   }
 
@@ -109,12 +290,21 @@ class EditorCubit extends Cubit<EditorState> {
   void selectClip(int? index) {
     final s = state;
     if (s is! EditorLoaded) return;
-    // Deselect if tapping the already-selected clip.
+    // Tapping the already-selected clip deselects it.
     final next = s.selectedClipIndex == index ? null : index;
     emit(s.copyWith(selectedClipIndex: next));
+
+    // Lazily create a controller when the clip is first selected.
+    if (next != null) {
+      final clip = s.clips[next];
+      if (clip.presignedUrl != null &&
+          !_controllers.containsKey(clip.sceneNumber)) {
+        _ensureController(clip.sceneNumber, clip.presignedUrl!);
+      }
+    }
   }
 
-  // ── Trim ──────────────────────────────────────────────────────────────────
+  // ── Trim ───────────────────────────────────────────────────────────────────
 
   /// Moves the **in-point** of the clip at [clipIndex] by [pixelDelta] pixels.
   /// 1 pixel = 1/24 second on the timeline ruler.
@@ -130,14 +320,13 @@ class EditorCubit extends Cubit<EditorState> {
     // Snap to start if within 50ms.
     if (newIn < 0.05) newIn = 0.0;
 
-    // Haptic feedback when reaching minimum clip duration.
     _hapticIfAtMin(
       oldDuration: clip.trimState.outPoint - clip.trimState.inPoint,
       newDuration: clip.trimState.outPoint - newIn,
     );
 
-    final updated = _updateClipTrim(s.clips, clipIndex,
-        clip.trimState.copyWith(inPoint: newIn));
+    final updated =
+        _updateClipTrim(s.clips, clipIndex, clip.trimState.copyWith(inPoint: newIn));
     emit(s.copyWith(clips: updated));
 
     _controllers[clip.sceneNumber]
@@ -163,8 +352,8 @@ class EditorCubit extends Cubit<EditorState> {
       newDuration: newOut - clip.trimState.inPoint,
     );
 
-    final updated = _updateClipTrim(s.clips, clipIndex,
-        clip.trimState.copyWith(outPoint: newOut));
+    final updated =
+        _updateClipTrim(s.clips, clipIndex, clip.trimState.copyWith(outPoint: newOut));
     emit(s.copyWith(clips: updated));
 
     _controllers[clip.sceneNumber]
@@ -184,14 +373,14 @@ class EditorCubit extends Cubit<EditorState> {
     );
     final updated = _updateClipTrim(s.clips, clipIndex, reset);
     emit(s.copyWith(clips: updated));
-    _persistEditorState(s.projectName, updated, s.transitions);
+    _persistEditorState(projectSlug, updated, s.transitions);
   }
 
-  /// Called when a trim drag ends — persists the current trim state.
+  /// Called when a trim drag ends — persists the current trim + transition state.
   void onTrimDragEnd() {
     final s = state;
     if (s is! EditorLoaded) return;
-    _persistEditorState(s.projectName, s.clips, s.transitions);
+    _persistEditorState(s.projectSlug, s.clips, s.transitions);
   }
 
   // ── Playback ───────────────────────────────────────────────────────────────
@@ -223,41 +412,48 @@ class EditorCubit extends Cubit<EditorState> {
         ?.seekTo(Duration(milliseconds: (seconds * 1000).round()));
   }
 
-  // ── Export ────────────────────────────────────────────────────────────────
+  // ── Presigned URL refresh ──────────────────────────────────────────────────
 
-  /// Returns true if `final.mp4` already exists in the project directory.
-  Future<bool> exportFileExists() async {
-    final s = state;
-    if (s is! EditorLoaded) return false;
-    return File(p.join(s.projectDir, 'final.mp4')).exists();
-  }
-
-  // ── Transitions ───────────────────────────────────────────────────────────
-
-  /// Sets the transition type for the gap at [gapIndex] (0 = between clips 0
-  /// and 1). Persists the selection alongside trim state.
-  void setTransition(int gapIndex, TransitionType type) {
+  /// Re-fetches the presigned URL for [clipIndex] (called when an `Image.network`
+  /// thumbnail fails to load — the URL may have expired after 2 hours).
+  Future<void> refreshPresignedUrl(int clipIndex) async {
     final s = state;
     if (s is! EditorLoaded) return;
-    final updated = Map<int, TransitionType>.from(s.transitions)
-      ..[gapIndex] = type;
-    emit(s.copyWith(transitions: updated));
-    _persistEditorState(s.projectName, s.clips, updated);
+    if (clipIndex >= s.clips.length) return;
+
+    final clip = s.clips[clipIndex];
+    if (clip.gcsVideoPath == null) return;
+
+    try {
+      final freshUrl =
+          await apiClient.getPresignedUrl(gcsPath: clip.gcsVideoPath!);
+      if (isClosed) return;
+      final updated = List<ClipEntry>.from((state as EditorLoaded).clips);
+      updated[clipIndex] = updated[clipIndex].copyWith(presignedUrl: freshUrl);
+      emit((state as EditorLoaded).copyWith(clips: updated));
+
+      // Recreate the player controller with the fresh URL.
+      final old = _controllers.remove(clip.sceneNumber);
+      await old?.dispose();
+      await _ensureController(clip.sceneNumber, freshUrl);
+    } catch (_) {
+      // Non-fatal — thumbnail stays blank until the user retries.
+    }
   }
 
-  // ── Export ────────────────────────────────────────────────────────────────
+  // ── Export (cloud merge) ───────────────────────────────────────────────────
 
-  /// Runs FFmpeg filter_complex concat, saves to gallery, and emits progress.
+  /// Sends `POST /merge` to the cloud worker.
   ///
-  /// Use [checkExportFile] before calling this to ask the user about overwriting.
+  /// Guards: at least one clip must have a video. If [gcsExportPath] is already
+  /// set the screen shows a confirmation dialog before calling this method.
   Future<void> export() async {
     final s = state;
     if (s is! EditorLoaded) return;
 
-    // Only export clips that have video files.
+    // Guard: need at least one clip with video.
     final validClips =
-        s.clips.where((c) => c.videoPath != null && c.totalDuration > 0).toList();
-
+        s.clips.where((c) => c.hasVideo).toList();
     if (validClips.isEmpty) {
       emit(s.copyWith(exportError: 'No video clips to export.'));
       return;
@@ -268,70 +464,117 @@ class EditorCubit extends Cubit<EditorState> {
       if (ctrl.value.isPlaying) ctrl.pause();
     }
 
-    emit(s.copyWith(
-      isExporting: true,
-      exportProgress: 0.0,
-      exportError: null,
-      exportedFilePath: null,
-    ));
+    emit(s.copyWith(isMerging: true, mergeError: null));
 
-    final outputPath = p.join(s.projectDir, 'final.mp4');
-    // Remove stale file so FFmpeg doesn't prompt for overwrite.
-    final outFile = File(outputPath);
-    if (await outFile.exists()) await outFile.delete();
+    // Build the scenes payload for POST /merge.
+    final scenes = <Map<String, dynamic>>[];
+    for (var i = 0; i < validClips.length; i++) {
+      final clip = validClips[i];
+      // Gap index: the transition after clip[i] is at gap i (not used at Phase 3
+      // launch, all gaps default to hardCut, but we still send the value so the
+      // cloud worker can apply them in Phase 4 without a client update).
+      final gapIndex = i; // transition_to_next is ignored for the last scene
+      scenes.add({
+        'scene_index': clip.sceneNumber,
+        'trim_in': clip.trimState.inPoint,
+        'trim_out': clip.trimState.outPoint,
+        'transition_to_next': s.transitionAt(gapIndex).apiValue,
+      });
+    }
 
-    final command = _buildFfmpegCommand(validClips, outputPath, s.transitions);
+    try {
+      final jobId = await apiClient.mergeClips(
+        projectSlug: projectSlug,
+        scenes: scenes,
+      );
 
-    // Estimate total frames (30 fps assumption) for progress reporting.
-    final totalSec =
-        validClips.fold<double>(0.0, (sum, c) => sum + c.trimmedDuration);
-    final estimatedFrames = (totalSec * 30.0).round().clamp(1, 999999);
+      // Write a Hive CE entry so the job survives app restarts.
+      await jobRegistryService.register(JobRegistryEntry(
+        jobId: jobId,
+        type: 'merge',
+        projectId: projectSlug,
+        status: 'pending',
+        createdAt: DateTime.now(),
+      ));
 
-    await FFmpegKit.executeAsync(
-      command,
-      (session) async {
-        if (isClosed) return;
-        final code = await session.getReturnCode();
-        if (ReturnCode.isSuccess(code)) {
-          // Attempt gallery save; non-fatal if it fails (e.g. permission denied).
-          try {
-            await Gal.putVideo(outputPath);
-          } catch (_) {}
-          if (!isClosed) {
-            emit((state as EditorLoaded).copyWith(
-              isExporting: false,
-              exportProgress: 1.0,
-              exportedFilePath: outputPath,
-            ));
-          }
-        } else {
-          final log = await session.getOutput() ?? 'Unknown FFmpeg error.';
-          if (!isClosed) {
-            emit((state as EditorLoaded).copyWith(
-              isExporting: false,
-              exportError: log,
-            ));
-          }
-        }
-      },
-      null, // log callback — not needed; use statistics for progress
-      (Statistics stats) {
-        if (isClosed) return;
-        final current = state;
-        if (current is! EditorLoaded || !current.isExporting) return;
-        final frames = stats.getVideoFrameNumber();
-        final progress = (frames / estimatedFrames).clamp(0.0, 0.99);
-        emit(current.copyWith(exportProgress: progress));
-      },
-    );
+      // Keep isMerging = true — the Firestore gcs_final_path listener clears it.
+    } on ApiInsufficientCredits {
+      // Signal the screen to show CreditsExhaustedDialog.
+      final cur = state;
+      if (cur is EditorLoaded) {
+        emit(cur.copyWith(isMerging: false, mergeError: '__credits__'));
+      }
+    } catch (e) {
+      final cur = state;
+      if (cur is EditorLoaded) {
+        emit(cur.copyWith(isMerging: false, mergeError: e.toString()));
+      }
+    }
   }
 
-  /// Cancels an in-progress export.
-  Future<void> cancelExport() async {
-    await FFmpegKit.cancel();
+  // ── Download to gallery ────────────────────────────────────────────────────
+
+  /// Downloads `final.mp4` from GCS via presigned URL and saves it to the
+  /// device camera roll / gallery using [Gal.putVideo].
+  Future<void> downloadToGallery() async {
+    final s = state;
+    if (s is! EditorLoaded) return;
+    if (s.gcsExportPath == null) return;
+
+    emit(s.copyWith(isDownloading: true, downloadProgress: 0.0));
+
+    try {
+      // 1. Obtain a fresh presigned URL for the final.mp4.
+      final url =
+          await apiClient.getPresignedUrl(gcsPath: s.gcsExportPath!);
+
+      if (isClosed) return;
+
+      // 2. Download the bytes.
+      final bytes = await apiClient.downloadBytes(url);
+
+      if (isClosed) return;
+
+      // Update progress to 80% after download (remaining 20% = gallery save).
+      final cur = state;
+      if (cur is EditorLoaded) {
+        emit(cur.copyWith(downloadProgress: 0.8));
+      }
+
+      // 3. Write bytes to a temporary file — Gal.putVideo requires a path.
+      final tmpDir = await getTemporaryDirectory();
+      final tmpPath = p.join(tmpDir.path, 'arkmask_final_$projectSlug.mp4');
+      final tmpFile = File(tmpPath);
+      await tmpFile.writeAsBytes(bytes);
+
+      // 4. Save to the device gallery.
+      await Gal.putVideo(tmpPath);
+
+      // 5. Clean up the temp file.
+      try {
+        await tmpFile.delete();
+      } catch (_) {}
+
+      if (isClosed) return;
+      final done = state;
+      if (done is EditorLoaded) {
+        emit(done.copyWith(isDownloading: false, downloadProgress: 1.0));
+      }
+    } catch (e) {
+      if (isClosed) return;
+      final err = state;
+      if (err is EditorLoaded) {
+        emit(err.copyWith(isDownloading: false, mergeError: e.toString()));
+      }
+    }
+  }
+
+  // ── Error clearing ─────────────────────────────────────────────────────────
+
+  void clearMergeError() {
     final s = state;
     if (s is EditorLoaded) {
-      emit(s.copyWith(isExporting: false, exportProgress: 0.0));
+      emit(s.copyWith(mergeError: null));
     }
   }
 
@@ -342,43 +585,42 @@ class EditorCubit extends Cubit<EditorState> {
     }
   }
 
-  // ── Persistence ───────────────────────────────────────────────────────────
+  // ── Persistence ────────────────────────────────────────────────────────────
 
-  /// Persists the current trim and transition state immediately.
-  /// Useful when the user navigates away (called from PopScope / dispose).
+  /// Persists the current trim and transition state.
+  /// Useful when the user navigates away (called from PopScope).
   void persistCurrentTrimState() {
     final s = state;
     if (s is! EditorLoaded) return;
-    _persistEditorState(s.projectName, s.clips, s.transitions);
+    _persistEditorState(s.projectSlug, s.clips, s.transitions);
   }
 
   /// Saves trim states and transition selections to [SharedPreferences].
   Future<void> _persistEditorState(
-    String projectName,
+    String slug,
     List<ClipEntry> clips,
     Map<int, TransitionType> transitions,
   ) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(
-        'trim_state_$projectName',
+        'trim_state_$slug',
         jsonEncode(clips.map((c) => c.trimState.toJson()).toList()),
       );
       // Persist transitions as {gapIndex: typeName} map.
       await prefs.setString(
-        'transition_state_$projectName',
+        'transition_state_$slug',
         jsonEncode(transitions.map((k, v) => MapEntry(k.toString(), v.name))),
       );
     } catch (_) {
-      // Non-fatal — state will reset to defaults on next load.
+      // Non-fatal — state resets to defaults on next load.
     }
   }
 
-  Future<Map<int, ClipTrimState>> _loadSavedTrims(
-      String projectName) async {
+  Future<Map<int, ClipTrimState>> _loadSavedTrims(String slug) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString('trim_state_$projectName');
+      final raw = prefs.getString('trim_state_$slug');
       if (raw == null) return {};
       final list = jsonDecode(raw) as List<dynamic>;
       return {
@@ -391,11 +633,10 @@ class EditorCubit extends Cubit<EditorState> {
     }
   }
 
-  Future<Map<int, TransitionType>> _loadSavedTransitions(
-      String projectName) async {
+  Future<Map<int, TransitionType>> _loadSavedTransitions(String slug) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString('transition_state_$projectName');
+      final raw = prefs.getString('transition_state_$slug');
       if (raw == null) return {};
       final map = jsonDecode(raw) as Map<String, dynamic>;
       return {
@@ -408,155 +649,7 @@ class EditorCubit extends Cubit<EditorState> {
     }
   }
 
-  // ── FFmpeg ────────────────────────────────────────────────────────────────
-
-  /// Builds the FFmpeg command for the export.
-  ///
-  /// All three transition types work without xfade (which silently outputs
-  /// black frames on AI-generated VFR clips):
-  ///
-  /// - **Hard Cut** — trim + concat, no filters.
-  /// - **Fade to Black** — `fade=out` on clip A tail + `fade=in` on clip B
-  ///   head, then concat.
-  /// - **Dissolve** — the tail of clip A and the head of clip B are trimmed
-  ///   into a separate overlap segment. Clip B's head is converted to RGBA and
-  ///   faded in from transparent, then overlaid on top of clip A's tail with
-  ///   `overlay`. The result is concatenated between clip A's body and clip B's
-  ///   body, giving a true simultaneous cross-dissolve without xfade.
-  String _buildFfmpegCommand(
-    List<ClipEntry> clips,
-    String outputPath,
-    Map<int, TransitionType> transitions,
-  ) {
-    // Pre-compute the transition duration for every gap.
-    // Clamped to 40 % of each adjacent clip so we never exceed clip length.
-    final gapFd = <int, double>{};
-    for (var g = 0; g < clips.length - 1; g++) {
-      final type = transitions[g] ?? TransitionType.hardCut;
-      if (type == TransitionType.hardCut) {
-        gapFd[g] = 0.0;
-      } else {
-        const desired = 0.5;
-        final dA = clips[g].trimmedDuration;
-        final dB = clips[g + 1].trimmedDuration;
-        gapFd[g] =
-            [desired, dA * 0.4, dB * 0.4].reduce((a, b) => a < b ? a : b);
-      }
-    }
-
-    final sb = StringBuffer();
-    for (final clip in clips) {
-      sb.write('-i "${clip.videoPath}" ');
-    }
-    sb.write('-filter_complex "');
-
-    // Output segment labels collected for the final concat.
-    final vLabels = <String>[];
-    final aLabels = <String>[];
-    var seg = 0; // increments for every output segment
-
-    for (var i = 0; i < clips.length; i++) {
-      final trim   = clips[i].trimState;
-      final inPt   = trim.inPoint;
-      final outPt  = trim.outPoint;
-
-      final prevType = i > 0             ? (transitions[i - 1] ?? TransitionType.hardCut) : TransitionType.hardCut;
-      final nextType = i < clips.length - 1 ? (transitions[i]   ?? TransitionType.hardCut) : TransitionType.hardCut;
-
-      final prevFd = i > 0             ? gapFd[i - 1]! : 0.0;
-      final nextFd = i < clips.length - 1 ? gapFd[i]!   : 0.0;
-
-      // Body of this clip. Dissolve overlaps "consume" the ends, so shrink.
-      final bodyIn  = inPt  + (prevType == TransitionType.dissolve ? prevFd : 0.0);
-      final bodyOut = outPt - (nextType == TransitionType.dissolve ? nextFd : 0.0);
-
-      // Fade-to-black fades on the body (dissolve fades live in the blend seg).
-      final fadeInDur  = prevType == TransitionType.fadeBlack ? prevFd : 0.0;
-      final fadeOutDur = nextType == TransitionType.fadeBlack ? nextFd : 0.0;
-
-      // ── Body segment ──────────────────────────────────────────────────────
-      if (bodyOut > bodyIn + 0.001) {
-        final bodyDur = bodyOut - bodyIn;
-        final vl = 's${seg}v';
-        final al = 's${seg}a';
-        final inS  = bodyIn.toStringAsFixed(4);
-        final outS = bodyOut.toStringAsFixed(4);
-
-        final vFadeIn  = fadeInDur > 0
-            ? ',fade=t=in:st=0:d=${fadeInDur.toStringAsFixed(4)}'   : '';
-        final foSt     = (bodyDur - fadeOutDur).toStringAsFixed(4);
-        final vFadeOut = fadeOutDur > 0
-            ? ',fade=t=out:st=$foSt:d=${fadeOutDur.toStringAsFixed(4)}' : '';
-
-        sb.write('[$i:v]trim=start=$inS:end=$outS,setpts=PTS-STARTPTS'
-            '$vFadeIn$vFadeOut,format=yuv420p[$vl];');
-
-        final aFadeIn  = fadeInDur > 0
-            ? ',afade=t=in:st=0:d=${fadeInDur.toStringAsFixed(4)}'   : '';
-        final aFadeOut = fadeOutDur > 0
-            ? ',afade=t=out:st=$foSt:d=${fadeOutDur.toStringAsFixed(4)}' : '';
-
-        sb.write('[$i:a]atrim=start=$inS:end=$outS,asetpts=PTS-STARTPTS'
-            '$aFadeIn$aFadeOut[$al];');
-
-        vLabels.add('[$vl]');
-        aLabels.add('[$al]');
-        seg++;
-      }
-
-      // ── Dissolve segment (inserted between clip[i] body and clip[i+1] body) ─
-      // Overlay B (fading in from transparent) on top of A for the overlap
-      // duration — a true simultaneous cross-dissolve without xfade.
-      if (nextType == TransitionType.dissolve && i < clips.length - 1) {
-        final fd          = nextFd;
-        final fdS         = fd.toStringAsFixed(4);
-        final nextTrimSt  = clips[i + 1].trimState;
-        final tailInS     = (outPt - fd).toStringAsFixed(4);
-        final tailOutS    = outPt.toStringAsFixed(4);
-        final headInS     = nextTrimSt.inPoint.toStringAsFixed(4);
-        final headOutS    = (nextTrimSt.inPoint + fd).toStringAsFixed(4);
-        final vl = 's${seg}v';
-        final al = 's${seg}a';
-
-        // Video: A_tail at yuv420p (base) + B_head fading in as rgba (overlay).
-        // fps=30 normalises both streams to the same frame rate so overlay
-        // receives matching frame counts over the overlap duration.
-        sb.write('[$i:v]trim=start=$tailInS:end=$tailOutS,setpts=PTS-STARTPTS,'
-            'fps=30,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p[dv${seg}base];');
-        sb.write('[${i + 1}:v]trim=start=$headInS:end=$headOutS,setpts=PTS-STARTPTS,'
-            'fps=30,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=rgba,'
-            'fade=t=in:st=0:d=$fdS:alpha=1[dv${seg}top];');
-        sb.write('[dv${seg}base][dv${seg}top]overlay=format=auto,format=yuv420p[$vl];');
-
-        // Audio: A_tail fades out, B_head fades in, amix combines them.
-        sb.write('[$i:a]atrim=start=$tailInS:end=$tailOutS,asetpts=PTS-STARTPTS,'
-            'afade=t=out:st=0:d=$fdS[da${seg}a];');
-        sb.write('[${i + 1}:a]atrim=start=$headInS:end=$headOutS,asetpts=PTS-STARTPTS,'
-            'afade=t=in:st=0:d=$fdS[da${seg}b];');
-        sb.write('[da${seg}a][da${seg}b]amix=inputs=2:normalize=0:duration=longest[$al];');
-
-        vLabels.add('[$vl]');
-        aLabels.add('[$al]');
-        seg++;
-      }
-    }
-
-    // Concat all collected segments — same proven path as hard-cut export.
-    final n     = vLabels.length;
-    final pairs = List.generate(n, (k) => '${vLabels[k]}${aLabels[k]}').join('');
-    sb.write('${pairs}concat=n=$n:v=1:a=1[vout][aout]" ');
-    // CRF 18 — near-source quality (default CRF 23 is noticeably softer than
-    // the high-bitrate clips produced by AI video generators).
-    // preset=fast balances encode speed vs compression on mobile hardware.
-    sb.write('-map [vout] -map [aout] '
-        '-c:v libx264 -crf 18 -preset fast '
-        '-c:a aac -b:a 192k '
-        '-movflags +faststart ');
-    sb.write('"$outputPath"');
-    return sb.toString();
-  }
-
-  // ── Helpers ───────────────────────────────────────────────────────────────
+  // ── Helpers ────────────────────────────────────────────────────────────────
 
   List<ClipEntry> _updateClipTrim(
       List<ClipEntry> clips, int index, ClipTrimState newTrim) {
@@ -575,6 +668,8 @@ class EditorCubit extends Cubit<EditorState> {
 
   @override
   Future<void> close() async {
+    await _projectSub?.cancel();
+    await _scenesSub?.cancel();
     for (final ctrl in _controllers.values) {
       await ctrl.dispose();
     }
