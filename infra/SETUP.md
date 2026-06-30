@@ -16,19 +16,17 @@ and GitHub secrets before CI/CD can run.
 ## Step 1 — Set the Terraform state bucket name
 
 The GCS backend bucket name must be a literal string in `backend.tf` — it cannot come
-from a variable. Replace the placeholder in both env files before running `terraform init`:
-
-```bash
-# Find the two occurrences
-grep -rn "REPLACE_ME" infra/terraform/envs/
-```
-
-Open both files and replace `REPLACE_ME_project-id-tfstate` with `{your-gcp-project-id}-tfstate`:
+from a variable. Open both env files and replace the placeholder with your actual bucket name:
 
 - `infra/terraform/envs/staging/backend.tf`
 - `infra/terraform/envs/prod/backend.tf`
 
-Everything else (`project_id`, `github_repo`, `db_password`) is injected at runtime via
+```bash
+# Confirm there are no remaining placeholders
+grep -rn "REPLACE_ME" infra/terraform/envs/
+```
+
+Everything else (`project_id`, `github_repo`) is injected at runtime via
 environment variables — no other hardcoded values to change.
 
 ---
@@ -38,13 +36,13 @@ environment variables — no other hardcoded values to change.
 ```bash
 PROJECT_ID="your-gcp-project-id"
 
-gcloud storage buckets create gs://${PROJECT_ID}-tfstate \
+gcloud storage buckets create gs://arkmask-tfstate \
   --location=europe-west1 \
   --uniform-bucket-level-access \
   --project=${PROJECT_ID}
 
 # Enable versioning so you can recover from a corrupted state file.
-gcloud storage buckets update gs://${PROJECT_ID}-tfstate --versioning
+gcloud storage buckets update gs://arkmask-tfstate --versioning
 ```
 
 ---
@@ -54,10 +52,7 @@ gcloud storage buckets update gs://${PROJECT_ID}-tfstate --versioning
 ```bash
 gcloud services enable \
   run.googleapis.com \
-  sqladmin.googleapis.com \
   cloudtasks.googleapis.com \
-  vpcaccess.googleapis.com \
-  servicenetworking.googleapis.com \
   secretmanager.googleapis.com \
   artifactregistry.googleapis.com \
   iam.googleapis.com \
@@ -69,6 +64,9 @@ gcloud services enable \
   --project=${PROJECT_ID}
 ```
 
+> No VPC, Cloud SQL, or `vpcaccess.googleapis.com` needed — Firestore and GCS
+> are reached over HTTPS directly from Cloud Run.
+
 ---
 
 ## Step 4 — Bootstrap prod Terraform (creates WIF)
@@ -79,15 +77,14 @@ resources that CI/CD depends on.
 
 ```bash
 export TF_VAR_project_id="your-gcp-project-id"
-export TF_VAR_github_repo="owner/arkmask"          # e.g. khidirahmad05/arkmask
-export TF_VAR_db_password="choose-a-strong-password"
+export TF_VAR_github_repo="owner/arkmask"   # e.g. khidirahmad05/arkmask
 
 cd infra/terraform/envs/prod
 terraform init
 terraform apply
 ```
 
-Note the two outputs — you'll need them for GitHub secrets in Step 6:
+Note the two outputs — you'll need them for GitHub secrets in Step 7:
 
 ```
 workload_identity_provider = "projects/.../providers/arkmask-github-provider"
@@ -107,41 +104,66 @@ terraform apply
 
 ---
 
-## Step 6 — Populate Secret Manager secrets
+## Step 6 — Populate the consolidated Secret Manager secret
 
-Terraform created the secret resources but not their values. Add the actual values now:
+Terraform created the secret resources but not their values. Each environment has a
+**single JSON secret** (`{env}-arkmask-config`) that the backend reads at startup and
+unpacks into individual environment variables.
+
+Build the JSON payload and add it as a new secret version:
 
 ```bash
-# ── Staging ──────────────────────────────────────────────────────────────────
+# ── Staging (test keys) ───────────────────────────────────────────────────────
 
-DB_IP=$(terraform -chdir=infra/terraform/envs/staging output -raw db_private_ip)
+cat > /tmp/staging-config.json <<'EOF'
+{
+  "stripe_secret_key":            "sk_test_...",
+  "stripe_webhook_secret":        "whsec_...",
+  "stripe_price_creator_monthly": "price_...",
+  "stripe_price_creator_annual":  "price_...",
+  "stripe_price_studio_monthly":  "price_...",
+  "stripe_price_studio_annual":   "price_...",
+  "firebase_credentials_path":    ""
+}
+EOF
 
-# Database connection URL
-echo -n "postgresql://arkmask:${TF_VAR_db_password}@${DB_IP}:5432/arkmask" | \
-  gcloud secrets versions add staging-arkmask-db-url --data-file=-
+gcloud secrets versions add staging-arkmask-config \
+  --data-file=/tmp/staging-config.json \
+  --project=${PROJECT_ID}
 
-# Firebase Admin SDK service account JSON (gitignored — provision separately per env)
-gcloud secrets versions add staging-arkmask-firebase-credentials \
-  --data-file=backend/arkmask-firebase.json
+rm /tmp/staging-config.json   # don't leave secrets on disk
 
-# Stripe test keys (from https://dashboard.stripe.com/test/apikeys)
-echo -n "sk_test_..." | gcloud secrets versions add staging-arkmask-stripe-secret-key --data-file=-
-echo -n "whsec_..."   | gcloud secrets versions add staging-arkmask-stripe-webhook-secret --data-file=-
+# ── Prod (live keys) ──────────────────────────────────────────────────────────
 
-# ── Prod ─────────────────────────────────────────────────────────────────────
-# Repeat with prod- prefix and live keys.
+cat > /tmp/prod-config.json <<'EOF'
+{
+  "stripe_secret_key":            "sk_live_...",
+  "stripe_webhook_secret":        "whsec_...",
+  "stripe_price_creator_monthly": "price_...",
+  "stripe_price_creator_annual":  "price_...",
+  "stripe_price_studio_monthly":  "price_...",
+  "stripe_price_studio_annual":   "price_...",
+  "firebase_credentials_path":    ""
+}
+EOF
 
-DB_IP_PROD=$(terraform -chdir=infra/terraform/envs/prod output -raw db_private_ip)
+gcloud secrets versions add prod-arkmask-config \
+  --data-file=/tmp/prod-config.json \
+  --project=${PROJECT_ID}
 
-echo -n "postgresql://arkmask:PROD_PASSWORD@${DB_IP_PROD}:5432/arkmask" | \
-  gcloud secrets versions add prod-arkmask-db-url --data-file=-
-
-gcloud secrets versions add prod-arkmask-firebase-credentials \
-  --data-file=backend/arkmask-firebase.json   # use prod Firebase SA if separate
-
-echo -n "sk_live_..." | gcloud secrets versions add prod-arkmask-stripe-secret-key --data-file=-
-echo -n "whsec_..."   | gcloud secrets versions add prod-arkmask-stripe-webhook-secret --data-file=-
+rm /tmp/prod-config.json
 ```
+
+> **Firebase credentials:** In Cloud Run the backend uses Application Default Credentials
+> (ADC) automatically — leave `firebase_credentials_path` empty. The Cloud Run service
+> account has `roles/datastore.user` and `roles/firebase.sdkAdminServiceAgent` bound by
+> Terraform, so no key file is needed.
+
+> **Rotating a value:** Add a new secret version and Cloud Run will pick it up on the next
+> container start (or force a re-deploy):
+> ```bash
+> gcloud secrets versions add staging-arkmask-config --data-file=/tmp/new-config.json
+> ```
 
 ---
 
@@ -156,9 +178,7 @@ In GitHub → **Settings → Secrets and variables → Actions**:
 | `GCP_WIF_PROVIDER` | `workload_identity_provider` output from Step 4 |
 | `GCP_WIF_SA_EMAIL` | `github_sa_email` output from Step 4 |
 | `GCP_PROJECT_ID` | Your GCP project ID |
-| `TF_VAR_DB_PASSWORD` | Cloud SQL password (staging) |
-| `TF_VAR_DB_PASSWORD_PROD` | Cloud SQL password (prod) |
-| `STAGING_API_BASE_URL` | `api_url` output from staging terraform apply |
+| `STAGING_API_BASE_URL` | `api_url` output from staging `terraform apply` |
 | `STRIPE_PUBLISHABLE_KEY_TEST` | Stripe test publishable key (for Flutter APK builds) |
 
 **Variables (non-secret):**
@@ -167,6 +187,9 @@ In GitHub → **Settings → Secrets and variables → Actions**:
 |---|---|
 | `GCP_REGION` | `europe-west1` |
 | `GITHUB_REPO` | `owner/arkmask` (e.g. `khidirahmad05/arkmask`) |
+
+> No `TF_VAR_DB_PASSWORD` — there is no database password. Firestore is the sole data store
+> and is accessed via the service account's IAM binding, not a connection string.
 
 ---
 
@@ -186,8 +209,8 @@ Actions tab. The first run will:
 
 1. Build and push the API Docker image to Artifact Registry
 2. Deploy `staging-arkmask-api` to Cloud Run
-3. Hit `{staging_url}/health` — make sure this endpoint exists in the FastAPI app
-4. Wait for your approval before deploying to prod
+3. Apply staging Terraform (Secret Manager secret must already have a version from Step 6)
+4. Wait for your manual approval before deploying to prod
 
 ---
 
@@ -201,6 +224,6 @@ Actions tab. The first run will:
 | View API logs (staging) | `gcloud run services logs read staging-arkmask-api --region=europe-west1` |
 | View API logs (prod) | `gcloud run services logs read prod-arkmask-api --region=europe-west1` |
 | List Cloud Tasks queues | `gcloud tasks queues list --location=europe-west1` |
-| Connect to Cloud SQL | `psql "host=PRIVATE_IP dbname=arkmask user=arkmask"` |
-| Rotate a secret | `echo -n "new-value" \| gcloud secrets versions add SECRET_NAME --data-file=-` |
+| Rotate a secret | `gcloud secrets versions add {env}-arkmask-config --data-file=/tmp/new-config.json` |
 | Redeploy without code change | Re-run the Deploy workflow manually via `workflow_dispatch` |
+| Force new Cloud Run revision | `gcloud run services update {env}-arkmask-api --region=europe-west1 --project=${PROJECT_ID}` |
