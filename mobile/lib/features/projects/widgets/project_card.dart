@@ -9,9 +9,8 @@ import '../../../core/utils/formatters.dart';
 
 /// Project card displayed on the Home Screen.
 ///
-/// Shows: project name, scene count, last modified date, storage size, and a
-/// thin generation progress bar at the bottom edge.
-/// Long-press reveals "Rename" and "Delete" options.
+/// Shows: display name, scene count, creation date, and a generation progress
+/// bar. Long-press reveals "Rename" and "Delete" options.
 class ProjectCard extends StatelessWidget {
   const ProjectCard({
     super.key,
@@ -22,21 +21,22 @@ class ProjectCard extends StatelessWidget {
     this.isDeleting = false,
   });
 
-  final ProjectMeta project;
+  final ProjectDocument project;
   final VoidCallback onTap;
   final VoidCallback onDeleteConfirmed;
 
-  /// Called with the new name after the user confirms a rename.
+  /// Called with the new display name after the user confirms a rename.
   final ValueChanged<String> onRenameConfirmed;
 
-  /// True while the delete operation is in progress for this card.
+  /// True while the delete API call is in flight for this card.
   final bool isDeleting;
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final primaryColor = isDark ? AppColors.primaryDark : AppColors.primaryLight;
-    final textSecondary = isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight;
+    final textSecondary =
+        isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight;
 
     return Card(
       child: InkWell(
@@ -53,12 +53,12 @@ class ProjectCard extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // ── Project name ──────────────────────────────────────────────
+              // ── Project display name ───────────────────────────────────────
               Row(
                 children: [
                   Expanded(
                     child: Text(
-                      project.name,
+                      project.displayName,
                       style: AppTextStyles.h2(context),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -80,21 +80,17 @@ class ProjectCard extends StatelessWidget {
               Row(
                 children: [
                   Text(
-                    '${project.sceneCount} ${project.sceneCount == 1 ? "scene" : "scenes"}',
-                    style: AppTextStyles.bodySmall(context).copyWith(color: textSecondary),
+                    '${project.sceneCount} '
+                    '${project.sceneCount == 1 ? "scene" : "scenes"}',
+                    style: AppTextStyles.bodySmall(context)
+                        .copyWith(color: textSecondary),
                   ),
                   _dot(context, textSecondary),
                   Text(
-                    formatLastModified(project.lastModified),
-                    style: AppTextStyles.bodySmall(context).copyWith(color: textSecondary),
+                    formatLastModified(project.createdAt),
+                    style: AppTextStyles.bodySmall(context)
+                        .copyWith(color: textSecondary),
                   ),
-                  if (project.totalSizeBytes != null) ...[
-                    _dot(context, textSecondary),
-                    Text(
-                      formatFileSize(project.totalSizeBytes!),
-                      style: AppTextStyles.bodySmall(context).copyWith(color: textSecondary),
-                    ),
-                  ],
                 ],
               ),
               // ── Progress bar ──────────────────────────────────────────────
@@ -103,12 +99,16 @@ class ProjectCard extends StatelessWidget {
                 LinearProgressIndicator(
                   value: project.completionFraction,
                   minHeight: 3,
-                  backgroundColor: isDark ? AppColors.surfaceSunkenDark : AppColors.surfaceSunkenLight,
+                  backgroundColor: isDark
+                      ? AppColors.surfaceSunkenDark
+                      : AppColors.surfaceSunkenLight,
                   valueColor: AlwaysStoppedAnimation(primaryColor),
                   borderRadius: BorderRadius.circular(AppSizing.radiusFull),
                 ),
-              if (project.sceneCount > 0) const SizedBox(height: 0)
-              else const SizedBox(height: AppSpacing.s4),
+              if (project.sceneCount > 0)
+                const SizedBox(height: 0)
+              else
+                const SizedBox(height: AppSpacing.s4),
             ],
           ),
         ),
@@ -118,7 +118,10 @@ class ProjectCard extends StatelessWidget {
 
   Widget _dot(BuildContext context, Color color) => Padding(
         padding: const EdgeInsets.symmetric(horizontal: AppSpacing.s2),
-        child: Text('·', style: AppTextStyles.bodySmall(context).copyWith(color: color)),
+        child: Text(
+          '·',
+          style: AppTextStyles.bodySmall(context).copyWith(color: color),
+        ),
       );
 
   Future<void> _showContextMenu(BuildContext context) async {
@@ -134,7 +137,8 @@ class ProjectCard extends StatelessWidget {
               Icon(
                 LucideIcons.pencil,
                 size: AppSizing.iconSm,
-                color: isDark ? AppColors.textPrimaryDark : AppColors.textPrimaryLight,
+                color:
+                    isDark ? AppColors.textPrimaryDark : AppColors.textPrimaryLight,
               ),
               const SizedBox(width: AppSpacing.s3),
               const Text('Rename'),
@@ -163,12 +167,8 @@ class ProjectCard extends StatelessWidget {
     if (result == 'delete') _confirmDelete(context);
   }
 
-  /// Shows an inline dialog to rename the project (FEAT-028).
-  ///
-  /// Pre-fills with the current project name; validates on confirm.
-  /// Calls [onRenameConfirmed] with the trimmed new name on success.
   Future<void> _showRenameDialog(BuildContext context) async {
-    final controller = TextEditingController(text: project.name);
+    final controller = TextEditingController(text: project.displayName);
     String? errorText;
 
     await showDialog<void>(
@@ -209,12 +209,11 @@ class ProjectCard extends StatelessWidget {
     StateSetter setDialogState,
   ) {
     final newName = controller.text.trim();
-    // Basic validation — full validation is enforced in the cubit.
     if (newName.isEmpty) {
-      setDialogState(() {}); // trigger rebuild to show empty-name error
+      setDialogState(() {});
       return;
     }
-    if (newName == project.name) {
+    if (newName == project.displayName) {
       Navigator.pop(ctx);
       return;
     }
@@ -239,10 +238,10 @@ class ProjectCard extends StatelessWidget {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text('Delete "${project.name}"?'),
+        title: Text('Delete "${project.displayName}"?'),
         content: const Text(
-          'All files — images, videos, and story — will be permanently '
-          'removed from your device.',
+          'All media — images, videos, and story — will be permanently '
+          'removed from the cloud.',
         ),
         actions: [
           TextButton(
@@ -252,7 +251,8 @@ class ProjectCard extends StatelessWidget {
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
             style: TextButton.styleFrom(
-              foregroundColor: isDark ? AppColors.errorDark : AppColors.errorLight,
+              foregroundColor:
+                  isDark ? AppColors.errorDark : AppColors.errorLight,
             ),
             child: const Text('Delete'),
           ),

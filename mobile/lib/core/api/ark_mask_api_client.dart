@@ -94,6 +94,41 @@ class ArkMaskApiClient {
     return (response.data as Map<String, dynamic>);
   }
 
+  // ── Project endpoints ──────────────────────────────────────────────────────
+
+  /// POST /projects — create a new project record in Firestore + Cloud SQL.
+  ///
+  /// [displayName] is the user-facing project name (≤ 60 characters, validated
+  /// server-side). Returns a map with `project_slug` (immutable GCS + Firestore
+  /// ID) and `display_name` (echoed back from the server).
+  ///
+  /// The backend generates a slug, writes the Firestore project root document
+  /// at `users/{uid}/projects/{slug}`, and inserts a Cloud SQL row.
+  Future<Map<String, dynamic>> createProject({required String displayName}) async {
+    final response = await _execute(
+      () => _dio.post('/projects', data: {'display_name': displayName}),
+    );
+    return (response.data as Map<String, dynamic>);
+  }
+
+  /// DELETE /projects/{slug} — permanently delete a project.
+  ///
+  /// The backend cascades: Firestore subcollections, GCS objects under
+  /// `{uid}/{slug}/`, and Cloud SQL row are all removed.
+  Future<void> deleteProject(String slug) async {
+    await _execute(() => _dio.delete('/projects/$slug'));
+  }
+
+  /// PATCH /projects/{slug} — update the mutable display name.
+  ///
+  /// Writes `display_name` and `updated_at` to the Firestore project root
+  /// document. The immutable slug is unaffected.
+  Future<void> updateProjectDisplayName(String slug, String newDisplayName) async {
+    await _execute(
+      () => _dio.patch('/projects/$slug', data: {'display_name': newDisplayName}),
+    );
+  }
+
   // ── Generation endpoints (Phase 2+, declared for completeness) ─────────────
 
   /// POST /assets — extract characters, backgrounds, objects from story text.

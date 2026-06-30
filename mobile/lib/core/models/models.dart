@@ -1,4 +1,9 @@
 ﻿// Data models for ArkMask, derived from docs/ArkMask/schema.md.
+//
+// Firestore-backed project models (ProjectDocument, AssetDocument,
+// SceneDocument) replace the filesystem-based ProjectMeta that was used before
+// the cloud-first architecture. ProjectMeta is kept for backward compat with
+// Phase 2 cubits until they are migrated to Firestore in Phase 2.
 
 enum AssetType {
   character,
@@ -191,6 +196,213 @@ abstract final class CreditCost {
   static const int videoGeneration = 20;
 }
 
+// ── Firestore-backed project document ────────────────────────────────────────
+
+/// Represents the Firestore project root document at
+/// `users/{uid}/projects/{slug}`.
+///
+/// [slug] is the immutable document ID and GCS folder prefix, generated once
+/// at project creation and never changed (even if [displayName] is updated).
+class ProjectDocument {
+  const ProjectDocument({
+    required this.slug,
+    required this.displayName,
+    required this.createdAt,
+    this.sceneCount = 0,
+    this.completedSceneCount = 0,
+    this.gcsFinalPath,
+  });
+
+  /// Immutable project slug — Firestore document ID and GCS folder prefix.
+  final String slug;
+
+  /// User-facing project name. Mutable; updating this does NOT change [slug].
+  final String displayName;
+
+  /// Project creation timestamp from the Firestore `created_at` field.
+  final DateTime createdAt;
+
+  /// Denormalized total scene count. Updated by workers on scene creation.
+  final int sceneCount;
+
+  /// Denormalized completed scene count (scenes with a `gcs_video_path` set).
+  final int completedSceneCount;
+
+  /// GCS path for the merged `final.mp4`. Non-null once a merge job completes.
+  final String? gcsFinalPath;
+
+  /// Fraction of scenes with a generated video (0.0–1.0).
+  double get completionFraction =>
+      sceneCount == 0 ? 0.0 : completedSceneCount / sceneCount;
+
+  /// Parses a [ProjectDocument] from a Firestore snapshot data map.
+  ///
+  /// [id] is the Firestore document ID (the project slug).
+  /// [data] is the raw `Map<String, dynamic>` from the snapshot.
+  factory ProjectDocument.fromFirestore(
+    String id,
+    Map<String, dynamic> data,
+  ) {
+    // Firestore Timestamps are deserialized as `Timestamp` objects; fall back
+    // to now() if the field is missing on a freshly created document that has
+    // not yet received a server-side `created_at` write.
+    DateTime createdAt;
+    final raw = data['created_at'];
+    if (raw != null && raw is Object) {
+      // Use duck-typing to avoid importing cloud_firestore into models.dart.
+      // Timestamp has a `.toDate()` method — call it reflectively.
+      try {
+        createdAt = (raw as dynamic).toDate() as DateTime;
+      } catch (_) {
+        createdAt = DateTime.now();
+      }
+    } else {
+      createdAt = DateTime.now();
+    }
+
+    return ProjectDocument(
+      slug: id,
+      displayName: data['display_name'] as String? ?? id,
+      createdAt: createdAt,
+      sceneCount: data['scene_count'] as int? ?? 0,
+      completedSceneCount: data['completed_scene_count'] as int? ?? 0,
+      gcsFinalPath: data['gcs_final_path'] as String?,
+    );
+  }
+}
+
+/// Represents a Firestore asset document at
+/// `users/{uid}/projects/{slug}/assets/{asset_slug}` or
+/// `users/{uid}/projects/{slug}/scenes/{n}/assets/{asset_slug}`.
+class AssetDocument {
+  const AssetDocument({
+    required this.id,
+    required this.name,
+    required this.type,
+    required this.description,
+    this.promptBody,
+    this.gcsImagePath,
+  });
+
+  final String id;
+  final String name;
+  final AssetType type;
+  final String description;
+
+  /// Generated image prompt text (`prompt_body` Firestore field). Null until
+  /// a `/image-prompt` call completes and the backend writes it.
+  final String? promptBody;
+
+  /// GCS object path for the generated image.png. Null until the image worker
+  /// completes. Null for pass-through reference assets (no independent image).
+  final String? gcsImagePath;
+
+  factory AssetDocument.fromFirestore(String id, Map<String, dynamic> data) =>
+      AssetDocument(
+        id: id,
+        name: data['name'] as String? ?? id,
+        type: AssetType.fromString(data['type'] as String? ?? 'character'),
+        description: data['description'] as String? ?? '',
+        promptBody: data['prompt_body'] as String?,
+        gcsImagePath: data['gcs_image_path'] as String?,
+      );
+}
+
+/// Represents a Firestore scene document at
+/// `users/{uid}/projects/{slug}/scenes/{n}`.
+class SceneDocument {
+  const SceneDocument({
+    required this.id,
+    required this.sceneNumber,
+    this.storyboardBody,
+    this.gcsVideoPath,
+  });
+
+  final String id;
+  final int sceneNumber;
+
+  /// Generated storyboard prompt. Null until a `/video-prompt` call completes.
+  final String? storyboardBody;
+
+  /// GCS object path for the generated video.mp4. Null until the video worker
+  /// completes.
+  final String? gcsVideoPath;
+
+  factory SceneDocument.fromFirestore(String id, Map<String, dynamic> data) =>
+      SceneDocument(
+        id: id,
+        sceneNumber: data['scene_number'] as int? ?? int.tryParse(id) ?? 1,
+        storyboardBody: data['storyboard_body'] as String?,
+        gcsVideoPath: data['gcs_video_path'] as String?,
+      );
+}
+
+// ── On-device job registry entry ─────────────────────────────────────────────
+
+/// Represents a single entry in the Hive CE `job_registry` box.
+///
+/// Keyed by [jobId]. Tracks in-flight and recently completed generation jobs
+/// so the UI can show live status even after app restarts.
+///
+/// Phase 1: in-memory only (no Hive CE dependency). Phase 2 will annotate
+/// this class with `@HiveType` and generate an adapter.
+class JobRegistryEntry {
+  const JobRegistryEntry({
+    required this.jobId,
+    required this.type,
+    required this.projectId,
+    required this.status,
+    required this.createdAt,
+    this.sceneIndex,
+    this.assetName,
+    this.resolvedAt,
+  });
+
+  final String jobId;
+
+  /// Job type: `'image'`, `'video'`, or `'merge'`.
+  final String type;
+
+  /// Immutable project slug. Used to route FCM notifications to the correct
+  /// project UI.
+  final String projectId;
+
+  final int? sceneIndex;
+  final String? assetName;
+
+  /// Job status: `'pending'`, `'running'`, `'success'`, or `'failed'`.
+  final String status;
+
+  final DateTime createdAt;
+
+  /// Set when the job reaches a terminal state (success or failed).
+  final DateTime? resolvedAt;
+
+  bool get isTerminal => status == 'success' || status == 'failed';
+  bool get isPending => status == 'pending' || status == 'running';
+
+  JobRegistryEntry copyWith({String? status, DateTime? resolvedAt}) =>
+      JobRegistryEntry(
+        jobId: jobId,
+        type: type,
+        projectId: projectId,
+        sceneIndex: sceneIndex,
+        assetName: assetName,
+        status: status ?? this.status,
+        createdAt: createdAt,
+        resolvedAt: resolvedAt ?? this.resolvedAt,
+      );
+}
+
+// ── Legacy filesystem-based project model (Phase 2 compat) ───────────────────
+
+/// On-device project metadata from the filesystem.
+///
+/// @deprecated Use [ProjectDocument] for Firestore-backed project lists.
+/// This class is kept only for backward compat with Phase 2 cubits
+/// (scene_cubit, story_cubit, asset_editor_cubit, editor_cubit) that still
+/// reference [ProjectFileService]. It will be removed when those cubits are
+/// migrated to Firestore in Phase 2.
 class ProjectMeta {
   const ProjectMeta({
     required this.name,

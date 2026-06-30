@@ -19,26 +19,30 @@ final class ProjectsLoaded extends ProjectsState {
     required this.projects,
     this.creditBalance,
     this.tier,
-    this.deletingName,
+    this.deletingSlug,
     this.renameError,
   });
 
-  final List<ProjectMeta> projects;
+  /// Live project list from the Firestore `users/{uid}/projects` collection.
+  final List<ProjectDocument> projects;
+
   final int? creditBalance;
   final UserTier? tier;
 
-  /// The project name currently being deleted (shows loading on that card).
-  final String? deletingName;
+  /// The project slug currently being deleted (shows a loading indicator on
+  /// that card). Set while [ProjectsCubit.deleteProject] is in flight; cleared
+  /// once the Firestore listener confirms removal.
+  final String? deletingSlug;
 
   /// Non-null when a rename operation failed; consumed once and cleared.
   final String? renameError;
 
   ProjectsLoaded copyWith({
-    List<ProjectMeta>? projects,
+    List<ProjectDocument>? projects,
     int? creditBalance,
     UserTier? tier,
-    String? deletingName,
-    bool clearDeletingName = false,
+    String? deletingSlug,
+    bool clearDeletingSlug = false,
     String? renameError,
     bool clearRenameError = false,
   }) =>
@@ -46,12 +50,15 @@ final class ProjectsLoaded extends ProjectsState {
         projects: projects ?? this.projects,
         creditBalance: creditBalance ?? this.creditBalance,
         tier: tier ?? this.tier,
-        deletingName: clearDeletingName ? null : (deletingName ?? this.deletingName),
-        renameError: clearRenameError ? null : (renameError ?? this.renameError),
+        deletingSlug:
+            clearDeletingSlug ? null : (deletingSlug ?? this.deletingSlug),
+        renameError:
+            clearRenameError ? null : (renameError ?? this.renameError),
       );
 
   @override
-  List<Object?> get props => [projects, creditBalance, tier, deletingName, renameError];
+  List<Object?> get props =>
+      [projects, creditBalance, tier, deletingSlug, renameError];
 }
 
 final class ProjectsError extends ProjectsState {

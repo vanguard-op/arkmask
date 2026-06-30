@@ -1,25 +1,29 @@
 import 'package:flutter/material.dart';
 
-import '../../../core/filesystem/project_file_service.dart';
+import '../../../core/api/ark_mask_api_client.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
 
 /// Bottom sheet for creating a new project (FEAT-004 / Screen 6).
 ///
-/// Validates the name, creates the project directory structure on device,
-/// and calls [onCreated] with the resulting project name.
+/// Calls `POST /projects` via [ArkMaskApiClient], which creates the Firestore
+/// project root document and Cloud SQL row. On success it calls [onCreated]
+/// with the **immutable project slug** returned by the backend.
 ///
-/// Not dismissable by drag while the keyboard is open.
+/// The slug is used for all subsequent navigation and Firestore references —
+/// it never changes even if the user later renames the project.
 class NewProjectBottomSheet extends StatefulWidget {
   const NewProjectBottomSheet({
     super.key,
-    required this.fileService,
+    required this.apiClient,
     required this.onCreated,
   });
 
-  final ProjectFileService fileService;
-  final void Function(String projectName) onCreated;
+  final ArkMaskApiClient apiClient;
+
+  /// Called with the immutable project slug after successful creation.
+  final void Function(String projectSlug) onCreated;
 
   @override
   State<NewProjectBottomSheet> createState() => _NewProjectBottomSheetState();
@@ -36,20 +40,19 @@ class _NewProjectBottomSheetState extends State<NewProjectBottomSheet> {
     super.dispose();
   }
 
+  /// Client-side validation before the API call (server also validates;
+  /// this avoids an unnecessary round trip for obvious errors).
+  String? _validate(String name) {
+    if (name.isEmpty) return 'Project name is required.';
+    if (name.length > 60) return 'Project name must be 60 characters or fewer.';
+    return null;
+  }
+
   Future<void> _create() async {
     final name = _controller.text.trim();
-
-    // Local validation.
-    final validationError = widget.fileService.validateProjectName(name);
+    final validationError = _validate(name);
     if (validationError != null) {
       setState(() => _errorMessage = validationError);
-      return;
-    }
-
-    // Check for duplicate.
-    final exists = await widget.fileService.projectExists(name);
-    if (exists) {
-      setState(() => _errorMessage = 'A project with this name already exists.');
       return;
     }
 
@@ -59,16 +62,20 @@ class _NewProjectBottomSheetState extends State<NewProjectBottomSheet> {
     });
 
     try {
-      final meta = await widget.fileService.createProject(name);
+      final result = await widget.apiClient.createProject(displayName: name);
+      final slug = result['project_slug'] as String?;
+      if (slug == null || slug.isEmpty) {
+        throw Exception('Backend returned empty project slug.');
+      }
       if (mounted) {
         Navigator.of(context).pop();
-        widget.onCreated(meta.name);
+        widget.onCreated(slug);
       }
     } catch (e) {
       if (mounted) {
         setState(() {
           _isCreating = false;
-          _errorMessage = 'Failed to create project. Try again.';
+          _errorMessage = 'Failed to create project. Please try again.';
         });
       }
     }

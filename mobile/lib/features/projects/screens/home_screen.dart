@@ -8,7 +8,6 @@ import '../../../core/router/routes.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
-import '../../../core/filesystem/project_file_service.dart';
 import '../../../core/models/models.dart';
 import '../../../core/utils/formatters.dart';
 import '../cubit/projects_cubit.dart';
@@ -18,8 +17,9 @@ import '../widgets/project_card.dart';
 
 /// Home / Projects List Screen (FEAT-006).
 ///
-/// Displays all on-device projects. FAB opens the New Project bottom sheet.
-/// Credit balance and settings are accessible from the AppBar.
+/// Listens to the Firestore `users/{uid}/projects` collection in real-time via
+/// [ProjectsCubit]. The FAB opens [NewProjectBottomSheet] which calls
+/// `POST /projects` and navigates to the new project's file browser on success.
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
@@ -27,18 +27,14 @@ class HomeScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final services = ArkMaskServices.of(context);
     return BlocProvider(
-      create: (_) => ProjectsCubit(
-        fileService: services.fileService,
-        apiClient: services.apiClient,
-      )..load(),
-      child: _HomeView(fileService: services.fileService),
+      create: (_) => ProjectsCubit(apiClient: services.apiClient)..load(),
+      child: const _HomeView(),
     );
   }
 }
 
 class _HomeView extends StatefulWidget {
-  const _HomeView({required this.fileService});
-  final ProjectFileService fileService;
+  const _HomeView();
 
   @override
   State<_HomeView> createState() => _HomeViewState();
@@ -78,11 +74,13 @@ class _HomeViewState extends State<_HomeView> {
       isScrollControlled: true,
       isDismissible: true,
       builder: (_) => NewProjectBottomSheet(
-        fileService: services.fileService,
-        onCreated: (name) {
-          context.read<ProjectsCubit>().refresh();
+        apiClient: services.apiClient,
+        onCreated: (slug) {
+          // The Firestore listener in ProjectsCubit automatically adds the new
+          // project to the list — no manual refresh call needed.
           context.push(
-            Routes.projectBrowser.replaceFirst(':projectName', Uri.encodeComponent(name)),
+            Routes.projectBrowser
+                .replaceFirst(':projectName', Uri.encodeComponent(slug)),
           );
         },
       ),
@@ -146,7 +144,8 @@ class _CreditPill extends StatelessWidget {
 
     Color textColor;
     if (balance == null) {
-      textColor = isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight;
+      textColor =
+          isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight;
     } else if (balance == 0) {
       textColor = isDark ? AppColors.errorDark : AppColors.errorLight;
     } else {
@@ -157,7 +156,8 @@ class _CreditPill extends StatelessWidget {
     }
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.s3, vertical: AppSpacing.s1),
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.s3, vertical: AppSpacing.s1),
       decoration: BoxDecoration(
         color: isDark ? AppColors.primarySubtleDark : AppColors.primarySubtleLight,
         borderRadius: BorderRadius.circular(AppSizing.radiusFull),
@@ -183,7 +183,8 @@ class _ProjectList extends StatelessWidget {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Rename failed: ${state.renameError}')),
+            SnackBar(
+                content: Text('Rename failed: ${state.renameError}')),
           );
         }
       });
@@ -198,18 +199,20 @@ class _ProjectList extends StatelessWidget {
       separatorBuilder: (_, _) => const SizedBox(height: AppSpacing.s3),
       itemBuilder: (context, index) {
         final project = state.projects[index];
-        final isDeleting = state.deletingName == project.name;
+        final isDeleting = state.deletingSlug == project.slug;
         return ProjectCard(
           project: project,
           isDeleting: isDeleting,
           onTap: () => context.push(
             Routes.projectBrowser.replaceFirst(
-                ':projectName', Uri.encodeComponent(project.name)),
+              ':projectName',
+              Uri.encodeComponent(project.slug),
+            ),
           ),
           onDeleteConfirmed: () =>
-              context.read<ProjectsCubit>().deleteProject(project.name),
+              context.read<ProjectsCubit>().deleteProject(project.slug),
           onRenameConfirmed: (newName) =>
-              context.read<ProjectsCubit>().renameProject(project.name, newName),
+              context.read<ProjectsCubit>().renameProject(project.slug, newName),
         );
       },
     );
@@ -241,14 +244,18 @@ class _EmptyState extends StatelessWidget {
             Text(
               'No projects yet',
               style: AppTextStyles.h2(context).copyWith(
-                color: isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight,
+                color: isDark
+                    ? AppColors.textSecondaryDark
+                    : AppColors.textSecondaryLight,
               ),
             ),
             const SizedBox(height: AppSpacing.s2),
             Text(
               'Tap + to create your first project.',
               style: AppTextStyles.body(context).copyWith(
-                color: isDark ? AppColors.textTertiaryDark : AppColors.textTertiaryLight,
+                color: isDark
+                    ? AppColors.textTertiaryDark
+                    : AppColors.textTertiaryLight,
               ),
               textAlign: TextAlign.center,
             ),
@@ -309,7 +316,8 @@ class _SkeletonCardState extends State<_SkeletonCard>
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final base = isDark ? AppColors.surfaceRaisedDark : AppColors.surfaceRaisedLight;
+    final base =
+        isDark ? AppColors.surfaceRaisedDark : AppColors.surfaceRaisedLight;
 
     return AnimatedBuilder(
       animation: _anim,
