@@ -22,10 +22,6 @@ variable "service_account_email" {
   type        = string
 }
 
-variable "vpc_connector_id" {
-  description = "ID of the serverless VPC connector for Cloud SQL access."
-  type        = string
-}
 
 variable "min_instances" {
   description = "Minimum number of instances (0 = scale-to-zero)."

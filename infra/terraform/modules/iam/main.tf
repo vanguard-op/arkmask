@@ -40,14 +40,7 @@ resource "google_project_iam_member" "api_secretmanager" {
   member  = "serviceAccount:${google_service_account.api.email}"
 }
 
-# Connect to Cloud SQL via private IP (VPC connector).
-resource "google_project_iam_member" "api_cloudsql" {
-  project = var.project_id
-  role    = "roles/cloudsql.client"
-  member  = "serviceAccount:${google_service_account.api.email}"
-}
-
-# Read/write Firestore (writes prompt_body and storyboard_body after text generation).
+# Read/write Firestore (project content, user profiles, jobs, usage events).
 resource "google_project_iam_member" "api_datastore" {
   project = var.project_id
   role    = "roles/datastore.user"
@@ -80,12 +73,6 @@ resource "google_storage_bucket_iam_member" "api_storage" {
 resource "google_project_iam_member" "workers_secretmanager" {
   project = var.project_id
   role    = "roles/secretmanager.secretAccessor"
-  member  = "serviceAccount:${google_service_account.workers.email}"
-}
-
-resource "google_project_iam_member" "workers_cloudsql" {
-  project = var.project_id
-  role    = "roles/cloudsql.client"
   member  = "serviceAccount:${google_service_account.workers.email}"
 }
 

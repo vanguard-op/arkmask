@@ -1,5 +1,8 @@
 # Cloud Run module — generic service definition used for both API and workers.
 #
+# No VPC connector needed — all dependencies (Firestore, GCS, Cloud Tasks)
+# are reached over HTTPS without private networking.
+#
 # Key differences between API and workers:
 #   API:     allow_unauthenticated=true, low timeout, 1 min instance in prod
 #   Workers: allow_unauthenticated=false, high timeout (1800s for FFmpeg),
@@ -19,12 +22,6 @@ resource "google_cloud_run_v2_service" "service" {
     scaling {
       min_instance_count = var.min_instances
       max_instance_count = var.max_instances
-    }
-
-    # Route egress through VPC connector so Cloud Run can reach Cloud SQL's private IP.
-    vpc_access {
-      connector = var.vpc_connector_id
-      egress    = "PRIVATE_RANGES_ONLY"
     }
 
     # Workers run long FFmpeg + AI provider calls; API is fast (< 5 s for sync endpoints).

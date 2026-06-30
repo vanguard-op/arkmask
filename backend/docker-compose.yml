@@ -1,28 +1,15 @@
 version: "3.9"
 
-# Local development stack: FastAPI + PostgreSQL + MinIO (GCS substitute).
+# Local development stack: FastAPI + MinIO (GCS substitute).
+# Firestore is accessed via the Firebase Emulator or a real Firebase project
+# (set FIREBASE_CREDENTIALS_PATH in .env to point to a service account JSON).
+#
 # Usage:
 #   docker compose up -d          — start all services
-#   docker compose up -d postgres minio  — start only deps (run FastAPI locally)
+#   docker compose up -d minio    — start only storage dep (run FastAPI locally)
 #   docker compose logs -f api    — tail API logs
 
 services:
-  postgres:
-    image: postgres:15-alpine
-    environment:
-      POSTGRES_USER: arkmask
-      POSTGRES_PASSWORD: arkmask
-      POSTGRES_DB: arkmask
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U arkmask"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
@@ -57,8 +44,6 @@ services:
   api:
     build: .
     depends_on:
-      postgres:
-        condition: service_healthy
       minio:
         condition: service_healthy
     env_file:
@@ -66,7 +51,6 @@ services:
     environment:
       # These override or supplement .env with values that are either
       # static for local dev or derived from other Docker service hostnames.
-      DATABASE_URL: postgresql://arkmask:arkmask@postgres:5432/arkmask
       STORAGE_BUCKET: arkmask-local
       STORAGE_ENDPOINT_URL: http://minio:9000
       STORAGE_ACCESS_KEY: minioadmin
@@ -90,5 +74,4 @@ services:
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 volumes:
-  postgres_data:
   minio_data:

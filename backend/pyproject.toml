@@ -12,11 +12,6 @@ dependencies = [
     "uvicorn[standard]==0.34.3",
     "python-multipart==0.0.32",
 
-    # Database
-    "sqlalchemy==2.0.51",
-    "alembic==1.18.5",
-    "psycopg2-binary>=2.9",
-
     # Auth / secrets
     "firebase-admin==7.4.0",
 

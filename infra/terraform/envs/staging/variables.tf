@@ -4,12 +4,6 @@ variable "project_id" {
 }
 
 variable "github_repo" {
-  description = "GitHub repository in owner/repo format (e.g. myorg/arkmask)."
+  description = "GitHub repository in owner/repo format (e.g. owner/arkmask)."
   type        = string
-}
-
-variable "db_password" {
-  description = "Cloud SQL arkmask user password. Set via TF_VAR_db_password env var in CI — never commit the value."
-  type        = string
-  sensitive   = true
 }

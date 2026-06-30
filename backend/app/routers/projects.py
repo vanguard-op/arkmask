@@ -23,11 +23,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from firebase_admin import firestore
 from google.cloud.firestore_v1 import SERVER_TIMESTAMP
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
 
-from app.database import get_db
 from app.dependencies import get_current_user
-from app.models.db import User
+from app.models.user import UserProfile
 from app.services.firebase import _ensure_initialized
 from app.services.media_store import MediaStore
 
@@ -123,7 +121,7 @@ class ProjectStorageSummaryResponse(BaseModel):
 )
 def create_project(
     body: CreateProjectRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: UserProfile = Depends(get_current_user),
 ) -> CreateProjectResponse:
     """
     Create a new project (FEAT-004).
@@ -187,7 +185,7 @@ def create_project(
 )
 def delete_project(
     slug: str,
-    current_user: User = Depends(get_current_user),
+    current_user: UserProfile = Depends(get_current_user),
 ) -> None:
     """
     Delete a project and all its generated media (FEAT-007).
@@ -271,7 +269,7 @@ def _delete_firestore_subtree(db_client, doc_ref) -> None:
 def rename_project(
     slug: str,
     body: RenameProjectRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: UserProfile = Depends(get_current_user),
 ) -> None:
     """
     Rename a project's display name (FEAT-028).
@@ -321,7 +319,7 @@ def rename_project(
 def update_project_settings(
     slug: str,
     body: GenerationSettingsInput,
-    current_user: User = Depends(get_current_user),
+    current_user: UserProfile = Depends(get_current_user),
 ) -> None:
     """
     Update the generation settings for a project.
@@ -365,7 +363,7 @@ def update_project_settings(
 )
 def get_project_storage(
     slug: str,
-    current_user: User = Depends(get_current_user),
+    current_user: UserProfile = Depends(get_current_user),
 ) -> ProjectStorageSummaryResponse:
     """
     Return the GCS storage summary for a project (FEAT-027).

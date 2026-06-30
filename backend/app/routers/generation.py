@@ -13,7 +13,12 @@ Contract:
 All endpoints:
   - Require X-Platform-Key (get_current_user)
   - Generation endpoints also need X-Provider-Type + X-Provider-Key (get_ai_provider)
-  - firebase_uid comes from current_user.firebase_uid (already in DB — no extra token needed)
+  - firebase_uid comes from current_user.firebase_uid
+
+Firestore write paths:
+  - Jobs:         users/{uid}/jobs/{job_id}
+  - Usage events: users/{uid}/usage_events/{event_id}
+  - Credits:      users/{uid}/profile.credit_balance (atomic transaction)
 
 NOTE: /merge requires FFmpeg to be installed on the server (ffmpeg binary in PATH).
 
@@ -28,14 +33,12 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from firebase_admin import firestore
 from google.cloud.firestore_v1 import SERVER_TIMESTAMP
+from google.cloud.firestore_v1.transaction import transactional
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
 
-from app.database import get_db
-from app.dependencies import get_ai_provider, get_current_user
-from app.models.db import Job, UsageEvent, User
+from app.dependencies import get_ai_provider, get_current_user, _firestore
+from app.models.user import UserProfile
 from app.routers.projects import _firestore_client
 from app.schemas.generation import (
     AssetsRequest,
@@ -112,7 +115,8 @@ class PresignedUrlResponse(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _check_credits(user: User, endpoint: str) -> int:
+def _check_credits(user: UserProfile, endpoint: str) -> int:
+    """Raise HTTP 402 if the user has insufficient credits.  Returns the cost."""
     cost = CREDIT_COSTS.get(endpoint, 0)
     if user.credit_balance < cost:
         raise HTTPException(
@@ -122,25 +126,48 @@ def _check_credits(user: User, endpoint: str) -> int:
     return cost
 
 
+@transactional
+def _deduct_in_txn(transaction, user_ref, credits: int) -> None:
+    """
+    Atomically decrement credit_balance inside a Firestore transaction.
+
+    Using a transaction prevents double-spend when concurrent requests hit the
+    same user.  Balance floor is 0 — never goes negative.
+    """
+    snapshot = user_ref.get(transaction=transaction)
+    if not snapshot.exists:
+        return
+    current: int = (snapshot.to_dict() or {}).get("credit_balance", 0)
+    transaction.update(user_ref, {"credit_balance": max(0, current - credits)})
+
+
 def _deduct_credits(
-    db: Session,
-    user: User,
+    firebase_uid: str,
     endpoint: str,
     provider: str,
     credits: int,
     evt_status: str = "success",
 ) -> None:
-    event = UsageEvent(
-        user_id=user.id,
-        endpoint=endpoint,
-        provider=provider,
-        credits_deducted=credits,
-        status=evt_status,
-    )
-    db.add(event)
+    """
+    Deduct credits from the user profile via Firestore transaction and write
+    a usage event document for the billing ledger.
+
+    ``credits=0`` still writes the usage event (for tracking refunded calls).
+    """
+    db = _firestore()
     if credits > 0:
-        user.credit_balance = User.credit_balance - credits
-    db.commit()
+        user_ref = db.document(f"users/{firebase_uid}/profile")
+        txn = db.transaction()
+        _deduct_in_txn(txn, user_ref, credits)
+
+    # Write usage event (eventual consistency is acceptable for the ledger).
+    db.collection(f"users/{firebase_uid}/usage_events").document().set({
+        "endpoint": endpoint,
+        "provider": provider,
+        "credits_deducted": credits,
+        "status": evt_status,
+        "timestamp": SERVER_TIMESTAMP,
+    })
 
 
 def _provider_name(provider: AIProvider) -> str:
@@ -148,43 +175,43 @@ def _provider_name(provider: AIProvider) -> str:
 
 
 def _create_job(
-    db: Session,
-    user: User,
+    firebase_uid: str,
     job_type: str,
     project_slug: str,
     scene_index: int | None = None,
     asset_path: str | None = None,
-) -> Job:
-    """Create a Job record in DB with status='pending' and return it."""
-    job = Job(
-        id=str(uuid.uuid4()),
-        user_id=user.id,
-        type=job_type,
-        status="pending",
-        project_slug=project_slug,
-        scene_index=scene_index,
-        asset_path=asset_path,
-    )
-    db.add(job)
-    db.commit()
-    db.refresh(job)
-    return job
+) -> str:
+    """Write a job document to ``users/{uid}/jobs/{job_id}`` and return job_id."""
+    job_id = str(uuid.uuid4())
+    _firestore().document(f"users/{firebase_uid}/jobs/{job_id}").set({
+        "id": job_id,
+        "type": job_type,
+        "status": "pending",
+        "project_slug": project_slug,
+        "scene_index": scene_index,
+        "asset_path": asset_path,
+        "gcs_output_path": None,
+        "error_message": None,
+        "created_at": SERVER_TIMESTAMP,
+        "updated_at": SERVER_TIMESTAMP,
+    })
+    return job_id
 
 
 def _update_job(
-    db: Session,
+    firebase_uid: str,
     job_id: str,
-    status: str,
+    job_status: str,
     gcs_output_path: str | None = None,
     error_message: str | None = None,
 ) -> None:
-    """Update job status and optional output path."""
-    db.query(Job).filter(Job.id == job_id).update({
-        "status": status,
-        "gcs_output_path": gcs_output_path,
-        "error_message": error_message,
-    })
-    db.commit()
+    """Update job status fields in Firestore."""
+    data: dict = {"status": job_status, "updated_at": SERVER_TIMESTAMP}
+    if gcs_output_path is not None:
+        data["gcs_output_path"] = gcs_output_path
+    if error_message is not None:
+        data["error_message"] = error_message
+    _firestore().document(f"users/{firebase_uid}/jobs/{job_id}").update(data)
 
 
 def _fetch_gcs_images(gcs_paths: list[str]) -> list[RefImage]:
@@ -209,14 +236,22 @@ def _sniff_mime(data: bytes) -> str:
     return "image/png"  # safe default
 
 
+def _get_fcm_token(firebase_uid: str) -> str | None:
+    """Fetch the latest FCM token from Firestore for push notification delivery."""
+    try:
+        doc = _firestore().document(f"users/{firebase_uid}/profile").get()
+        return (doc.to_dict() or {}).get("fcm_token") if doc.exists else None
+    except Exception:
+        return None
+
+
 # ── POST /assets ──────────────────────────────────────────────────────────────
 
 @router.post("/assets", response_model=AssetsResponse)
 def extract_assets(
     body: AssetsRequest,
-    user: User = Depends(get_current_user),
+    user: UserProfile = Depends(get_current_user),
     provider: AIProvider = Depends(get_ai_provider),
-    db: Session = Depends(get_db),
 ) -> AssetsResponse:
     """
     Extract visual assets from a story — returns structured asset list.
@@ -226,11 +261,11 @@ def extract_assets(
     pname = _provider_name(provider)
     try:
         raw = provider.generate_asset_list(body.story)
-    except Exception as e:
-        logger.error("Asset extraction failed: user_id=%s", user.id, exc_info=True)
-        _deduct_credits(db, user, "/assets", pname, 0, "refunded")
+    except Exception:
+        logger.error("Asset extraction failed: uid=%s", user.firebase_uid, exc_info=True)
+        _deduct_credits(user.firebase_uid, "/assets", pname, 0, "refunded")
         raise HTTPException(502, "AI provider error during asset extraction.")
-    _deduct_credits(db, user, "/assets", pname, cost)
+    _deduct_credits(user.firebase_uid, "/assets", pname, cost)
     return AssetsResponse(assets=[AssetItem(**a) for a in raw])
 
 
@@ -239,9 +274,8 @@ def extract_assets(
 @router.post("/image-prompt", status_code=status.HTTP_204_NO_CONTENT)
 def generate_image_prompt(
     body: ImagePromptCloudRequest,
-    user: User = Depends(get_current_user),
+    user: UserProfile = Depends(get_current_user),
     provider: AIProvider = Depends(get_ai_provider),
-    db: Session = Depends(get_db),
 ) -> None:
     """
     Generate an image prompt and write it to Firestore as prompt_body.
@@ -250,12 +284,11 @@ def generate_image_prompt(
     cost = _check_credits(user, "/image-prompt")
     pname = _provider_name(provider)
 
-    # Read generation_settings from the Firestore project document.
-    # Falls back to the provider default if the field is absent (older projects).
     _default_art_style = "painterly illustration with clean lines and rich color"
     try:
-        proj_fs_path = f"users/{user.firebase_uid}/projects/{body.project_slug}"
-        proj_doc = _firestore_client().document(proj_fs_path).get()
+        proj_doc = _firestore_client().document(
+            f"users/{user.firebase_uid}/projects/{body.project_slug}"
+        ).get()
         gen_settings: dict = (proj_doc.get("generation_settings") or {}) if proj_doc.exists else {}
     except Exception:
         logger.warning("image-prompt: could not fetch generation_settings for %s", body.project_slug)
@@ -264,9 +297,9 @@ def generate_image_prompt(
 
     try:
         prompt = provider.generate_image_prompt(body.name, body.type, body.description, art_style=art_style)
-    except Exception as e:
-        logger.error("image-prompt failed: user_id=%s", user.id, exc_info=True)
-        _deduct_credits(db, user, "/image-prompt", pname, 0, "refunded")
+    except Exception:
+        logger.error("image-prompt failed: uid=%s", user.firebase_uid, exc_info=True)
+        _deduct_credits(user.firebase_uid, "/image-prompt", pname, 0, "refunded")
         raise HTTPException(502, "AI provider error during prompt generation.")
 
     fs_path = f"users/{user.firebase_uid}/projects/{body.project_slug}/{body.asset_path}"
@@ -279,7 +312,7 @@ def generate_image_prompt(
         logger.error("Firestore write failed for image-prompt: path=%s error=%s", fs_path, e)
         raise HTTPException(502, "Failed to save prompt to project.")
 
-    _deduct_credits(db, user, "/image-prompt", pname, cost)
+    _deduct_credits(user.firebase_uid, "/image-prompt", pname, cost)
 
 
 # ── POST /image ───────────────────────────────────────────────────────────────
@@ -287,28 +320,22 @@ def generate_image_prompt(
 @router.post("/image", response_model=VideoEnqueueResponse)
 async def enqueue_image(
     body: ImageEnqueueRequest,
-    user: User = Depends(get_current_user),
+    user: UserProfile = Depends(get_current_user),
     provider: AIProvider = Depends(get_ai_provider),
-    db: Session = Depends(get_db),
 ) -> VideoEnqueueResponse:
     """
-    Enqueue an image generation job. Returns job_id immediately.
+    Enqueue an image generation job.  Returns job_id immediately.
     Worker reads prompt_body from Firestore, generates image, writes gcs_image_path.
     Credits deducted: 5 (on terminal success only).
     """
     _check_credits(user, "/image")
-    job = _create_job(db, user, "image", body.project_slug, asset_path=body.asset_path)
-
     firebase_uid = user.firebase_uid
-    job_id = job.id
+    job_id = _create_job(firebase_uid, "image", body.project_slug, asset_path=body.asset_path)
     pname = _provider_name(provider)
-    user_id = user.id
 
     async def _run():
-        from app.database import SessionLocal
-        bg_db = SessionLocal()
         try:
-            _update_job(bg_db, job_id, "running")
+            _update_job(firebase_uid, job_id, "running")
 
             # 1. Read prompt_body from Firestore.
             fs_path = f"users/{firebase_uid}/projects/{body.project_slug}/{body.asset_path}"
@@ -326,20 +353,14 @@ async def enqueue_image(
                     data = MediaStore().get_object_bytes(body.conditioning_gcs_path)
                     ref_images.append(RefImage(data=data, mime_type=_sniff_mime(data)))
                 except Exception as e:
-                    logger.warning(
-                        "Could not fetch conditioning image %s: %s",
-                        body.conditioning_gcs_path, e,
-                    )
+                    logger.warning("Could not fetch conditioning image %s: %s", body.conditioning_gcs_path, e)
 
             # 3. Generate image via AI provider.
-            img_bytes, mime_type = await asyncio.to_thread(
-                provider.generate_image, prompt, ref_images
-            )
+            img_bytes, mime_type = await asyncio.to_thread(provider.generate_image, prompt, ref_images)
 
             # 4. Save to GCS at deterministic path.
             gcs_key = f"{firebase_uid}/{body.project_slug}/{body.asset_path}/image.png"
-            store = MediaStore()
-            await asyncio.to_thread(store.put_object, gcs_key, img_bytes, mime_type)
+            await asyncio.to_thread(MediaStore().put_object, gcs_key, img_bytes, mime_type)
 
             # 5. Write gcs_image_path to Firestore asset doc.
             _firestore_client().document(fs_path).set(
@@ -347,17 +368,14 @@ async def enqueue_image(
                 merge=True,
             )
 
-            # 6. Deduct credits.
-            db_user = bg_db.query(User).filter(User.id == user_id).first()
-            if db_user:
-                _deduct_credits(bg_db, db_user, "/image", pname, CREDIT_COSTS["/image"])
+            # 6. Deduct credits atomically.
+            _deduct_credits(firebase_uid, "/image", pname, CREDIT_COSTS["/image"])
 
             # 7. Update job status.
-            _update_job(bg_db, job_id, "success", gcs_output_path=gcs_key)
+            _update_job(firebase_uid, job_id, "success", gcs_output_path=gcs_key)
 
-            # 8. Send FCM push.
-            db_user = db_user or bg_db.query(User).filter(User.id == user_id).first()
-            send_fcm_notification(db_user.fcm_token if db_user else None, {
+            # 8. Send FCM push with latest token from Firestore.
+            send_fcm_notification(_get_fcm_token(firebase_uid), {
                 "job_id": job_id,
                 "type": "image",
                 "project_id": body.project_slug,
@@ -367,16 +385,13 @@ async def enqueue_image(
             logger.info("Image job complete: job_id=%s", job_id)
         except Exception as e:
             logger.error("Image job failed: job_id=%s error=%s", job_id, e, exc_info=True)
-            _update_job(bg_db, job_id, "failed", error_message=str(e)[:1024])
-            db_user = bg_db.query(User).filter(User.id == user_id).first()
-            send_fcm_notification(db_user.fcm_token if db_user else None, {
+            _update_job(firebase_uid, job_id, "failed", error_message=str(e)[:1024])
+            send_fcm_notification(_get_fcm_token(firebase_uid), {
                 "job_id": job_id,
                 "type": "image",
                 "project_id": body.project_slug,
                 "status": "failed",
             })
-        finally:
-            bg_db.close()
 
     asyncio.create_task(_run())
     return VideoEnqueueResponse(job_id=job_id)
@@ -387,9 +402,8 @@ async def enqueue_image(
 @router.post("/video-prompt", status_code=status.HTTP_204_NO_CONTENT)
 def generate_video_prompt(
     body: VideoPromptCloudRequest,
-    user: User = Depends(get_current_user),
+    user: UserProfile = Depends(get_current_user),
     provider: AIProvider = Depends(get_ai_provider),
-    db: Session = Depends(get_db),
 ) -> None:
     """
     Generate a scene storyboard and write it to Firestore as storyboard_body.
@@ -399,12 +413,11 @@ def generate_video_prompt(
     cost = _check_credits(user, "/video-prompt")
     pname = _provider_name(provider)
 
-    # Read generation_settings from the Firestore project document.
-    # Falls back to provider defaults if the field is absent (older projects).
     _default_art_style = "painterly illustration with clean lines and rich color"
     try:
-        proj_fs_path = f"users/{user.firebase_uid}/projects/{body.project_slug}"
-        proj_doc = _firestore_client().document(proj_fs_path).get()
+        proj_doc = _firestore_client().document(
+            f"users/{user.firebase_uid}/projects/{body.project_slug}"
+        ).get()
         gen_settings: dict = (proj_doc.get("generation_settings") or {}) if proj_doc.exists else {}
     except Exception:
         logger.warning("video-prompt: could not fetch generation_settings for %s", body.project_slug)
@@ -412,14 +425,13 @@ def generate_video_prompt(
     art_style: str = gen_settings.get("art_style") or _default_art_style
     subtitles: bool = bool(gen_settings.get("video_subtitles", False))
 
-    # Fetch reference images from GCS synchronously.
     ref_images = _fetch_gcs_images(body.ref_image_gcs_paths)
 
     try:
         storyboard = provider.generate_video_prompt(body.scene, ref_images, art_style=art_style, subtitles=subtitles)
-    except Exception as e:
-        logger.error("video-prompt failed: user_id=%s", user.id, exc_info=True)
-        _deduct_credits(db, user, "/video-prompt", pname, 0, "refunded")
+    except Exception:
+        logger.error("video-prompt failed: uid=%s", user.firebase_uid, exc_info=True)
+        _deduct_credits(user.firebase_uid, "/video-prompt", pname, 0, "refunded")
         raise HTTPException(502, "AI provider error during storyboard generation.")
 
     fs_path = f"users/{user.firebase_uid}/projects/{body.project_slug}/scenes/{body.scene_index}"
@@ -436,7 +448,7 @@ def generate_video_prompt(
         logger.error("Firestore write failed for video-prompt: path=%s", fs_path, exc_info=True)
         raise HTTPException(502, "Failed to save storyboard to project.")
 
-    _deduct_credits(db, user, "/video-prompt", pname, cost)
+    _deduct_credits(user.firebase_uid, "/video-prompt", pname, cost)
 
 
 # ── POST /video ───────────────────────────────────────────────────────────────
@@ -444,28 +456,22 @@ def generate_video_prompt(
 @router.post("/video", response_model=VideoEnqueueResponse)
 async def enqueue_video(
     body: VideoEnqueueCloudRequest,
-    user: User = Depends(get_current_user),
+    user: UserProfile = Depends(get_current_user),
     provider: AIProvider = Depends(get_ai_provider),
-    db: Session = Depends(get_db),
 ) -> VideoEnqueueResponse:
     """
-    Enqueue a video generation job. Returns job_id immediately.
+    Enqueue a video generation job.  Returns job_id immediately.
     Worker reads storyboard_body from Firestore, fetches ref images, generates video.
     Credits deducted: 20 (on terminal success only).
     """
     _check_credits(user, "/video")
-    job = _create_job(db, user, "video", body.project_slug, scene_index=body.scene_index)
-
     firebase_uid = user.firebase_uid
-    job_id = job.id
+    job_id = _create_job(firebase_uid, "video", body.project_slug, scene_index=body.scene_index)
     pname = _provider_name(provider)
-    user_id = user.id
 
     async def _run():
-        from app.database import SessionLocal
-        bg_db = SessionLocal()
         try:
-            _update_job(bg_db, job_id, "running")
+            _update_job(firebase_uid, job_id, "running")
 
             # 1. Read storyboard_body from Firestore.
             fs_path = (
@@ -475,25 +481,17 @@ async def enqueue_video(
             doc = _firestore_client().document(fs_path).get()
             storyboard = (doc.get("storyboard_body") or "") if doc.exists else ""
             if not storyboard:
-                raise ValueError(
-                    "Scene has no storyboard_body — generate a storyboard first."
-                )
+                raise ValueError("Scene has no storyboard_body — generate a storyboard first.")
 
             # 2. Fetch reference images from GCS.
             ref_images = _fetch_gcs_images(body.ref_image_gcs_paths)
 
             # 3. Generate video via AI provider (long-running, runs in thread).
-            video_bytes, mime_type = await asyncio.to_thread(
-                provider.generate_video, storyboard, ref_images
-            )
+            video_bytes, mime_type = await asyncio.to_thread(provider.generate_video, storyboard, ref_images)
 
             # 4. Save to GCS at deterministic path.
-            gcs_key = (
-                f"{firebase_uid}/{body.project_slug}"
-                f"/scenes/{body.scene_index}/video.mp4"
-            )
-            store = MediaStore()
-            await asyncio.to_thread(store.put_object, gcs_key, video_bytes, mime_type)
+            gcs_key = f"{firebase_uid}/{body.project_slug}/scenes/{body.scene_index}/video.mp4"
+            await asyncio.to_thread(MediaStore().put_object, gcs_key, video_bytes, mime_type)
 
             # 5. Write gcs_video_path to Firestore scene doc.
             _firestore_client().document(fs_path).set(
@@ -502,13 +500,11 @@ async def enqueue_video(
             )
 
             # 6. Deduct credits + update job.
-            db_user = bg_db.query(User).filter(User.id == user_id).first()
-            if db_user:
-                _deduct_credits(bg_db, db_user, "/video", pname, CREDIT_COSTS["/video"])
-            _update_job(bg_db, job_id, "success", gcs_output_path=gcs_key)
+            _deduct_credits(firebase_uid, "/video", pname, CREDIT_COSTS["/video"])
+            _update_job(firebase_uid, job_id, "success", gcs_output_path=gcs_key)
 
             # 7. Send FCM push.
-            send_fcm_notification(db_user.fcm_token if db_user else None, {
+            send_fcm_notification(_get_fcm_token(firebase_uid), {
                 "job_id": job_id,
                 "type": "video",
                 "project_id": body.project_slug,
@@ -518,16 +514,13 @@ async def enqueue_video(
             logger.info("Video job complete: job_id=%s", job_id)
         except Exception as e:
             logger.error("Video job failed: job_id=%s", job_id, exc_info=True)
-            _update_job(bg_db, job_id, "failed", error_message=str(e)[:1024])
-            db_user = bg_db.query(User).filter(User.id == user_id).first()
-            send_fcm_notification(db_user.fcm_token if db_user else None, {
+            _update_job(firebase_uid, job_id, "failed", error_message=str(e)[:1024])
+            send_fcm_notification(_get_fcm_token(firebase_uid), {
                 "job_id": job_id,
                 "type": "video",
                 "project_id": body.project_slug,
                 "status": "failed",
             })
-        finally:
-            bg_db.close()
 
     asyncio.create_task(_run())
     return VideoEnqueueResponse(job_id=job_id)
@@ -538,28 +531,22 @@ async def enqueue_video(
 @router.post("/merge", response_model=VideoEnqueueResponse)
 async def enqueue_merge(
     body: MergeRequest,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: UserProfile = Depends(get_current_user),
 ) -> VideoEnqueueResponse:
     """
-    Enqueue a video merge job. Returns job_id immediately.
+    Enqueue a video merge job.  Returns job_id immediately.
     Worker downloads scene videos from GCS, runs FFmpeg with trims + transitions,
     uploads final.mp4 to GCS, writes gcs_final_path to Firestore project doc.
     Credits deducted: 5 (on terminal success only).
     NOTE: Requires ffmpeg binary in PATH on the server.
     """
     _check_credits(user, "/merge")
-    job = _create_job(db, user, "merge", body.project_slug)
-
     firebase_uid = user.firebase_uid
-    job_id = job.id
-    user_id = user.id
+    job_id = _create_job(firebase_uid, "merge", body.project_slug)
 
     async def _run():
-        from app.database import SessionLocal
-        bg_db = SessionLocal()
         try:
-            _update_job(bg_db, job_id, "running")
+            _update_job(firebase_uid, job_id, "running")
             store = MediaStore()
 
             with tempfile.TemporaryDirectory() as tmp:
@@ -575,9 +562,7 @@ async def enqueue_merge(
                     try:
                         data = await asyncio.to_thread(store.get_object_bytes, gcs_key)
                     except Exception as e:
-                        raise ValueError(
-                            f"Could not fetch video for scene {entry.scene_index}: {e}"
-                        )
+                        raise ValueError(f"Could not fetch video for scene {entry.scene_index}: {e}")
                     clip_path = tmp_path / f"scene_{entry.scene_index:04d}.mp4"
                     clip_path.write_bytes(data)
                     clip_files.append((clip_path, entry))
@@ -589,27 +574,22 @@ async def enqueue_merge(
                 # 3. Upload final.mp4 to GCS.
                 gcs_key = f"{firebase_uid}/{body.project_slug}/final.mp4"
                 final_bytes = final_path.read_bytes()
-                await asyncio.to_thread(
-                    store.put_object, gcs_key, final_bytes, "video/mp4"
-                )
+                await asyncio.to_thread(store.put_object, gcs_key, final_bytes, "video/mp4")
 
             # 4. Write gcs_final_path to Firestore project root doc.
-            fs_path = f"users/{firebase_uid}/projects/{body.project_slug}"
-            _firestore_client().document(fs_path).set(
+            _firestore_client().document(
+                f"users/{firebase_uid}/projects/{body.project_slug}"
+            ).set(
                 {"gcs_final_path": gcs_key, "updated_at": SERVER_TIMESTAMP},
                 merge=True,
             )
 
             # 5. Deduct credits + update job.
-            db_user = bg_db.query(User).filter(User.id == user_id).first()
-            if db_user:
-                _deduct_credits(
-                    bg_db, db_user, "/merge", "server", CREDIT_COSTS["/merge"]
-                )
-            _update_job(bg_db, job_id, "success", gcs_output_path=gcs_key)
+            _deduct_credits(firebase_uid, "/merge", "server", CREDIT_COSTS["/merge"])
+            _update_job(firebase_uid, job_id, "success", gcs_output_path=gcs_key)
 
             # 6. Send FCM push.
-            send_fcm_notification(db_user.fcm_token if db_user else None, {
+            send_fcm_notification(_get_fcm_token(firebase_uid), {
                 "job_id": job_id,
                 "type": "merge",
                 "project_id": body.project_slug,
@@ -618,16 +598,13 @@ async def enqueue_merge(
             logger.info("Merge job complete: job_id=%s", job_id)
         except Exception as e:
             logger.error("Merge job failed: job_id=%s", job_id, exc_info=True)
-            _update_job(bg_db, job_id, "failed", error_message=str(e)[:1024])
-            db_user = bg_db.query(User).filter(User.id == user_id).first()
-            send_fcm_notification(db_user.fcm_token if db_user else None, {
+            _update_job(firebase_uid, job_id, "failed", error_message=str(e)[:1024])
+            send_fcm_notification(_get_fcm_token(firebase_uid), {
                 "job_id": job_id,
                 "type": "merge",
                 "project_id": body.project_slug,
                 "status": "failed",
             })
-        finally:
-            bg_db.close()
 
     asyncio.create_task(_run())
     return VideoEnqueueResponse(job_id=job_id)
@@ -725,29 +702,35 @@ def _run_ffmpeg_merge(
 @router.get("/job/{job_id}/status", response_model=VideoStatusResponse)
 def get_job_status(
     job_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: UserProfile = Depends(get_current_user),
 ) -> VideoStatusResponse:
     """
     Poll the status of any async generation job (image, video, merge).
     Returns a presigned URL when status = 'success'.
+
+    Reads from ``users/{uid}/jobs/{job_id}`` — user-scoped so one user cannot
+    poll another's job even if they guess the job_id UUID.
     """
-    job = db.query(Job).filter(Job.id == job_id, Job.user_id == user.id).first()
-    if job is None:
+    doc = _firestore().document(f"users/{user.firebase_uid}/jobs/{job_id}").get()
+    if not doc.exists:
         raise HTTPException(404, f"Job '{job_id}' not found.")
 
+    data: dict = doc.to_dict() or {}
+    job_status = data.get("status", "pending")
+    gcs_output_path: str | None = data.get("gcs_output_path")
+
     url = None
-    if job.status == "success" and job.gcs_output_path:
+    if job_status == "success" and gcs_output_path:
         try:
-            url = MediaStore().presign_path(job.gcs_output_path)
+            url = MediaStore().presign_path(gcs_output_path)
         except Exception:
             logger.warning("Could not generate presigned URL for job %s", job_id)
 
     return VideoStatusResponse(
         job_id=job_id,
-        status=VideoStatusEnum(job.status),
+        status=VideoStatusEnum(job_status),
         url=url,
-        error=job.error_message,
+        error=data.get("error_message"),
     )
 
 
@@ -756,7 +739,7 @@ def get_job_status(
 @router.post("/media/presigned-url", response_model=PresignedUrlResponse)
 def get_presigned_url(
     body: PresignedUrlRequest,
-    user: User = Depends(get_current_user),
+    user: UserProfile = Depends(get_current_user),
 ) -> PresignedUrlResponse:
     """
     Generate a fresh presigned GET URL for any GCS object path owned by this user.
@@ -765,7 +748,7 @@ def get_presigned_url(
     (VideoPlayerScreen expired URL refresh) and when the video editor loads
     clip thumbnails.
 
-    Security: gcs_path must start with `{firebase_uid}/` — paths outside the
+    Security: gcs_path must start with ``{firebase_uid}/`` — paths outside the
     user's namespace are rejected with HTTP 403.
     """
     if not body.gcs_path.startswith(f"{user.firebase_uid}/"):

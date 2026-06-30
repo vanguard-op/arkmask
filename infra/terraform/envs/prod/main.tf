@@ -20,8 +20,6 @@ locals {
 }
 
 # ── Artifact Registry ─────────────────────────────────────────────────────────
-# Shared with staging — one repo, separate image tags per env.
-# Created in prod config since prod is the authoritative source.
 
 resource "google_artifact_registry_repository" "arkmask" {
   repository_id = "arkmask"
@@ -31,50 +29,14 @@ resource "google_artifact_registry_repository" "arkmask" {
   description   = "ArkMask Docker images (API + workers)"
 }
 
-# ── Secret Manager ────────────────────────────────────────────────────────────
+# ── Secret Manager — single consolidated secret ───────────────────────────────
 
-resource "google_secret_manager_secret" "db_url" {
-  secret_id = "prod-arkmask-db-url"
+resource "google_secret_manager_secret" "config" {
+  secret_id = "prod-arkmask-config"
   project   = var.project_id
   replication {
     auto {}
   }
-}
-
-resource "google_secret_manager_secret" "firebase_credentials" {
-  secret_id = "prod-arkmask-firebase-credentials"
-  project   = var.project_id
-  replication {
-    auto {}
-  }
-}
-
-resource "google_secret_manager_secret" "stripe_secret_key" {
-  secret_id = "prod-arkmask-stripe-secret-key"
-  project   = var.project_id
-  replication {
-    auto {}
-  }
-}
-
-resource "google_secret_manager_secret" "stripe_webhook_secret" {
-  secret_id = "prod-arkmask-stripe-webhook-secret"
-  project   = var.project_id
-  replication {
-    auto {}
-  }
-}
-
-# ── Networking ────────────────────────────────────────────────────────────────
-
-module "networking" {
-  source     = "../../modules/networking"
-  project_id = var.project_id
-  env        = local.env
-  region     = local.region
-  # e2-standard-4 for prod — higher throughput connector for concurrent requests.
-  connector_machine_type  = "e2-standard-4"
-  connector_max_instances = 10
 }
 
 # ── GCS media bucket ──────────────────────────────────────────────────────────
@@ -86,21 +48,6 @@ module "gcs" {
   bucket_name = "arkmask-media-prod"
   # Never allow Terraform to destroy the prod media bucket automatically.
   force_destroy = false
-}
-
-# ── Cloud SQL ─────────────────────────────────────────────────────────────────
-
-module "cloud_sql" {
-  source      = "../../modules/cloud-sql"
-  project_id  = var.project_id
-  env         = local.env
-  region      = local.region
-  vpc_id      = module.networking.vpc_id
-  db_password = var.db_password
-  # n1-standard-2: 2 vCPU, 7.5 GB — handles concurrent API requests + job writes.
-  # Scale up vertically if read/write latency climbs (architecture decision log).
-  instance_tier       = "db-n1-standard-2"
-  deletion_protection = true
 }
 
 # ── IAM + WIF ─────────────────────────────────────────────────────────────────
@@ -139,7 +86,6 @@ module "api" {
   image = "${local.region}-docker.pkg.dev/${var.project_id}/arkmask/api:latest"
 
   service_account_email = module.iam.api_sa_email
-  vpc_connector_id      = module.networking.connector_id
   allow_unauthenticated = true
 
   # 1 minimum instance in prod to eliminate cold-start latency for paying users.
@@ -160,20 +106,8 @@ module "api" {
   }
 
   secret_env_vars = {
-    DATABASE_URL = {
-      secret  = google_secret_manager_secret.db_url.secret_id
-      version = "latest"
-    }
-    FIREBASE_CREDENTIALS_JSON = {
-      secret  = google_secret_manager_secret.firebase_credentials.secret_id
-      version = "latest"
-    }
-    STRIPE_SECRET_KEY = {
-      secret  = google_secret_manager_secret.stripe_secret_key.secret_id
-      version = "latest"
-    }
-    STRIPE_WEBHOOK_SECRET = {
-      secret  = google_secret_manager_secret.stripe_webhook_secret.secret_id
+    ARKMASK_SECRET = {
+      secret  = google_secret_manager_secret.config.secret_id
       version = "latest"
     }
   }
@@ -190,10 +124,8 @@ module "workers" {
   image = "${local.region}-docker.pkg.dev/${var.project_id}/arkmask/workers:latest"
 
   service_account_email = module.iam.workers_sa_email
-  vpc_connector_id      = module.networking.connector_id
   allow_unauthenticated = false
 
-  # Workers scale to zero between Cloud Tasks invocations.
   min_instances   = 0
   max_instances   = 50
   cpu             = "2"
@@ -209,12 +141,8 @@ module "workers" {
   }
 
   secret_env_vars = {
-    DATABASE_URL = {
-      secret  = google_secret_manager_secret.db_url.secret_id
-      version = "latest"
-    }
-    FIREBASE_CREDENTIALS_JSON = {
-      secret  = google_secret_manager_secret.firebase_credentials.secret_id
+    ARKMASK_SECRET = {
+      secret  = google_secret_manager_secret.config.secret_id
       version = "latest"
     }
   }
@@ -230,11 +158,6 @@ output "api_url" {
 output "workers_url" {
   description = "Production workers URL (internal)."
   value       = module.workers.service_url
-}
-
-output "db_private_ip" {
-  description = "Private IP for DATABASE_URL secret population."
-  value       = module.cloud_sql.private_ip
 }
 
 output "workload_identity_provider" {
