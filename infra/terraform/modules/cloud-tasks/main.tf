@@ -9,7 +9,7 @@
 # configured in the API code when tasks are enqueued (not here).
 
 resource "google_cloud_tasks_queue" "image" {
-  name     = "${var.env}-arkmask-image-queue"
+  name     = "${var.env}-arkmask-img-q"
   location = var.region
   project  = var.project_id
 
@@ -27,7 +27,7 @@ resource "google_cloud_tasks_queue" "image" {
 }
 
 resource "google_cloud_tasks_queue" "video" {
-  name     = "${var.env}-arkmask-video-queue"
+  name     = "${var.env}-arkmask-vid-q"
   location = var.region
   project  = var.project_id
 
@@ -47,7 +47,7 @@ resource "google_cloud_tasks_queue" "video" {
 }
 
 resource "google_cloud_tasks_queue" "merge" {
-  name     = "${var.env}-arkmask-merge-queue"
+  name     = "${var.env}-arkmask-mrg-q"
   location = var.region
   project  = var.project_id
 

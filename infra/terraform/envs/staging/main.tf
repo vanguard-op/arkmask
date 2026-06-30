@@ -101,7 +101,9 @@ module "api" {
   region     = local.region
 
   name  = "staging-arkmask-api"
-  image = "${local.region}-docker.pkg.dev/${var.project_id}/arkmask/api:latest"
+  # Placeholder — CI/CD (gcloud run deploy) replaces this on first push.
+  # lifecycle.ignore_changes on image means Terraform never reverts it.
+  image = "us-docker.pkg.dev/cloudrun/container/hello"
 
   service_account_email = module.iam.api_sa_email
   allow_unauthenticated = true
@@ -140,7 +142,9 @@ module "workers" {
   region     = local.region
 
   name  = "staging-arkmask-workers"
-  image = "${local.region}-docker.pkg.dev/${var.project_id}/arkmask/workers:latest"
+  # Placeholder — CI/CD (gcloud run deploy) replaces this on first push.
+  # lifecycle.ignore_changes on image means Terraform never reverts it.
+  image = "us-docker.pkg.dev/cloudrun/container/hello"
 
   service_account_email = module.iam.workers_sa_email
   allow_unauthenticated = false
