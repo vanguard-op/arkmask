@@ -376,6 +376,16 @@ class EditorCubit extends Cubit<EditorState> {
     _persistEditorState(projectSlug, updated, s.transitions);
   }
 
+  /// Sets the transition type for the gap between clip[gapIndex] and
+  /// clip[gapIndex + 1], then persists the new state.
+  void setTransition(int gapIndex, TransitionType type) {
+    final s = state;
+    if (s is! EditorLoaded) return;
+    final updated = Map<int, TransitionType>.from(s.transitions)..[gapIndex] = type;
+    emit(s.copyWith(transitions: updated));
+    _persistEditorState(s.projectSlug, s.clips, updated);
+  }
+
   /// Called when a trim drag ends — persists the current trim + transition state.
   void onTrimDragEnd() {
     final s = state;

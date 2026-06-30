@@ -21,6 +21,7 @@ final class ProjectsLoaded extends ProjectsState {
     this.tier,
     this.deletingSlug,
     this.renameError,
+    this.generatingCounts = const {},
   });
 
   /// Live project list from the Firestore `users/{uid}/projects` collection.
@@ -37,6 +38,10 @@ final class ProjectsLoaded extends ProjectsState {
   /// Non-null when a rename operation failed; consumed once and cleared.
   final String? renameError;
 
+  /// Maps project slug → count of active (pending/running) jobs in the Hive CE
+  /// registry. Used to display "N generating" badges on project cards (FEAT-006).
+  final Map<String, int> generatingCounts;
+
   ProjectsLoaded copyWith({
     List<ProjectDocument>? projects,
     int? creditBalance,
@@ -45,6 +50,7 @@ final class ProjectsLoaded extends ProjectsState {
     bool clearDeletingSlug = false,
     String? renameError,
     bool clearRenameError = false,
+    Map<String, int>? generatingCounts,
   }) =>
       ProjectsLoaded(
         projects: projects ?? this.projects,
@@ -54,11 +60,12 @@ final class ProjectsLoaded extends ProjectsState {
             clearDeletingSlug ? null : (deletingSlug ?? this.deletingSlug),
         renameError:
             clearRenameError ? null : (renameError ?? this.renameError),
+        generatingCounts: generatingCounts ?? this.generatingCounts,
       );
 
   @override
   List<Object?> get props =>
-      [projects, creditBalance, tier, deletingSlug, renameError];
+      [projects, creditBalance, tier, deletingSlug, renameError, generatingCounts];
 }
 
 final class ProjectsError extends ProjectsState {

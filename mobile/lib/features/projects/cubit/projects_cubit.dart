@@ -5,6 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../core/api/ark_mask_api_client.dart';
+import '../../../core/jobs/job_registry_service.dart';
 import '../../../core/models/models.dart';
 import 'projects_state.dart';
 
@@ -16,20 +17,35 @@ import 'projects_state.dart';
 ///
 /// Credits are fetched from the backend API once per load and on each
 /// Firestore snapshot (fire-and-forget).
+///
+/// Also listens to [JobRegistryService] as a [ChangeNotifier] so project card
+/// "N generating" badges update in real time as jobs complete (FEAT-006).
 class ProjectsCubit extends Cubit<ProjectsState> {
-  ProjectsCubit({required this.apiClient}) : super(const ProjectsLoading());
+  ProjectsCubit({
+    required this.apiClient,
+    required this.jobRegistryService,
+  }) : super(const ProjectsLoading());
 
   final ArkMaskApiClient apiClient;
+  final JobRegistryService jobRegistryService;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _projectsSub;
 
   /// Starts listening to the project list. Safe to call multiple times —
   /// cancels any existing subscription before starting a new one.
+  ///
+  /// Also registers a [JobRegistryService] listener so the "N generating"
+  /// badge on each project card updates in real time (FEAT-006).
   void load() {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) {
       emit(const ProjectsError(message: 'Not signed in.'));
       return;
     }
+
+    // Attach the job-registry listener once. Removing first ensures we never
+    // double-register if load() is called more than once.
+    jobRegistryService.removeListener(_onJobRegistryChanged);
+    jobRegistryService.addListener(_onJobRegistryChanged);
 
     _projectsSub?.cancel();
     emit(const ProjectsLoading());
@@ -51,6 +67,7 @@ class ProjectsCubit extends Cubit<ProjectsState> {
               creditBalance:
                   current is ProjectsLoaded ? current.creditBalance : null,
               tier: current is ProjectsLoaded ? current.tier : null,
+              generatingCounts: _buildGeneratingCounts(),
             ));
 
             _fetchCredits();
@@ -58,6 +75,27 @@ class ProjectsCubit extends Cubit<ProjectsState> {
           onError: (Object e) =>
               emit(ProjectsError(message: 'Failed to load projects: $e')),
         );
+  }
+
+  /// Builds a map of project slug → count of active (pending/running) jobs
+  /// from the Hive CE registry.
+  Map<String, int> _buildGeneratingCounts() {
+    final counts = <String, int>{};
+    for (final entry in jobRegistryService.all) {
+      if (entry.isPending) {
+        counts[entry.projectId] = (counts[entry.projectId] ?? 0) + 1;
+      }
+    }
+    return counts;
+  }
+
+  /// Called whenever the job registry notifies of a change. Propagates updated
+  /// generating counts into the current state so card badges refresh live.
+  void _onJobRegistryChanged() {
+    final s = state;
+    if (s is ProjectsLoaded) {
+      emit(s.copyWith(generatingCounts: _buildGeneratingCounts()));
+    }
   }
 
   Future<void> _fetchCredits() async {
@@ -133,6 +171,7 @@ class ProjectsCubit extends Cubit<ProjectsState> {
 
   @override
   Future<void> close() async {
+    jobRegistryService.removeListener(_onJobRegistryChanged);
     await _projectsSub?.cancel();
     return super.close();
   }

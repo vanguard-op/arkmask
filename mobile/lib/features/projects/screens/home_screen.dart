@@ -27,7 +27,10 @@ class HomeScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final services = ArkMaskServices.of(context);
     return BlocProvider(
-      create: (_) => ProjectsCubit(apiClient: services.apiClient)..load(),
+      create: (_) => ProjectsCubit(
+        apiClient: services.apiClient,
+        jobRegistryService: services.jobRegistryService,
+      )..load(),
       child: const _HomeView(),
     );
   }
@@ -203,6 +206,7 @@ class _ProjectList extends StatelessWidget {
         return ProjectCard(
           project: project,
           isDeleting: isDeleting,
+          generatingCount: state.generatingCounts[project.slug] ?? 0,
           onTap: () => context.push(
             Routes.projectBrowser.replaceFirst(
               ':projectName',

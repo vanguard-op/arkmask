@@ -11,6 +11,9 @@ import '../../../core/utils/formatters.dart';
 ///
 /// Shows: display name, scene count, creation date, and a generation progress
 /// bar. Long-press reveals "Rename" and "Delete" options.
+///
+/// When [generatingCount] > 0, a "N generating" badge is shown in the metadata
+/// row, reflecting in-flight Hive CE jobs for this project (FEAT-006).
 class ProjectCard extends StatelessWidget {
   const ProjectCard({
     super.key,
@@ -19,6 +22,7 @@ class ProjectCard extends StatelessWidget {
     required this.onDeleteConfirmed,
     required this.onRenameConfirmed,
     this.isDeleting = false,
+    this.generatingCount = 0,
   });
 
   final ProjectDocument project;
@@ -30,6 +34,10 @@ class ProjectCard extends StatelessWidget {
 
   /// True while the delete API call is in flight for this card.
   final bool isDeleting;
+
+  /// Number of active (pending/running) Hive CE jobs for this project.
+  /// When > 0, a "N generating" badge is shown in the metadata row.
+  final int generatingCount;
 
   @override
   Widget build(BuildContext context) {
@@ -91,6 +99,13 @@ class ProjectCard extends StatelessWidget {
                     style: AppTextStyles.bodySmall(context)
                         .copyWith(color: textSecondary),
                   ),
+                  // Show "N generating" badge when Hive CE has active jobs for
+                  // this project. Updates in real time via JobRegistryService
+                  // listener in ProjectsCubit (FEAT-006).
+                  if (generatingCount > 0) ...[
+                    _dot(context, textSecondary),
+                    _GeneratingBadge(count: generatingCount),
+                  ],
                 ],
               ),
               // ── Progress bar ──────────────────────────────────────────────
@@ -260,5 +275,56 @@ class ProjectCard extends StatelessWidget {
       ),
     );
     if (confirmed == true) onDeleteConfirmed();
+  }
+}
+
+/// Small pill badge shown in the project card metadata row when one or more
+/// Hive CE generation jobs are active for the project (FEAT-006).
+///
+/// Uses the theme's stateRunning colour so it is visually consistent with
+/// job-status indicators elsewhere in the app.
+class _GeneratingBadge extends StatelessWidget {
+  const _GeneratingBadge({required this.count});
+
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final color =
+        isDark ? AppColors.stateRunningDark : AppColors.stateRunningLight;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.s2,
+        vertical: 2,
+      ),
+      decoration: BoxDecoration(
+        // Semi-transparent fill so the pill feels lightweight against the card.
+        color: color.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(AppSizing.radiusFull),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Pulsing dot replaced by a static dot for simplicity; a parent
+          // AnimationController would be needed for a true pulse and would
+          // require converting this widget to StatefulWidget.
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(
+              color: color,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: AppSpacing.s1),
+          Text(
+            '$count generating',
+            style: AppTextStyles.caption(context).copyWith(color: color),
+          ),
+        ],
+      ),
+    );
   }
 }

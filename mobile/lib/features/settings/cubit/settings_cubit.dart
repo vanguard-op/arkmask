@@ -2,6 +2,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../core/api/ark_mask_api_client.dart';
 import '../../../core/auth/auth_service.dart';
+import '../../../core/jobs/job_registry_service.dart';
 import '../../../core/models/models.dart';
 import '../../../core/storage/secure_storage_service.dart';
 import 'settings_state.dart';
@@ -15,11 +16,13 @@ class SettingsCubit extends Cubit<SettingsState> {
     required this.storage,
     required this.authService,
     required this.apiClient,
+    required this.jobRegistryService,
   }) : super(const SettingsLoading());
 
   final SecureStorageService storage;
   final AuthService authService;
   final ArkMaskApiClient apiClient;
+  final JobRegistryService jobRegistryService;
 
   /// Loads all settings data from secure storage and backend.
   Future<void> load() async {
@@ -96,10 +99,14 @@ class SettingsCubit extends Cubit<SettingsState> {
   }
 
   /// Signs out — clears credentials and emits [SettingsSignedOut].
+  ///
+  /// The Hive CE job registry is cleared first (FEAT-023) so orphaned job
+  /// entries from this session do not persist into the next login.
   Future<void> signOut() async {
     if (state is! SettingsLoaded) return;
     final s = state as SettingsLoaded;
     emit(s.copyWith(isSigningOut: true));
+    await jobRegistryService.clearAll();
     await authService.signOut();
     emit(const SettingsSignedOut());
   }

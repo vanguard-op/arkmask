@@ -29,6 +29,7 @@ class SettingsScreen extends StatelessWidget {
         storage: services.storage,
         authService: services.authService,
         apiClient: services.apiClient,
+        jobRegistryService: services.jobRegistryService,
       )..load(),
       child: const _SettingsView(),
     );

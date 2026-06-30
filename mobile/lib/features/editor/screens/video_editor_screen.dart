@@ -1138,10 +1138,10 @@ class _NoVideoPlaceholder extends StatelessWidget {
   }
 }
 
-/// Non-interactive transition indicator at Phase 3 launch.
+/// Tappable transition indicator between clips (FEAT-020).
 ///
-/// At Phase 3, all gaps default to Hard Cut with no picker UI.
-/// The [onTap] parameter is reserved for Phase 4 (FEAT-020).
+/// Opens a modal bottom sheet picker on tap. [gapIndex] is the index of the
+/// gap: gap between clip[i] and clip[i+1] has gapIndex == i.
 class _TransitionIndicator extends StatelessWidget {
   const _TransitionIndicator({
     required this.width,
@@ -1155,19 +1155,54 @@ class _TransitionIndicator extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isDark = _isDark(context);
-    final color =
-        isDark ? AppColors.textTertiaryDark : AppColors.textTertiaryLight;
+    return GestureDetector(
+      onTap: () => _showTransitionPicker(context, gapIndex, currentType),
+      child: _TransitionIndicatorVisual(
+        width: width,
+        currentType: currentType,
+      ),
+    );
+  }
+}
 
-    // Phase 3: non-interactive — always "Cut". No GestureDetector.
+/// Pure-visual part of the transition indicator (icon + short label).
+///
+/// Non-hardCut transitions are highlighted in primary color to signal
+/// that a non-default effect is active.
+class _TransitionIndicatorVisual extends StatelessWidget {
+  const _TransitionIndicatorVisual({
+    required this.width,
+    required this.currentType,
+  });
+
+  final double width;
+  final TransitionType currentType;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = _isDark(context);
+
+    // Hard Cut uses a muted tertiary color; any other transition uses primary
+    // color to draw the editor's eye to the active effect.
+    final isDefault = currentType == TransitionType.hardCut;
+    final color = isDefault
+        ? (isDark ? AppColors.textTertiaryDark : AppColors.textTertiaryLight)
+        : (isDark ? AppColors.primaryDark : AppColors.primaryLight);
+
+    final icon = switch (currentType) {
+      TransitionType.hardCut => LucideIcons.scissors,
+      TransitionType.fadeBlack => LucideIcons.sun,
+      TransitionType.dissolve => LucideIcons.layers,
+    };
+
     return SizedBox(
       width: width,
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(LucideIcons.scissors, size: 12, color: color),
+          Icon(icon, size: 12, color: color),
           Text(
-            'Cut',
+            currentType.shortLabel,
             style: AppTextStyles.caption(context).copyWith(
               fontSize: 8,
               color: color,
@@ -1178,6 +1213,63 @@ class _TransitionIndicator extends StatelessWidget {
     );
   }
 }
+
+/// Shows the transition picker bottom sheet for the gap at [gapIndex].
+void _showTransitionPicker(
+    BuildContext context, int gapIndex, TransitionType current) {
+  // Capture the cubit before the async showModalBottomSheet call so we can
+  // call setTransition even if the surrounding widget is unmounted mid-flight.
+  final cubit = context.read<EditorCubit>();
+  final isDark = _isDark(context);
+
+  showModalBottomSheet<void>(
+    context: context,
+    backgroundColor:
+        isDark ? AppColors.surfaceOverlayDark : AppColors.surfaceOverlayLight,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(
+        top: Radius.circular(AppSizing.radiusLg),
+      ),
+    ),
+    builder: (sheetContext) {
+      return SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
+                  AppSpacing.s4, AppSpacing.s4, AppSpacing.s4, AppSpacing.s2),
+              child: Text('Transition', style: AppTextStyles.h3(sheetContext)),
+            ),
+            // One ListTile per TransitionType value.
+            for (final type in TransitionType.values)
+              ListTile(
+                leading: Icon(_iconForTransition(type)),
+                title: Text(type.label),
+                // Check mark only on the currently-active transition.
+                trailing: type == current
+                    ? const Icon(LucideIcons.check)
+                    : null,
+                onTap: () {
+                  cubit.setTransition(gapIndex, type);
+                  Navigator.pop(sheetContext);
+                },
+              ),
+            const SizedBox(height: AppSpacing.s2),
+          ],
+        ),
+      );
+    },
+  );
+}
+
+/// Maps a [TransitionType] to its Lucide icon.
+IconData _iconForTransition(TransitionType type) => switch (type) {
+      TransitionType.hardCut => LucideIcons.scissors,
+      TransitionType.fadeBlack => LucideIcons.sun,
+      TransitionType.dissolve => LucideIcons.layers,
+    };
 
 // ── Zone 3: Clip Detail Panel ─────────────────────────────────────────────────
 
