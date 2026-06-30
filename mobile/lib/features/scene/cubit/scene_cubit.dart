@@ -37,6 +37,7 @@ class SceneCubit extends Cubit<SceneState> {
 
   // ── Firestore subscriptions ────────────────────────────────────────────────
 
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _projectDocSub;
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _sceneDocSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _sceneAssetsSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _globalAssetsSub;
@@ -46,7 +47,12 @@ class SceneCubit extends Cubit<SceneState> {
   /// Parsed scene document. Null until the first snapshot arrives.
   SceneDocument? _sceneDoc;
 
-  /// scene_text field parsed separately (not in SceneDocument model).
+  /// Scene body text parsed from the project's `story_content` field.
+  ///
+  /// `story_content` is the canonical source of truth — SceneCubit subscribes
+  /// to the project document and re-parses this field on every change so that
+  /// edits made in the Story Editor are immediately reflected here without
+  /// requiring a separate `scene_text` write per scene doc.
   String? _sceneText;
 
   List<AssetDocument> _sceneAssets = [];
@@ -76,6 +82,21 @@ class SceneCubit extends Cubit<SceneState> {
     final projectPath = 'users/$uid/projects/$projectSlug';
     final sceneId = sceneNumber.toString();
 
+    // ── 0. Project document — parse story_content for this scene's text ────
+    //
+    // story_content is the canonical source of truth for scene bodies.
+    // Subscribing here means any edit saved in the Story Editor is reflected
+    // immediately without a separate scene_text write per scene document.
+    _projectDocSub = db.doc(projectPath).snapshots().listen(
+      (snap) {
+        final raw = snap.data()?['story_content'] as String? ?? '';
+        _sceneText = _parseSceneText(raw, sceneNumber);
+        _rebuildState();
+      },
+      onError: (Object e) =>
+          emit(SceneError(message: 'Project listener error: $e')),
+    );
+
     // ── 1. Scene document ──────────────────────────────────────────────────
     _sceneDocSub = db
         .doc('$projectPath/scenes/$sceneId')
@@ -84,11 +105,8 @@ class SceneCubit extends Cubit<SceneState> {
       (snap) {
         if (!snap.exists || snap.data() == null) {
           _sceneDoc = null;
-          _sceneText = null;
         } else {
           final data = snap.data()!;
-          // scene_text is not part of SceneDocument model — parse directly.
-          _sceneText = data['scene_text'] as String?;
           final prevVideoPath = _sceneDoc?.gcsVideoPath;
           _sceneDoc = SceneDocument.fromFirestore(snap.id, data);
 
@@ -375,6 +393,29 @@ class SceneCubit extends Cubit<SceneState> {
 
   // ── Utilities ─────────────────────────────────────────────────────────────
 
+  /// Parses `story_content` (MDX with `# N` headings) and returns the body
+  /// for [targetScene], or `null` if the heading is not found.
+  ///
+  /// Mirrors the logic in `StoryCubit._parseScenes` but returns a single
+  /// scene body rather than the full list.
+  static String? _parseSceneText(String raw, int targetScene) {
+    if (raw.trim().isEmpty) return null;
+    final headingPattern = RegExp(r'^# (\d+)\s*$', multiLine: true);
+    final matches = headingPattern.allMatches(raw).toList();
+    if (matches.isEmpty) {
+      // No headings — treat entire content as scene 1.
+      return targetScene == 1 ? raw.trim() : null;
+    }
+    for (var i = 0; i < matches.length; i++) {
+      final number = int.parse(matches[i].group(1)!);
+      if (number != targetScene) continue;
+      final bodyStart = matches[i].end;
+      final bodyEnd = i + 1 < matches.length ? matches[i + 1].start : raw.length;
+      return raw.substring(bodyStart, bodyEnd).trim();
+    }
+    return null;
+  }
+
   /// Extracts the base asset name from a pass-through reference.
   ///
   /// Reference format: `@/scenes/N/{baseName}` → returns `{baseName}`.
@@ -423,6 +464,7 @@ class SceneCubit extends Cubit<SceneState> {
 
   @override
   Future<void> close() {
+    _projectDocSub?.cancel();
     _sceneDocSub?.cancel();
     _sceneAssetsSub?.cancel();
     _globalAssetsSub?.cancel();

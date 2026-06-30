@@ -102,6 +102,41 @@ class MediaStore:
         """Generate a fresh presigned URL for an existing object (e.g. after TTL expiry)."""
         return self._presign(key)
 
+    def get_object_bytes(self, gcs_path: str) -> bytes:
+        """
+        Download raw bytes for a GCS object identified by its object path.
+
+        `gcs_path` is the raw object key within the bucket — NOT a presigned URL.
+        Example: "users/uid/project-abc/assets/hero/image.png"
+
+        Used by generation workers to fetch reference images and scene videos
+        directly from GCS without going through the presigned URL flow.
+        """
+        response = self._upload_client.get_object(
+            Bucket=self._bucket,
+            Key=gcs_path,
+        )
+        return response["Body"].read()
+
+    def put_object(self, gcs_path: str, data: bytes, content_type: str) -> None:
+        """
+        Upload raw bytes to a specific GCS object path (key).
+
+        Used by generation workers to write generated media at deterministic
+        paths (e.g. `{uid}/{slug}/assets/hero/image.png`) rather than the
+        random UUID keys used by the legacy `save()` method.
+        """
+        self._upload_client.put_object(
+            Bucket=self._bucket,
+            Key=gcs_path,
+            Body=data,
+            ContentType=content_type,
+        )
+
+    def presign_path(self, gcs_path: str) -> str:
+        """Generate a fresh presigned URL for an object at a known GCS path."""
+        return self._presign(gcs_path)
+
     def _presign(self, key: str) -> str:
         return self._presign_client.generate_presigned_url(
             "get_object",

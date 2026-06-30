@@ -601,19 +601,27 @@ class _GcsImageThumbnail extends StatefulWidget {
 }
 
 class _GcsImageThumbnailState extends State<_GcsImageThumbnail> {
-  late Future<String> _urlFuture;
+  // Initialised in didChangeDependencies (first call after initState completes)
+  // to avoid calling ArkMaskServices.of(context) before the widget is in tree.
+  Future<String>? _urlFuture;
+  String? _lastGcsPath;
 
   @override
-  void initState() {
-    super.initState();
-    _urlFuture = _fetchUrl();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Fetch once on first mount, then only when the GCS path changes.
+    if (_lastGcsPath != widget.gcsPath) {
+      _lastGcsPath = widget.gcsPath;
+      _urlFuture = _fetchUrl();
+    }
   }
 
   @override
   void didUpdateWidget(_GcsImageThumbnail old) {
     super.didUpdateWidget(old);
-    // Re-fetch only when the GCS path changes (e.g., after regeneration).
+    // Re-fetch if the GCS path changed (e.g., after regeneration).
     if (old.gcsPath != widget.gcsPath) {
+      _lastGcsPath = widget.gcsPath;
       _urlFuture = _fetchUrl();
     }
   }
@@ -655,6 +663,7 @@ class _GcsImageThumbnailState extends State<_GcsImageThumbnail> {
         ),
       );
 }
+
 
 class _AssetBadge extends StatelessWidget {
   const _AssetBadge({
@@ -1192,18 +1201,25 @@ class _VideoPreviewArea extends StatefulWidget {
 }
 
 class _VideoPreviewAreaState extends State<_VideoPreviewArea> {
-  late Future<String> _urlFuture;
+  // Initialised in didChangeDependencies to avoid calling
+  // ArkMaskServices.of(context) before the widget is in the tree.
+  Future<String>? _urlFuture;
+  String? _lastGcsVideoPath;
 
   @override
-  void initState() {
-    super.initState();
-    _urlFuture = _fetchUrl();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_lastGcsVideoPath != widget.gcsVideoPath) {
+      _lastGcsVideoPath = widget.gcsVideoPath;
+      _urlFuture = _fetchUrl();
+    }
   }
 
   @override
   void didUpdateWidget(_VideoPreviewArea old) {
     super.didUpdateWidget(old);
     if (old.gcsVideoPath != widget.gcsVideoPath) {
+      _lastGcsVideoPath = widget.gcsVideoPath;
       _urlFuture = _fetchUrl();
     }
   }
