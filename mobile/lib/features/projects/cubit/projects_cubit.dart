@@ -68,9 +68,18 @@ class ProjectsCubit extends Cubit<ProjectsState> {
                   current is ProjectsLoaded ? current.creditBalance : null,
               tier: current is ProjectsLoaded ? current.tier : null,
               generatingCounts: _buildGeneratingCounts(),
+              // Preserve existing summaries across list refreshes so cards
+              // don't flicker back to "—" when Firestore emits a new snapshot.
+              storageSummaries:
+                  current is ProjectsLoaded ? current.storageSummaries : const {},
             ));
 
             _fetchCredits();
+            // Fire-and-forget: fetch storage summaries for projects that don't
+            // yet have one. Each fetch runs independently so a single failure
+            // does not block the others. The cubit emits a state update as each
+            // summary arrives, triggering a card rebuild.
+            _fetchStorageSummaries(projects);
           },
           onError: (Object e) =>
               emit(ProjectsError(message: 'Failed to load projects: $e')),
@@ -95,6 +104,38 @@ class ProjectsCubit extends Cubit<ProjectsState> {
     final s = state;
     if (s is ProjectsLoaded) {
       emit(s.copyWith(generatingCounts: _buildGeneratingCounts()));
+    }
+  }
+
+  /// Queues a storage fetch for each project not yet in [ProjectsLoaded.storageSummaries].
+  ///
+  /// Intentionally fire-and-forget — never awaited in the Firestore snapshot
+  /// handler. Each [_fetchOneStorageSummary] call runs concurrently and updates
+  /// state independently as results arrive.
+  void _fetchStorageSummaries(List<ProjectDocument> projects) {
+    for (final project in projects) {
+      // Skip if we already have a summary for this slug — avoids redundant
+      // network calls on every Firestore snapshot.
+      final s = state;
+      if (s is ProjectsLoaded && s.storageSummaries.containsKey(project.slug)) {
+        continue;
+      }
+      _fetchOneStorageSummary(project.slug);
+    }
+  }
+
+  Future<void> _fetchOneStorageSummary(String slug) async {
+    try {
+      final data = await apiClient.getProjectStorageSummary(slug);
+      final summary = ProjectStorageSummary.fromJson(slug, data);
+      if (!isClosed && state is ProjectsLoaded) {
+        final current = state as ProjectsLoaded;
+        final updated = Map<String, ProjectStorageSummary>.from(
+            current.storageSummaries)..[slug] = summary;
+        emit(current.copyWith(storageSummaries: updated));
+      }
+    } catch (_) {
+      // Storage summary is non-critical — fail silently. The card shows "—".
     }
   }
 

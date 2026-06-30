@@ -37,6 +37,19 @@ String formatCredits(int credits) {
   return '${NumberFormat('#,##0').format(credits)} cr';
 }
 
+/// Formats a byte count into a human-readable string (KB, MB, GB).
+///
+/// Uses compact units with no space between number and suffix, e.g.
+/// "512B", "3.4KB", "12.7MB", "1.02GB".
+String formatBytes(int bytes) {
+  if (bytes < 1024) return '${bytes}B';
+  if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)}KB';
+  if (bytes < 1024 * 1024 * 1024) {
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)}MB';
+  }
+  return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)}GB';
+}
+
 /// Formats a duration in seconds as `m:ss`.
 ///
 /// Example: 93.5 → "1:33"

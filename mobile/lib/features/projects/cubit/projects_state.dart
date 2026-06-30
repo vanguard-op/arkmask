@@ -22,6 +22,7 @@ final class ProjectsLoaded extends ProjectsState {
     this.deletingSlug,
     this.renameError,
     this.generatingCounts = const {},
+    this.storageSummaries = const {},
   });
 
   /// Live project list from the Firestore `users/{uid}/projects` collection.
@@ -42,6 +43,13 @@ final class ProjectsLoaded extends ProjectsState {
   /// registry. Used to display "N generating" badges on project cards (FEAT-006).
   final Map<String, int> generatingCounts;
 
+  /// Maps project slug → GCS storage summary (FEAT-027).
+  ///
+  /// Populated asynchronously after the project list loads — entries arrive
+  /// one at a time as each per-project storage fetch completes. Cards show
+  /// a placeholder ("—") until the summary arrives.
+  final Map<String, ProjectStorageSummary> storageSummaries;
+
   ProjectsLoaded copyWith({
     List<ProjectDocument>? projects,
     int? creditBalance,
@@ -51,6 +59,7 @@ final class ProjectsLoaded extends ProjectsState {
     String? renameError,
     bool clearRenameError = false,
     Map<String, int>? generatingCounts,
+    Map<String, ProjectStorageSummary>? storageSummaries,
   }) =>
       ProjectsLoaded(
         projects: projects ?? this.projects,
@@ -61,11 +70,12 @@ final class ProjectsLoaded extends ProjectsState {
         renameError:
             clearRenameError ? null : (renameError ?? this.renameError),
         generatingCounts: generatingCounts ?? this.generatingCounts,
+        storageSummaries: storageSummaries ?? this.storageSummaries,
       );
 
   @override
   List<Object?> get props =>
-      [projects, creditBalance, tier, deletingSlug, renameError, generatingCounts];
+      [projects, creditBalance, tier, deletingSlug, renameError, generatingCounts, storageSummaries];
 }
 
 final class ProjectsError extends ProjectsState {

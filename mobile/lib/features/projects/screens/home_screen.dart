@@ -207,6 +207,7 @@ class _ProjectList extends StatelessWidget {
           project: project,
           isDeleting: isDeleting,
           generatingCount: state.generatingCounts[project.slug] ?? 0,
+          storageSummary: state.storageSummaries[project.slug],
           onTap: () => context.push(
             Routes.projectBrowser.replaceFirst(
               ':projectName',

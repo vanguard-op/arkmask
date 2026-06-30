@@ -5,7 +5,7 @@ import '../../../core/models/models.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
-import '../../../core/utils/formatters.dart';
+import '../../../core/utils/formatters.dart' show formatLastModified, formatBytes;
 
 /// Project card displayed on the Home Screen.
 ///
@@ -23,6 +23,7 @@ class ProjectCard extends StatelessWidget {
     required this.onRenameConfirmed,
     this.isDeleting = false,
     this.generatingCount = 0,
+    this.storageSummary,
   });
 
   final ProjectDocument project;
@@ -38,6 +39,10 @@ class ProjectCard extends StatelessWidget {
   /// Number of active (pending/running) Hive CE jobs for this project.
   /// When > 0, a "N generating" badge is shown in the metadata row.
   final int generatingCount;
+
+  /// GCS storage summary for this project (FEAT-027). Null while the fetch is
+  /// in flight — the metadata row shows "—" until it arrives.
+  final ProjectStorageSummary? storageSummary;
 
   @override
   Widget build(BuildContext context) {
@@ -106,6 +111,14 @@ class ProjectCard extends StatelessWidget {
                     _dot(context, textSecondary),
                     _GeneratingBadge(count: generatingCount),
                   ],
+                  // Storage size — shown when summary is available; "—" as placeholder.
+                  _dot(context, textSecondary),
+                  Text(
+                    storageSummary != null && storageSummary!.totalBytes > 0
+                        ? formatBytes(storageSummary!.totalBytes)
+                        : '—',
+                    style: AppTextStyles.bodySmall(context).copyWith(color: textSecondary),
+                  ),
                 ],
               ),
               // ── Progress bar ──────────────────────────────────────────────

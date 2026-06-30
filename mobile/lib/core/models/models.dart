@@ -464,6 +464,53 @@ class ClipTrimState {
       );
 }
 
+/// Per-project GCS storage summary from `GET /projects/{slug}/storage`.
+///
+/// All byte values are 0 when the project has no generated media.
+/// [totalBytes] = [imagesBytes] + [videosBytes] + [exportBytes].
+class ProjectStorageSummary {
+  const ProjectStorageSummary({
+    required this.slug,
+    required this.totalBytes,
+    required this.imagesBytes,
+    required this.videosBytes,
+    required this.exportBytes,
+  });
+
+  final String slug;
+
+  /// Sum of all image.png object sizes under {uid}/{slug}/.
+  final int totalBytes;
+
+  /// Sum of all image.png object sizes.
+  final int imagesBytes;
+
+  /// Sum of all scene video.mp4 object sizes.
+  final int videosBytes;
+
+  /// Size of final.mp4 (0 if no export yet).
+  final int exportBytes;
+
+  factory ProjectStorageSummary.fromJson(String slug, Map<String, dynamic> json) =>
+      ProjectStorageSummary(
+        slug: slug,
+        totalBytes: json['total_bytes'] as int? ?? 0,
+        imagesBytes: json['images_bytes'] as int? ?? 0,
+        videosBytes: json['videos_bytes'] as int? ?? 0,
+        exportBytes: json['export_bytes'] as int? ?? 0,
+      );
+
+  /// Returns a zeroed summary — used as a placeholder while the fetch is in flight
+  /// or when the backend returns an error (non-blocking).
+  factory ProjectStorageSummary.zero(String slug) => ProjectStorageSummary(
+        slug: slug,
+        totalBytes: 0,
+        imagesBytes: 0,
+        videosBytes: 0,
+        exportBytes: 0,
+      );
+}
+
 enum TransitionType {
   hardCut,
   fadeBlack,

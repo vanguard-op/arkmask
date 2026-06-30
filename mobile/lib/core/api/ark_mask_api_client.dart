@@ -338,6 +338,20 @@ class ArkMaskApiClient {
     return (response.data as Map<String, dynamic>)['url'] as String;
   }
 
+  /// Fetches the GCS storage summary for a project (FEAT-027).
+  ///
+  /// Calls `GET /projects/{slug}/storage`. Returns a map with keys:
+  /// `total_bytes`, `images_bytes`, `videos_bytes`, `export_bytes`.
+  ///
+  /// Throws [ApiError] on failure. The caller should treat failures as
+  /// non-blocking and fall back to a zero summary.
+  Future<Map<String, dynamic>> getProjectStorageSummary(String slug) async {
+    final response = await _dio.get<Map<String, dynamic>>(
+      '/projects/${Uri.encodeComponent(slug)}/storage',
+    );
+    return response.data ?? {};
+  }
+
   /// GET /usage — fetch generation event history for the Usage Dashboard.
   Future<List<dynamic>> getUsageEvents() async {
     final response = await _execute(() => _dio.get('/usage'));

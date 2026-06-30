@@ -3,10 +3,13 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_flutter/lucide_flutter.dart';
 
+import '../../../app.dart';
+import '../../../core/models/models.dart';
 import '../../../core/router/routes.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../../core/utils/formatters.dart' show formatBytes;
 import '../cubit/file_browser_cubit.dart';
 import '../cubit/file_browser_state.dart';
 import '../widgets/file_browser_row.dart';
@@ -22,25 +25,60 @@ import '../widgets/generation_step_dots.dart';
 /// it is passed to [FileBrowserCubit.load] which subscribes to Firestore
 /// real-time listeners. Navigation to child screens also encodes the slug in
 /// the URL so Phase 2 screens can resolve Firestore paths from it.
-class ProjectFileBrowserScreen extends StatelessWidget {
+class ProjectFileBrowserScreen extends StatefulWidget {
   const ProjectFileBrowserScreen({super.key, required this.projectSlug});
 
   /// Immutable project slug (URL-decoded Firestore document ID).
   final String projectSlug;
 
   @override
+  State<ProjectFileBrowserScreen> createState() =>
+      _ProjectFileBrowserScreenState();
+}
+
+class _ProjectFileBrowserScreenState extends State<ProjectFileBrowserScreen> {
+  /// Future for the storage summary fetch (FEAT-027). Initiated once in
+  /// [initState] so it is not re-triggered on rebuilds. Failures are caught
+  /// inside [_StorageBanner] and shown as nothing (non-blocking).
+  late final Future<Map<String, dynamic>> _summaryFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    // Defer until context is fully available (ArkMaskServices.of requires it).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      setState(() {
+        _summaryFuture = ArkMaskServices.of(context)
+            .apiClient
+            .getProjectStorageSummary(widget.projectSlug);
+      });
+    });
+    // Assign a completed future as placeholder so _summaryFuture is always
+    // initialized before the first build.
+    _summaryFuture = Future.value({});
+  }
+
+  @override
   Widget build(BuildContext context) {
     return BlocProvider(
-      create: (_) => FileBrowserCubit()..load(projectSlug),
-      child: _FileBrowserView(projectSlug: projectSlug),
+      create: (_) => FileBrowserCubit()..load(widget.projectSlug),
+      child: _FileBrowserView(
+        projectSlug: widget.projectSlug,
+        summaryFuture: _summaryFuture,
+      ),
     );
   }
 }
 
 class _FileBrowserView extends StatelessWidget {
-  const _FileBrowserView({required this.projectSlug});
+  const _FileBrowserView({
+    required this.projectSlug,
+    required this.summaryFuture,
+  });
 
   final String projectSlug;
+  final Future<Map<String, dynamic>> summaryFuture;
 
   @override
   Widget build(BuildContext context) {
@@ -91,8 +129,22 @@ class _FileBrowserView extends StatelessWidget {
                 onRetry: () =>
                     context.read<FileBrowserCubit>().load(projectSlug),
               ),
-            FileBrowserLoaded() =>
-              _TreeView(state: state, projectSlug: projectSlug, isDark: isDark),
+            FileBrowserLoaded() => Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _StorageBanner(
+                    slug: projectSlug,
+                    summaryFuture: summaryFuture,
+                  ),
+                  Expanded(
+                    child: _TreeView(
+                      state: state,
+                      projectSlug: projectSlug,
+                      isDark: isDark,
+                    ),
+                  ),
+                ],
+              ),
           },
         );
       },
@@ -460,6 +512,114 @@ class _ExtractAssetsButton extends StatelessWidget {
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(AppSizing.radiusSm),
         ),
+      ),
+    );
+  }
+}
+
+// ── Storage banner (FEAT-027) ─────────────────────────────────────────────────
+
+/// Compact per-category storage breakdown shown below the AppBar in the project
+/// file browser. Hidden when the summary is unavailable or all categories are 0.
+///
+/// Uses a [FutureBuilder] against [summaryFuture] — a single fetch started in
+/// [_ProjectFileBrowserScreenState.initState]. Errors are silently swallowed;
+/// the banner simply renders nothing on failure.
+class _StorageBanner extends StatelessWidget {
+  const _StorageBanner({required this.slug, required this.summaryFuture});
+
+  final String slug;
+  final Future<Map<String, dynamic>> summaryFuture;
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<Map<String, dynamic>>(
+      future: summaryFuture,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          return const SizedBox.shrink();
+        }
+        if (snapshot.hasError || !snapshot.hasData) {
+          return const SizedBox.shrink();
+        }
+
+        final summary = ProjectStorageSummary.fromJson(slug, snapshot.data!);
+        if (summary.totalBytes == 0) return const SizedBox.shrink();
+
+        final isDark = Theme.of(context).brightness == Brightness.dark;
+        final chipBg =
+            isDark ? AppColors.surfaceRaisedDark : AppColors.surfaceRaisedLight;
+        final textColor =
+            isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight;
+
+        return Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.s3,
+            vertical: AppSpacing.s2,
+          ),
+          child: Row(
+            children: [
+              _StorageChip(
+                label: 'Images',
+                bytes: summary.imagesBytes,
+                chipBg: chipBg,
+                textColor: textColor,
+                context: context,
+              ),
+              const SizedBox(width: AppSpacing.s2),
+              _StorageChip(
+                label: 'Videos',
+                bytes: summary.videosBytes,
+                chipBg: chipBg,
+                textColor: textColor,
+                context: context,
+              ),
+              const SizedBox(width: AppSpacing.s2),
+              _StorageChip(
+                label: 'Export',
+                bytes: summary.exportBytes,
+                chipBg: chipBg,
+                textColor: textColor,
+                context: context,
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _StorageChip extends StatelessWidget {
+  const _StorageChip({
+    required this.label,
+    required this.bytes,
+    required this.chipBg,
+    required this.textColor,
+    required this.context,
+  });
+
+  final String label;
+  final int bytes;
+  final Color chipBg;
+  final Color textColor;
+  // ignore: avoid_field_initializers_in_const_classes
+  final BuildContext context;
+
+  @override
+  Widget build(BuildContext _) {
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.s2,
+        vertical: AppSpacing.s1,
+      ),
+      decoration: BoxDecoration(
+        color: chipBg,
+        borderRadius: BorderRadius.circular(AppSizing.radiusSm),
+      ),
+      child: Text(
+        '$label · ${formatBytes(bytes)}',
+        style: AppTextStyles.caption(context).copyWith(color: textColor),
       ),
     );
   }
