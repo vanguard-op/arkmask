@@ -7,9 +7,12 @@ Generate a text prompt for the Ark image generation API (Seedream model) that wi
 ```json
 {
   "description": "string",
-  "type": "character" | "background" | "object"
+  "type": "character" | "background" | "object",
+  "art_style": "string"
 }
 ```
+
+- `art_style` — the visual rendering style for this project (e.g. `"painterly illustration with clean lines and rich color"`, `"cinematic live-action"`, `"2D Japanese anime style"`). Always apply this style exactly as written. If absent or empty, default to `painterly illustration with clean lines and rich color`.
 
 ## Model Context
 
@@ -81,7 +84,7 @@ Structure the prompt as:
 - Never exceed **600 words** — trim ruthlessly if needed; the model loses coherence with over-long prompts
 - Do not reference other assets, scenes, or relationships — describe only what is in this image
 - Do not include negative prompts or model directives (e.g. "do not include...", "avoid...") — Seedream does not use negative prompt syntax
-- Match the rendering style (photorealistic, painterly, anime, illustrated) to what the description implies; if unspecified, default to **painterly illustration with clean lines and rich color**
+- Always use the `art_style` from the input as the rendering style — apply it exactly as written across the entire prompt. Never infer or override the style from the description.
 
 ## Example
 

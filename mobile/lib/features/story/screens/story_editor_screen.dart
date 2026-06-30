@@ -10,6 +10,7 @@ import '../../../core/theme/app_text_styles.dart';
 import '../../billing/widgets/credits_exhausted_dialog.dart';
 import '../cubit/story_cubit.dart';
 import '../cubit/story_state.dart';
+import '../widgets/generation_settings_sheet.dart';
 
 /// Story Editor Screen — FEAT-008, FEAT-009.
 ///
@@ -133,6 +134,13 @@ class _StoryAppBar extends StatelessWidget implements PreferredSizeWidget {
         // Save indicator
         if (loaded != null) _SaveIndicator(loaded: loaded),
         const SizedBox(width: AppSpacing.s2),
+        // Generation settings button
+        if (loaded != null)
+          IconButton(
+            icon: const Icon(LucideIcons.sliders),
+            tooltip: 'Generation Settings',
+            onPressed: () => showGenerationSettingsSheet(context),
+          ),
         // Extract Assets button (Generate variant)
         if (loaded != null)
           _ExtractButton(

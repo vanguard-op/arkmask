@@ -198,6 +198,63 @@ abstract final class CreditCost {
   static const int merge = 5;
 }
 
+// ── Generation settings ───────────────────────────────────────────────────────
+
+/// Default art style used when no preference has been set for the project.
+const kDefaultArtStyle = 'cinematic live-action';
+
+/// Preset art styles shown in the style picker.
+///
+/// Users may also enter a free-form custom value. These presets cover the most
+/// common visual directions for AI-generated storytelling content.
+const kArtStylePresets = [
+  kDefaultArtStyle,
+  'painterly illustration with clean lines and rich color',
+  '2D Japanese anime style',
+  '3D animation CG style',
+  'retro film grain',
+];
+
+/// Project-level generation settings stored in the Firestore project document.
+///
+/// The backend reads these values when `/image-prompt` and `/video-prompt` are
+/// called and injects them into the AI input payload — the mobile request bodies
+/// are unchanged. Settings are set at project creation and can be updated later.
+class GenerationSettings {
+  const GenerationSettings({
+    this.artStyle = kDefaultArtStyle,
+    this.videoSubtitles = false,
+  });
+
+  /// Visual rendering style applied to both image generation (rendering style)
+  /// and video generation (closing block art style). One unified style governs
+  /// the entire project's visual identity.
+  final String artStyle;
+
+  /// When `true`, the subtitle-free constraint is omitted from video prompts,
+  /// allowing `【】` subtitle syntax in scene descriptions.
+  final bool videoSubtitles;
+
+  factory GenerationSettings.fromFirestore(Map<String, dynamic> data) =>
+      GenerationSettings(
+        artStyle: (data['art_style'] as String?)?.isNotEmpty == true
+            ? data['art_style'] as String
+            : kDefaultArtStyle,
+        videoSubtitles: data['video_subtitles'] as bool? ?? false,
+      );
+
+  Map<String, dynamic> toFirestore() => {
+        'art_style': artStyle,
+        'video_subtitles': videoSubtitles,
+      };
+
+  GenerationSettings copyWith({String? artStyle, bool? videoSubtitles}) =>
+      GenerationSettings(
+        artStyle: artStyle ?? this.artStyle,
+        videoSubtitles: videoSubtitles ?? this.videoSubtitles,
+      );
+}
+
 // ── Firestore-backed project document ────────────────────────────────────────
 
 /// Represents the Firestore project root document at
@@ -213,6 +270,7 @@ class ProjectDocument {
     this.sceneCount = 0,
     this.completedSceneCount = 0,
     this.gcsFinalPath,
+    this.generationSettings = const GenerationSettings(),
   });
 
   /// Immutable project slug — Firestore document ID and GCS folder prefix.
@@ -232,6 +290,9 @@ class ProjectDocument {
 
   /// GCS path for the merged `final.mp4`. Non-null once a merge job completes.
   final String? gcsFinalPath;
+
+  /// Project-level generation settings for image and video prompts.
+  final GenerationSettings generationSettings;
 
   /// Fraction of scenes with a generated video (0.0–1.0).
   double get completionFraction =>
@@ -262,6 +323,8 @@ class ProjectDocument {
       createdAt = DateTime.now();
     }
 
+    final settingsRaw = data['generation_settings'] as Map<String, dynamic>?;
+
     return ProjectDocument(
       slug: id,
       displayName: data['display_name'] as String? ?? id,
@@ -269,6 +332,9 @@ class ProjectDocument {
       sceneCount: data['scene_count'] as int? ?? 0,
       completedSceneCount: data['completed_scene_count'] as int? ?? 0,
       gcsFinalPath: data['gcs_final_path'] as String?,
+      generationSettings: settingsRaw != null
+          ? GenerationSettings.fromFirestore(settingsRaw)
+          : const GenerationSettings(),
     );
   }
 }

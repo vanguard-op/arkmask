@@ -1,5 +1,7 @@
 import 'package:equatable/equatable.dart';
 
+import '../../../core/models/models.dart';
+
 /// A single scene block parsed from `story_content` MDX.
 class StoryScene extends Equatable {
   const StoryScene({required this.number, required this.body});
@@ -36,6 +38,7 @@ class StoryError extends StoryState {
 class StoryLoaded extends StoryState {
   const StoryLoaded({
     required this.scenes,
+    this.generationSettings = const GenerationSettings(),
     this.isSaving = false,
     this.savedRecently = false,
     this.isExtracting = false,
@@ -45,6 +48,10 @@ class StoryLoaded extends StoryState {
 
   /// Ordered list of scenes parsed from `# N` headings.
   final List<StoryScene> scenes;
+
+  /// Project-level generation settings (art style + subtitle preference).
+  /// Read from the Firestore project document and kept in sync with remote updates.
+  final GenerationSettings generationSettings;
 
   /// True while the debounced auto-save Firestore write is in progress.
   final bool isSaving;
@@ -68,6 +75,7 @@ class StoryLoaded extends StoryState {
 
   StoryLoaded copyWith({
     List<StoryScene>? scenes,
+    GenerationSettings? generationSettings,
     bool? isSaving,
     bool? savedRecently,
     bool? isExtracting,
@@ -77,6 +85,7 @@ class StoryLoaded extends StoryState {
   }) {
     return StoryLoaded(
       scenes: scenes ?? this.scenes,
+      generationSettings: generationSettings ?? this.generationSettings,
       isSaving: isSaving ?? this.isSaving,
       savedRecently: savedRecently ?? this.savedRecently,
       isExtracting: isExtracting ?? this.isExtracting,
@@ -87,5 +96,5 @@ class StoryLoaded extends StoryState {
 
   @override
   List<Object?> get props =>
-      [scenes, isSaving, savedRecently, isExtracting, extractError, hasExistingAssets];
+      [scenes, generationSettings, isSaving, savedRecently, isExtracting, extractError, hasExistingAssets];
 }

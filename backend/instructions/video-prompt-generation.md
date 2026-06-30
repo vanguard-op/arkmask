@@ -12,7 +12,9 @@ Generate a text prompt for the Ark video generation API (Seedance 2.0 model) tha
       "name": "string",
       "prompt": "string"
     }
-  ]
+  ],
+  "art_style": "string",
+  "subtitles": "enabled | disabled"
 }
 ```
 
@@ -20,6 +22,8 @@ Generate a text prompt for the Ark video generation API (Seedance 2.0 model) tha
 - `assets` — an ordered list of reference images that will be provided to the model alongside the prompt
   - `name` — the asset's identifier (e.g. `"elias"`, `"clockwork_emporium"`, `"chronosphere"`)
   - `prompt` — the image generation prompt used to create this reference image; read it to understand the asset's visual appearance and type
+- `art_style` — the project-level visual rendering style. Always use this value verbatim in the closing block. If absent or empty, default to `painterly illustration with warm tones`.
+- `subtitles` — when `"disabled"`, include the subtitle-free constraint in the closing block. When `"enabled"`, omit it (the user may use `【】` in scene descriptions to specify dialogue subtitles).
 
 The reference images are provided to the Seedance model in the **same order** as the `assets` list. The asset at index 0 becomes **Image 1**, index 1 becomes **Image 2**, and so on. Always use these `Image N` identifiers in the prompt — never reference an asset by its `name` alone without binding it to its image number.
 
@@ -148,11 +152,11 @@ Break the `scene` into numbered shots: **Shot 1 / Shot 2 / Shot 3**... in chrono
 
 Always end the prompt with a closing block in this order:
 
-1. **Visual/art style** — always name it explicitly; do not let the model guess. Style drift (e.g. illustration drifting to live-action) happens when this is omitted. Examples: `painterly illustration with warm tones`, `cinematic live-action`, `2D Japanese anime style`, `3D animation CG style`, `retro film grain`.
+1. **Visual/art style** — use the `art_style` value from Generation Settings verbatim. Never guess or derive the style from the scene description. Style drift (e.g. illustration drifting to live-action) happens when this is omitted or inconsistent.
 2. **Image quality** — `high-definition, rich textural detail, cinematic texture, natural colors`
 3. **Lighting** — match the mood of the scene
 4. **Character stability** — always include: `The character's face and body proportions remain consistent throughout without deformation. Movements are natural and smooth, with no stutter or flicker.`
-5. **Subtitle constraint** — always include: `Keep it subtitle-free. Avoid generating any text or subtitles.` (Landscape orientation also significantly reduces subtitle probability — note this if the scene suits a wide format.)
+5. **Subtitle constraint** — if `subtitles: disabled` in Generation Settings, include: `Keep it subtitle-free. Avoid generating any text or subtitles.` If `subtitles: enabled`, omit this line entirely.
 6. **Watermark/logo constraint** — always include: `Do not generate a watermark. Do not generate a logo.`
 7. **Duplicate character constraint** — include when more than one character is present: `Throughout the video, characters with completely identical appearance, clothing, and accessories are prohibited. Do not generate duplicate avatars or a twin effect. Keep only a single corresponding character in the same frame.`
 
@@ -170,7 +174,7 @@ Shot 2: [One camera movement/framing]. [Character name] [action]. [Position]. [A
 
 Shot 3: [One camera movement/framing]. [Character name] [action]. [Position]. [Audio]
 
-[Visual style], [image quality], [lighting]. The character's face and body proportions remain consistent throughout without deformation. Movements are natural and smooth, with no stutter or flicker. Keep it subtitle-free. Avoid generating any text or subtitles. Do not generate a watermark. Do not generate a logo. [Duplicate constraint if multiple characters.]
+[art_style from input], [image quality], [lighting]. The character's face and body proportions remain consistent throughout without deformation. Movements are natural and smooth, with no stutter or flicker. [If subtitles == "disabled": Keep it subtitle-free. Avoid generating any text or subtitles.] Do not generate a watermark. Do not generate a logo. [Duplicate constraint if multiple characters.]
 ```
 
 ---
@@ -194,7 +198,9 @@ Shot 3: [One camera movement/framing]. [Character name] [action]. [Position]. [A
       "name": "chronosphere",
       "prompt": "A spherical brass device the size of a large grapefruit. Outer shell engraved with interlocking gear-tooth patterns and fine filigree. Glass core glows with a faint swirling amber light. Single large brass button on top. Clean light grey background, soft studio lighting. Painterly illustration style."
     }
-  ]
+  ],
+  "art_style": "painterly illustration with warm amber and dark wood tones",
+  "subtitles": "disabled"
 }
 ```
 

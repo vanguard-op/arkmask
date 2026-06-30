@@ -57,21 +57,31 @@ class StoryCubit extends Cubit<StoryState> {
 
     _docSub = _projectDoc.snapshots().listen(
       (snap) {
-        final raw = snap.data()?['story_content'] as String? ?? '';
+        final data = snap.data() ?? {};
+        final raw = data['story_content'] as String? ?? '';
         final scenes = _parseScenes(raw);
+
+        // Parse generation_settings from the snapshot so the UI always
+        // reflects the current server-side values (including remote updates).
+        final settingsRaw = data['generation_settings'] as Map<String, dynamic>?;
+        final settings = settingsRaw != null
+            ? GenerationSettings.fromFirestore(settingsRaw)
+            : const GenerationSettings();
 
         if (state is StoryLoading) {
           // First snapshot — always emit loaded state.
-          emit(StoryLoaded(scenes: scenes));
+          emit(StoryLoaded(scenes: scenes, generationSettings: settings));
         } else if (!_isEditing) {
           // Subsequent remote update while the user is not typing.
           final current = state;
           if (current is StoryLoaded) {
-            emit(current.copyWith(scenes: scenes));
+            emit(current.copyWith(scenes: scenes, generationSettings: settings));
           }
         }
         // If _isEditing is true we intentionally drop the remote snapshot so
         // the user's in-progress text is not replaced by the last-saved version.
+        // Generation settings updates are applied even while editing since they
+        // are written by a separate code path.
       },
       onError: (Object e) => emit(StoryError(message: e.toString())),
     );
@@ -180,6 +190,7 @@ class StoryCubit extends Cubit<StoryState> {
     try {
       await _projectDoc.update({
         'story_content': _serializeScenes(scenesToWrite),
+        'scene_count': scenesToWrite.length,
         'updated_at': FieldValue.serverTimestamp(),
       });
 
@@ -249,7 +260,7 @@ class StoryCubit extends Cubit<StoryState> {
           .map((e) => ExtractedAsset.fromJson(e as Map<String, dynamic>))
           .toList();
 
-      await _writeAssetDocuments(extractedList);
+      await _writeAssetDocuments(extractedList, s.scenes);
 
       emit((state as StoryLoaded).copyWith(isExtracting: false));
     } on ApiInsufficientCredits {
@@ -271,7 +282,10 @@ class StoryCubit extends Cubit<StoryState> {
   /// `scenes/{sceneNumber}/assets/{slug}`. Scene documents are created with
   /// merge semantics so existing scene data (storyboard, video path) is not
   /// overwritten.
-  Future<void> _writeAssetDocuments(List<ExtractedAsset> assets) async {
+  Future<void> _writeAssetDocuments(
+    List<ExtractedAsset> assets,
+    List<StoryScene> scenes,
+  ) async {
     final batch = FirebaseFirestore.instance.batch();
     final now = FieldValue.serverTimestamp();
 
@@ -319,6 +333,31 @@ class StoryCubit extends Cubit<StoryState> {
   void clearExtractError() {
     final s = state;
     if (s is StoryLoaded) emit(s.copyWith(clearExtractError: true));
+  }
+
+  // ── Generation settings ───────────────────────────────────────────────────
+
+  /// Persist updated [settings] to the Firestore project document and optimistically
+  /// update the local state.
+  ///
+  /// The backend reads these values when `/image-prompt` and `/video-prompt` are
+  /// called — the mobile request bodies are unchanged.
+  Future<void> updateGenerationSettings(GenerationSettings settings) async {
+    final current = state;
+    if (current is! StoryLoaded) return;
+
+    // Optimistic update so the UI reflects the change immediately.
+    emit(current.copyWith(generationSettings: settings));
+
+    try {
+      await _projectDoc.update({
+        'generation_settings': settings.toFirestore(),
+        'updated_at': FieldValue.serverTimestamp(),
+      });
+    } catch (_) {
+      // Roll back to the previous settings on failure.
+      emit((state as StoryLoaded).copyWith(generationSettings: current.generationSettings));
+    }
   }
 
   // ── Utilities ─────────────────────────────────────────────────────────────

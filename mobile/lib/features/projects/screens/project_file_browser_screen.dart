@@ -40,7 +40,8 @@ class _ProjectFileBrowserScreenState extends State<ProjectFileBrowserScreen> {
   /// Future for the storage summary fetch (FEAT-027). Initiated once in
   /// [initState] so it is not re-triggered on rebuilds. Failures are caught
   /// inside [_StorageBanner] and shown as nothing (non-blocking).
-  late final Future<Map<String, dynamic>> _summaryFuture;
+  // Not `final` — reassigned in the postFrameCallback after context is ready.
+  late Future<Map<String, dynamic>> _summaryFuture;
 
   @override
   void initState() {

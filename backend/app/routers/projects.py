@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_current_user, get_firebase_uid
+from app.dependencies import get_current_user
 from app.models.db import User
 from app.services.firebase import _ensure_initialized
 from app.services.media_store import MediaStore
@@ -65,8 +65,36 @@ def _make_slug(display_name: str) -> str:
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
+_DEFAULT_ART_STYLE = "painterly illustration with clean lines and rich color"
+
+
+class GenerationSettingsInput(BaseModel):
+    """Project-level generation settings that control image and video prompt style.
+
+    ``art_style`` is injected into both image-prompt (rendering style) and
+    video-prompt (closing block art style) by the generation router.
+    ``video_subtitles`` controls whether the subtitle-free constraint is included
+    in video prompts.
+    """
+
+    art_style: str = Field(
+        default=_DEFAULT_ART_STYLE,
+        min_length=1,
+        max_length=200,
+        description="Visual rendering style applied to image and video generation.",
+    )
+    video_subtitles: bool = Field(
+        default=False,
+        description="When True, subtitle syntax (【】) is allowed in video prompts.",
+    )
+
+
 class CreateProjectRequest(BaseModel):
     display_name: str = Field(..., min_length=1, max_length=60)
+    generation_settings: GenerationSettingsInput = Field(
+        default_factory=GenerationSettingsInput,
+        description="Initial generation settings. Defaults applied if omitted.",
+    )
 
 
 class CreateProjectResponse(BaseModel):
@@ -95,7 +123,6 @@ class ProjectStorageSummaryResponse(BaseModel):
 )
 def create_project(
     body: CreateProjectRequest,
-    firebase_uid: str = Depends(get_firebase_uid),
     current_user: User = Depends(get_current_user),
 ) -> CreateProjectResponse:
     """
@@ -106,11 +133,13 @@ def create_project(
 
     The Cloud SQL `projects` table is not used in the current schema — Firestore
     is the source of truth for project documents. The platform API key validates
-    the billing identity; the Firebase token validates Firestore ownership.
+    the billing identity; firebase_uid is read from the User row in Cloud SQL
+    (populated at registration via the Firebase token).
 
     Returns 409 if a project with the same display_name already exists for this
     user (checked against the Firestore collection).
     """
+    firebase_uid = current_user.firebase_uid
     db_client = _firestore_client()
     projects_ref = db_client.collection(f"users/{firebase_uid}/projects")
 
@@ -131,6 +160,10 @@ def create_project(
         "scene_count": 0,
         "completed_scene_count": 0,
         "gcs_final_path": None,
+        "generation_settings": {
+            "art_style": body.generation_settings.art_style,
+            "video_subtitles": body.generation_settings.video_subtitles,
+        },
         "created_at": SERVER_TIMESTAMP,
         "updated_at": SERVER_TIMESTAMP,
     }
@@ -154,7 +187,6 @@ def create_project(
 )
 def delete_project(
     slug: str,
-    firebase_uid: str = Depends(get_firebase_uid),
     current_user: User = Depends(get_current_user),
 ) -> None:
     """
@@ -168,6 +200,7 @@ def delete_project(
     Returns 404 if the project document does not exist (idempotent-ish —
     GCS delete is attempted regardless).
     """
+    firebase_uid = current_user.firebase_uid
     db_client = _firestore_client()
     project_ref = db_client.document(f"users/{firebase_uid}/projects/{slug}")
 
@@ -238,7 +271,6 @@ def _delete_firestore_subtree(db_client, doc_ref) -> None:
 def rename_project(
     slug: str,
     body: RenameProjectRequest,
-    firebase_uid: str = Depends(get_firebase_uid),
     current_user: User = Depends(get_current_user),
 ) -> None:
     """
@@ -250,6 +282,7 @@ def rename_project(
     Returns 404 if the project does not exist.
     Returns 409 if the new name conflicts with another project's display_name.
     """
+    firebase_uid = current_user.firebase_uid
     db_client = _firestore_client()
     projects_ref = db_client.collection(f"users/{firebase_uid}/projects")
     project_ref = projects_ref.document(slug)
@@ -279,6 +312,51 @@ def rename_project(
     )
 
 
+# ── PATCH /projects/{slug}/settings ───────────────────────────────────────────
+
+@router.patch(
+    "/projects/{slug}/settings",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def update_project_settings(
+    slug: str,
+    body: GenerationSettingsInput,
+    current_user: User = Depends(get_current_user),
+) -> None:
+    """
+    Update the generation settings for a project.
+
+    Writes ``generation_settings.art_style`` and
+    ``generation_settings.video_subtitles`` to the Firestore project document.
+    The backend reads these values when ``/image-prompt`` and ``/video-prompt``
+    are called — the mobile API request bodies are unaffected.
+
+    Returns 404 if the project does not exist.
+    """
+    firebase_uid = current_user.firebase_uid
+    db_client = _firestore_client()
+    project_ref = db_client.document(f"users/{firebase_uid}/projects/{slug}")
+
+    if not project_ref.get().exists:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project '{slug}' not found.",
+        )
+
+    project_ref.update({
+        "generation_settings": {
+            "art_style": body.art_style,
+            "video_subtitles": body.video_subtitles,
+        },
+        "updated_at": SERVER_TIMESTAMP,
+    })
+
+    logger.info(
+        "Project settings updated: user_id=%s slug=%s art_style=%r subtitles=%s",
+        current_user.id, slug, body.art_style, body.video_subtitles,
+    )
+
+
 # ── GET /projects/{slug}/storage ──────────────────────────────────────────────
 
 @router.get(
@@ -287,7 +365,6 @@ def rename_project(
 )
 def get_project_storage(
     slug: str,
-    firebase_uid: str = Depends(get_firebase_uid),
     current_user: User = Depends(get_current_user),
 ) -> ProjectStorageSummaryResponse:
     """
@@ -301,6 +378,7 @@ def get_project_storage(
     Returns zeros for all categories if the project has no generated media yet.
     """
     # Verify the project exists.
+    firebase_uid = current_user.firebase_uid
     db_client = _firestore_client()
     project_ref = db_client.document(f"users/{firebase_uid}/projects/{slug}")
     if not project_ref.get().exists:

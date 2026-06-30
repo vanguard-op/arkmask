@@ -33,9 +33,23 @@ logger = logging.getLogger(__name__)
 
 
 def _extract_json(text: str) -> str:
-    """Strip markdown code fences so the LLM output can be parsed as JSON."""
+    """Strip markdown code fences so the LLM output can be parsed as JSON.
+
+    Handles three response shapes:
+    1. JSON wrapped in ```json ... ``` fences (preferred, instructed by prompt)
+    2. Raw JSON starting with [ or { (model ignored the fence instruction)
+    3. Empty/whitespace — returns "" to let the caller raise a clear error
+    """
+    if not text:
+        return ""
     match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
-    return match.group(1).strip() if match else text.strip()
+    if match:
+        return match.group(1).strip()
+    # No code fence — accept if the text looks like raw JSON.
+    stripped = text.strip()
+    if stripped and stripped[0] in ("[", "{"):
+        return stripped
+    return ""
 
 
 def _to_data_uri(data: bytes, mime_type: str) -> str:
@@ -103,7 +117,13 @@ class BytePlusProvider(AIProvider):
     # ── Text helpers ──────────────────────────────────────────────────────────
 
     def _chat(self, system_prompt: str, content: str) -> str:
-        """Single-turn chat completion via Doubao/Seed text model."""
+        """Single-turn chat completion via Doubao/Seed text model.
+
+        Some Seed model variants (e.g. those with extended thinking enabled)
+        return the answer in ``reasoning_content`` while leaving ``content``
+        as ``None`` or empty. We fall back to ``reasoning_content`` so callers
+        always get a non-None string to parse.
+        """
         response = self._client.chat.completions.create(
             model=self.TEXT_MODEL,
             messages=[
@@ -111,21 +131,77 @@ class BytePlusProvider(AIProvider):
                 {"role": "user", "content": content},
             ],
         )
-        return response.choices[0].message.content
+        msg = response.choices[0].message
+        text = msg.content or ""
+        if not text:
+            # Thinking-mode fallback: some BytePlus models put the answer in
+            # reasoning_content and leave content empty.
+            text = getattr(msg, "reasoning_content", None) or ""
+        if not text:
+            logger.warning(
+                "_chat returned empty content: model=%s finish_reason=%s",
+                self.TEXT_MODEL,
+                response.choices[0].finish_reason,
+            )
+        return text
 
     # ── AI pipeline methods ───────────────────────────────────────────────────
 
     def generate_asset_list(self, story: str) -> list[dict]:
         text = self._chat(self.ASSET_LIST_PROMPT, story)
-        return json.loads(_extract_json(text))
+        extracted = _extract_json(text)
+        if not extracted:
+            raise ValueError(
+                f"Model returned an empty or unparseable asset list. "
+                f"Raw response length: {len(text)} chars. "
+                f"Preview: {text[:300]!r}"
+            )
+        return json.loads(extracted)
 
-    def generate_image_prompt(self, name: str, type_: str, description: str) -> str:
-        payload = json.dumps({"name": name, "type": type_, "description": description})
+    def generate_image_prompt(
+        self,
+        name: str,
+        type_: str,
+        description: str,
+        art_style: str = "painterly illustration with clean lines and rich color",
+    ) -> str:
+        # Include art_style in the payload so the static system prompt can apply it.
+        payload = json.dumps({
+            "name": name,
+            "type": type_,
+            "description": description,
+            "art_style": art_style,
+        })
         return self._chat(self.IMAGE_PROMPT, payload).strip()
 
-    def generate_video_prompt(self, scene_text: str, assets: list[dict]) -> str:
-        payload = json.dumps({"scene": scene_text, "assets": assets})
-        return self._chat(self.VIDEO_PROMPT, payload).strip()
+    def generate_video_prompt(
+        self,
+        scene_text: str,
+        ref_images: list[RefImage],
+        art_style: str = "painterly illustration with clean lines and rich color",
+        subtitles: bool = False,
+    ) -> str:
+        # Serialise the input as JSON matching the instruction's Input Format.
+        # art_style and subtitles sit at the root alongside scene and assets.
+        payload = json.dumps({
+            "scene": scene_text,
+            "art_style": art_style,
+            "subtitles": "enabled" if subtitles else "disabled",
+        })
+        # Build a multimodal user message with the scene text + ref image data URIs.
+        user_content: list[dict] = [
+            {"type": "text", "text": f"{self.VIDEO_PROMPT}\n\n---\n\n{payload}"}
+        ]
+        for img in ref_images[:8]:
+            user_content.append({
+                "type": "image_url",
+                "image_url": {"url": _to_data_uri(img.data, img.mime_type)},
+            })
+        response = self._client.chat.completions.create(
+            model=self.TEXT_MODEL,
+            messages=[{"role": "user", "content": user_content}],
+        )
+        return response.choices[0].message.content.strip()
 
     def generate_image(self, prompt: str, ref_images: list[RefImage]) -> tuple[bytes, str]:
         """Generate an image via Seedream 5.0.

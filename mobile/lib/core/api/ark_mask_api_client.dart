@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 
+import '../models/models.dart';
 import '../storage/secure_storage_service.dart';
 import 'api_error.dart';
 import 'credential_interceptor.dart';
@@ -99,16 +100,39 @@ class ArkMaskApiClient {
   /// POST /projects — create a new project record in Firestore + Cloud SQL.
   ///
   /// [displayName] is the user-facing project name (≤ 60 characters, validated
-  /// server-side). Returns a map with `project_slug` (immutable GCS + Firestore
-  /// ID) and `display_name` (echoed back from the server).
+  /// server-side). [generationSettings] sets the initial art style and subtitle
+  /// preference; defaults are applied by the backend if omitted.
   ///
-  /// The backend generates a slug, writes the Firestore project root document
-  /// at `users/{uid}/projects/{slug}`, and inserts a Cloud SQL row.
-  Future<Map<String, dynamic>> createProject({required String displayName}) async {
+  /// Returns a map with `slug` and `display_name`.
+  Future<Map<String, dynamic>> createProject({
+    required String displayName,
+    GenerationSettings? generationSettings,
+  }) async {
+    final body = <String, dynamic>{'display_name': displayName};
+    if (generationSettings != null) {
+      body['generation_settings'] = generationSettings.toFirestore();
+    }
     final response = await _execute(
-      () => _dio.post('/projects', data: {'display_name': displayName}),
+      () => _dio.post('/projects', data: body),
     );
     return (response.data as Map<String, dynamic>);
+  }
+
+  /// PATCH /projects/{slug}/settings — update generation settings for a project.
+  ///
+  /// The backend stores these in the Firestore project document and reads them
+  /// when `/image-prompt` and `/video-prompt` are called. Mobile request bodies
+  /// for generation endpoints are unchanged.
+  Future<void> updateProjectSettings(
+    String slug,
+    GenerationSettings settings,
+  ) async {
+    await _execute(
+      () => _dio.patch(
+        '/projects/$slug/settings',
+        data: settings.toFirestore(),
+      ),
+    );
   }
 
   /// DELETE /projects/{slug} — permanently delete a project.
