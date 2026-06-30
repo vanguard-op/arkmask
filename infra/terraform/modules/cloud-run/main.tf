@@ -20,6 +20,10 @@ resource "google_cloud_run_v2_service" "service" {
   location = var.region
   project  = var.project_id
 
+  # Must be false to allow `terraform destroy` to remove the service.
+  # The Google provider sets this to true by default in recent versions.
+  deletion_protection = false
+
   # Ingress: allow all for API; internal-only for workers (Cloud Tasks is internal).
   ingress = var.allow_unauthenticated ? "INGRESS_TRAFFIC_ALL" : "INGRESS_TRAFFIC_INTERNAL_ONLY"
 
