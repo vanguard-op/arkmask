@@ -1,174 +1,209 @@
 import 'dart:async';
-import 'dart:io';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:path/path.dart' as p;
 
 import '../../../core/api/api_error.dart';
 import '../../../core/api/ark_mask_api_client.dart';
-import '../../../core/filesystem/project_file_service.dart';
-import '../../../core/jobs/generation_job_manager.dart';
+import '../../../core/jobs/job_registry_service.dart';
 import '../../../core/models/models.dart';
 import 'scene_state.dart';
 
 /// Cubit for the Scene Detail Screen (FEAT-014, FEAT-015, FEAT-016).
 ///
-/// Owns the read/write lifecycle for a scene's `ark.mdx` (storyboard) and
-/// `video.mp4`, delegating generation to the backend API and persisting job
-/// state via [GenerationJobManager] so status survives screen navigation.
+/// Owns three Firestore real-time listeners:
+///   1. Scene document — scene_text, storyboard_body, gcs_video_path
+///   2. Scene assets subcollection — per-scene asset documents
+///   3. Global assets collection — used to resolve pass-through GCS image paths
+///
+/// On every listener update the cubit rebuilds [SceneLoaded] by merging all
+/// three snapshots plus the local generation flags.
+///
+/// Completion of video generation is detected when the Firestore listener
+/// delivers a non-null gcs_video_path — no Timer.periodic polling.
 class SceneCubit extends Cubit<SceneState> {
   SceneCubit({
-    required this.projectName,
+    required this.projectSlug,
     required this.sceneNumber,
-    required this.fileService,
     required this.apiClient,
-    required this.jobManager,
+    required this.jobRegistryService,
   }) : super(SceneLoading());
 
-  final String projectName;
+  final String projectSlug;
   final int sceneNumber;
-  final ProjectFileService fileService;
   final ArkMaskApiClient apiClient;
-  final GenerationJobManager jobManager;
+  final JobRegistryService jobRegistryService;
 
-  Timer? _pollTimer;
+  // ── Firestore subscriptions ────────────────────────────────────────────────
+
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _sceneDocSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _sceneAssetsSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _globalAssetsSub;
+
+  // ── Snapshot caches ────────────────────────────────────────────────────────
+
+  /// Parsed scene document. Null until the first snapshot arrives.
+  SceneDocument? _sceneDoc;
+
+  /// scene_text field parsed separately (not in SceneDocument model).
+  String? _sceneText;
+
+  List<AssetDocument> _sceneAssets = [];
+  List<AssetDocument> _globalAssets = [];
+
+  // ── Generation flags (mutable, not from Firestore) ─────────────────────────
+
+  bool _isGeneratingStoryboard = false;
+  bool _isGeneratingVideo = false;
+  String? _currentVideoJobId;
+  String? _storyboardError;
+  String? _videoError;
+  int _selectedTabIndex = 0;
 
   // ── Load ──────────────────────────────────────────────────────────────────
 
   Future<void> load() async {
     emit(SceneLoading());
-    try {
-      // Repair any prompt.mdx files where the `name` field was written without
-      // quotes and contained `@` (YAML reserved), causing the frontmatter parser
-      // to fail silently and lose the reference path. Safe no-op when clean.
-      await fileService.repairUnquotedRefNames(projectName);
 
-      final tree = await fileService.readProjectTree(projectName);
-      final sceneNode = tree.scenes.firstWhere(
-        (s) => s.sceneNumber == sceneNumber,
-        orElse: () => throw StateError('Scene $sceneNumber not found.'),
-      );
-
-      final sceneDirPath = sceneNode.directoryPath;
-      final projectDir = p.dirname(p.dirname(sceneDirPath)); // scenes/N → scenes → project
-
-      // Build scene assets with resolved image, prompt, and dir availability.
-      final assets = <SceneAsset>[];
-      for (final node in sceneNode.assets) {
-        final isRef = node.name.startsWith('@');
-
-        // ── Reference resolution ──────────────────────────────────────────────
-        // If the name starts with '@' the asset references another asset
-        // (global or in a previous scene). Resolve its directory on disk.
-        //   @/scenes/0/<name>  → <project>/assets/<name>/
-        //   @/scenes/N/<name>  → <project>/scenes/N/assets/<name>/
-        // If the name does not start with '@' the asset lives in this scene.
-        final String? refDir = isRef ? _resolveRefDir(projectDir, node.name) : null;
-
-        // ── Image resolution ──────────────────────────────────────────────────
-        // pass-through: check referenced dir (has no own image)
-        // variant/local: check own dir
-        // Note: isPassThrough is derived below but we need the ref dir here,
-        // so we temporarily use (isRef && description.isEmpty) inline.
-        final bool hasImage;
-        if (isRef && node.description.isEmpty) {
-          hasImage = refDir != null &&
-              await File(p.join(refDir, 'image.png')).exists();
-        } else {
-          hasImage = await fileService.imageFileForAsset(node.directoryPath).exists();
-        }
-
-        // ── Asset classification ──────────────────────────────────────────────
-        // pass-through : @-name + empty description → everything from the ref
-        // variant      : @-name + non-empty description → own prompt/image,
-        //                referenced image used only as conditioning input
-        // local        : no @ → fully independent
-        final isPassThrough = isRef && node.description.isEmpty;
-
-        // ── Prompt resolution ─────────────────────────────────────────────────
-        // pass-through → read prompt from the referenced directory
-        // variant/local → read prompt from own directory
-        // Empty prompt body in either case → asset is not ready for storyboard
-        final String resolvedPrompt;
-        final String resolvedDirPath;
-        if (isPassThrough) {
-          resolvedDirPath = refDir ?? node.directoryPath;
-          if (refDir != null) {
-            final refPrompt = await fileService.readAssetPrompt(refDir);
-            resolvedPrompt = refPrompt.promptBody.trim();
-          } else {
-            resolvedPrompt = '';
-          }
-        } else {
-          // variant or local — always use own dir and own prompt
-          resolvedDirPath = node.directoryPath;
-          final ownPrompt = await fileService.readAssetPrompt(node.directoryPath);
-          resolvedPrompt = ownPrompt.promptBody.trim();
-        }
-
-
-        // For variant assets (@ name + own description), the referenced
-        // asset's image is sent alongside the variant's own image as a
-        // conditioning input. Store refDir so _buildVideoRefImages can use it.
-        final bool isVariant = isRef && node.description.isNotEmpty;
-        final String? conditioningDirPath = isVariant ? refDir : null;
-
-        assets.add(SceneAsset(
-          name: node.name,
-          dirPath: node.directoryPath,
-          hasImage: hasImage,
-          isGlobal: node.isGlobal,
-          isPassThrough: node.isPassThrough,
-          type: node.type,
-          description: node.description,
-          resolvedPrompt: resolvedPrompt,
-          resolvedDirPath: resolvedDirPath,
-          conditioningDirPath: conditioningDirPath,
-        ));
-      }
-
-      final storyboard = await fileService.readArkMdx(sceneDirPath);
-      final fullStory = await fileService.readStory(projectName);
-      final sceneText = _extractSceneText(fullStory, sceneNumber);
-      final hasVideo = await fileService.videoFileForScene(sceneDirPath).exists();
-
-      emit(SceneLoaded(
-        storyboard: storyboard,
-        assets: assets,
-        sceneText: sceneText,
-        hasVideo: hasVideo,
-        sceneDirPath: sceneDirPath,
-        sceneNumber: sceneNumber,
-      ));
-
-      // Resume polling if a video job was running before this screen was built.
-      final videoKey = GenerationJobManager.videoKey(sceneDirPath);
-      if (jobManager.stateFor(videoKey) == GenerationJobState.running) {
-        // We don't have the job ID anymore if we just navigated back; the
-        // polling will be a no-op until the next generateVideo() call.
-        // This guard just avoids resetting the job manager state on reload.
-      }
-    } catch (e) {
-      emit(SceneError(message: e.toString()));
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      emit(SceneError(message: 'Not authenticated.'));
+      return;
     }
+
+    final db = FirebaseFirestore.instance;
+    final projectPath = 'users/$uid/projects/$projectSlug';
+    final sceneId = sceneNumber.toString();
+
+    // ── 1. Scene document ──────────────────────────────────────────────────
+    _sceneDocSub = db
+        .doc('$projectPath/scenes/$sceneId')
+        .snapshots()
+        .listen(
+      (snap) {
+        if (!snap.exists || snap.data() == null) {
+          _sceneDoc = null;
+          _sceneText = null;
+        } else {
+          final data = snap.data()!;
+          // scene_text is not part of SceneDocument model — parse directly.
+          _sceneText = data['scene_text'] as String?;
+          final prevVideoPath = _sceneDoc?.gcsVideoPath;
+          _sceneDoc = SceneDocument.fromFirestore(snap.id, data);
+
+          // Detect video completion: gcs_video_path transitioned from null
+          // to non-null. Clear the generating flag and update job registry.
+          if (_isGeneratingVideo &&
+              prevVideoPath == null &&
+              _sceneDoc!.gcsVideoPath != null) {
+            _isGeneratingVideo = false;
+            if (_currentVideoJobId != null) {
+              jobRegistryService.updateStatus(
+                _currentVideoJobId!,
+                'success',
+                resolvedAt: DateTime.now(),
+              );
+              _currentVideoJobId = null;
+            }
+          }
+        }
+        _rebuildState();
+      },
+      onError: (Object e) =>
+          emit(SceneError(message: 'Scene listener error: $e')),
+    );
+
+    // ── 2. Scene assets subcollection ──────────────────────────────────────
+    _sceneAssetsSub = db
+        .collection('$projectPath/scenes/$sceneId/assets')
+        .snapshots()
+        .listen(
+      (snap) {
+        _sceneAssets = snap.docs
+            .map((d) => AssetDocument.fromFirestore(d.id, d.data()))
+            .toList();
+        _rebuildState();
+      },
+      onError: (Object e) =>
+          emit(SceneError(message: 'Scene assets listener error: $e')),
+    );
+
+    // ── 3. Global assets collection ────────────────────────────────────────
+    _globalAssetsSub = db
+        .collection('$projectPath/assets')
+        .snapshots()
+        .listen(
+      (snap) {
+        _globalAssets = snap.docs
+            .map((d) => AssetDocument.fromFirestore(d.id, d.data()))
+            .toList();
+        _rebuildState();
+      },
+      onError: (Object e) =>
+          emit(SceneError(message: 'Global assets listener error: $e')),
+    );
+  }
+
+  // ── State builder ─────────────────────────────────────────────────────────
+
+  /// Merges the three Firestore snapshots with the local generation flags into
+  /// a [SceneLoaded] state.
+  void _rebuildState() {
+    if (isClosed) return;
+
+    final resolved = <SceneAsset>[];
+    for (final asset in _sceneAssets) {
+      final isPassThrough = asset.description.isEmpty;
+      String? gcsImagePath;
+
+      if (isPassThrough) {
+        // Pass-through: find the global asset with matching base name and use
+        // its gcs_image_path. The scene asset's name is `@/scenes/N/{baseName}`.
+        final baseName = _extractBaseName(asset.name);
+        final global = _findGlobalAsset(baseName);
+        gcsImagePath = global?.gcsImagePath;
+      } else {
+        gcsImagePath = asset.gcsImagePath;
+      }
+
+      resolved.add(SceneAsset(
+        id: asset.id,
+        name: asset.name,
+        type: asset.type,
+        description: asset.description,
+        promptBody: asset.promptBody,
+        gcsImagePath: gcsImagePath,
+        isPassThrough: isPassThrough,
+      ));
+    }
+
+    // Sort: background (0) → character (1) → object (2). Stable sort preserves
+    // relative FCFS order within each type group.
+    resolved.sort(
+      (a, b) => _typePriority(a.type).compareTo(_typePriority(b.type)),
+    );
+
+    emit(SceneLoaded(
+      sceneNumber: sceneNumber,
+      sceneText: _sceneText,
+      storyboardBody: _sceneDoc?.storyboardBody,
+      gcsVideoPath: _sceneDoc?.gcsVideoPath,
+      assets: resolved,
+      isGeneratingStoryboard: _isGeneratingStoryboard,
+      isGeneratingVideo: _isGeneratingVideo,
+      storyboardError: _storyboardError,
+      videoError: _videoError,
+      selectedTabIndex: _selectedTabIndex,
+    ));
   }
 
   // ── Tab switch ────────────────────────────────────────────────────────────
 
   void switchTab(int index) {
+    _selectedTabIndex = index;
     final s = state;
     if (s is SceneLoaded) emit(s.copyWith(selectedTabIndex: index));
-  }
-
-  // ── Storyboard edits ──────────────────────────────────────────────────────
-
-  /// Called when the storyboard `TextField` loses focus.
-  Future<void> onStoryboardChanged(String body) async {
-    final s = state;
-    if (s is! SceneLoaded) return;
-    final updated = s.storyboard.copyWith(storyboardBody: body);
-    emit(s.copyWith(storyboard: updated));
-    await fileService.writeArkMdx(s.sceneDirPath, updated);
   }
 
   // ── Generate Storyboard (FEAT-014) ────────────────────────────────────────
@@ -177,39 +212,50 @@ class SceneCubit extends Cubit<SceneState> {
     final s = state;
     if (s is! SceneLoaded) return;
 
-    final storyboardKey = GenerationJobManager.storyboardKey(s.sceneDirPath);
-    jobManager.markRunning(storyboardKey);
+    // Guard: all assets must have GCS images before generating a storyboard.
+    if (s.assets.isEmpty || !s.allAssetsHaveImages) {
+      _storyboardError = 'All asset images must be generated first.';
+      emit(s.copyWith(storyboardError: _storyboardError));
+      return;
+    }
+
+    final sceneText = s.sceneText ?? '';
+
+    // Collect ordered GCS image paths (already sorted by type priority).
+    final refImageGcsPaths = [
+      for (final asset in s.assets)
+        if (asset.gcsImagePath != null) asset.gcsImagePath!,
+    ];
+
+    _isGeneratingStoryboard = true;
+    _storyboardError = null;
     emit(s.copyWith(
       isGeneratingStoryboard: true,
       storyboardError: null,
     ));
 
     try {
-      final assets = _buildAssetPromptList(s);
-
-      final storyboardBody = await apiClient.generateVideoPrompt(
-        scene: s.sceneText,
-        assets: assets,
+      await apiClient.generateVideoPrompt(
+        projectSlug: projectSlug,
+        sceneIndex: sceneNumber,
+        sceneText: sceneText,
+        refImageGcsPaths: refImageGcsPaths,
       );
-
-      // Persist to ark.mdx.
-      final storyboard = SceneStoryboard(
-        sceneNumber: s.sceneNumber,
-        storyboardBody: storyboardBody,
-      );
-      await fileService.writeArkMdx(s.sceneDirPath, storyboard);
-
-      jobManager.markDone(storyboardKey);
-      if (!isClosed) {
+      // Backend writes storyboard_body to Firestore → listener fires →
+      // _rebuildState() emits the updated storyboardBody. No parsing needed.
+      _isGeneratingStoryboard = false;
+      if (!isClosed && state is SceneLoaded) {
         emit((state as SceneLoaded).copyWith(
-          storyboard: storyboard,
           isGeneratingStoryboard: false,
-          selectedTabIndex: 1, // auto-switch to Storyboard tab
+          // Auto-switch to the Storyboard tab so the user sees the result.
+          selectedTabIndex: 1,
         ));
+        _selectedTabIndex = 1;
       }
     } on ApiInsufficientCredits {
-      jobManager.markFailed(storyboardKey, 'Insufficient credits');
-      if (!isClosed) {
+      _isGeneratingStoryboard = false;
+      _storyboardError = '__credits__';
+      if (!isClosed && state is SceneLoaded) {
         emit((state as SceneLoaded).copyWith(
           isGeneratingStoryboard: false,
           storyboardError: '__credits__',
@@ -217,41 +263,25 @@ class SceneCubit extends Cubit<SceneState> {
       }
     } on ApiError catch (e) {
       final msg = _apiErrorMessage(e);
-      jobManager.markFailed(storyboardKey, msg);
-      if (!isClosed) {
+      _isGeneratingStoryboard = false;
+      _storyboardError = msg;
+      if (!isClosed && state is SceneLoaded) {
         emit((state as SceneLoaded).copyWith(
           isGeneratingStoryboard: false,
           storyboardError: msg,
         ));
       }
     } catch (e) {
-      jobManager.markFailed(storyboardKey, e.toString());
-      if (!isClosed) {
+      final msg = e.toString();
+      _isGeneratingStoryboard = false;
+      _storyboardError = msg;
+      if (!isClosed && state is SceneLoaded) {
         emit((state as SceneLoaded).copyWith(
           isGeneratingStoryboard: false,
-          storyboardError: e.toString(),
+          storyboardError: msg,
         ));
       }
     }
-  }
-
-  /// Builds the asset list for /video-prompt using already-resolved prompts.
-  ///
-  /// Only called after [canGenerateStoryboard] is confirmed true, so every
-  /// asset is guaranteed to have a non-empty [resolvedPrompt].
-  ///
-  /// Assets are ordered by type priority (background → character → object) so
-  /// the most scene-defining context appears first in the prompt. FCFS order is
-  /// preserved within each type group.
-  List<Map<String, String>> _buildAssetPromptList(SceneLoaded s) {
-    return [
-      for (final asset in _sortedByTypePriority(s.assets))
-        if (asset.isPromptReady)
-          {
-            'name': asset.displayName,
-            'prompt': asset.resolvedPrompt,
-          },
-    ];
   }
 
   // ── Generate Video (FEAT-016) ─────────────────────────────────────────────
@@ -259,27 +289,48 @@ class SceneCubit extends Cubit<SceneState> {
   Future<void> generateVideo() async {
     final s = state;
     if (s is! SceneLoaded) return;
+    if (!s.hasStoryboard) return;
 
-    final videoKey = GenerationJobManager.videoKey(s.sceneDirPath);
-    jobManager.markRunning(videoKey);
+    // Collect ordered GCS image paths (already sorted by type priority).
+    final refImageGcsPaths = [
+      for (final asset in s.assets)
+        if (asset.gcsImagePath != null) asset.gcsImagePath!,
+    ];
+
+    _isGeneratingVideo = true;
+    _videoError = null;
     emit(s.copyWith(
       isGeneratingVideo: true,
       videoError: null,
     ));
 
     try {
-      final refImageBytes = await _buildVideoRefImages(s);
-
       final jobId = await apiClient.generateVideo(
-        prompt: s.storyboard.storyboardBody,
-        refImageBytes: refImageBytes,
+        projectSlug: projectSlug,
+        sceneIndex: sceneNumber,
+        refImageGcsPaths: refImageGcsPaths,
       );
 
-      // Begin polling — runs even if the user navigates away.
-      _startPolling(jobId: jobId, sceneDirPath: s.sceneDirPath);
+      // Register the job in the local Hive CE registry so it survives
+      // app restarts and can be polled on foreground return (FEAT-017).
+      await jobRegistryService.register(JobRegistryEntry(
+        jobId: jobId,
+        type: 'video',
+        projectId: projectSlug,
+        status: 'pending',
+        createdAt: DateTime.now(),
+        sceneIndex: sceneNumber,
+      ));
+
+      // Store for the Firestore listener to mark success on completion.
+      _currentVideoJobId = jobId;
+
+      // isGeneratingVideo stays true — the Firestore listener clears it
+      // when gcs_video_path is set on the scene document.
     } on ApiInsufficientCredits {
-      jobManager.markFailed(videoKey, 'Insufficient credits');
-      if (!isClosed) {
+      _isGeneratingVideo = false;
+      _videoError = '__credits__';
+      if (!isClosed && state is SceneLoaded) {
         emit((state as SceneLoaded).copyWith(
           isGeneratingVideo: false,
           videoError: '__credits__',
@@ -287,163 +338,76 @@ class SceneCubit extends Cubit<SceneState> {
       }
     } on ApiError catch (e) {
       final msg = _apiErrorMessage(e);
-      jobManager.markFailed(videoKey, msg);
-      if (!isClosed) {
+      _isGeneratingVideo = false;
+      _videoError = msg;
+      if (!isClosed && state is SceneLoaded) {
         emit((state as SceneLoaded).copyWith(
           isGeneratingVideo: false,
           videoError: msg,
         ));
       }
     } catch (e) {
-      jobManager.markFailed(videoKey, e.toString());
-      if (!isClosed) {
+      final msg = e.toString();
+      _isGeneratingVideo = false;
+      _videoError = msg;
+      if (!isClosed && state is SceneLoaded) {
         emit((state as SceneLoaded).copyWith(
           isGeneratingVideo: false,
-          videoError: e.toString(),
+          videoError: msg,
         ));
       }
-    }
-  }
-
-  /// Builds the ref image byte lists for /video.
-  ///
-  /// Returns raw PNG bytes for each asset image — no base64 encoding needed
-  /// since /video now uses multipart/form-data (same as /image).
-  ///
-  /// Assets are ordered by type priority (background → character → object) so
-  /// the most scene-defining refs are sent first. Models with a hard ref cap
-  /// (e.g. Veo's 3-image limit) will receive the highest-relevance images even
-  /// when the list is truncated. FCFS order is preserved within each type group.
-  ///
-  /// Image sourcing per asset type (FEAT-013):
-  /// - **Pass-through** (`@`-name, empty description): `resolvedDirPath` is
-  ///   already the referenced asset's dir — one image from there.
-  /// - **Variant** (`@`-name, non-empty description): sends the variant's own
-  ///   `image.png` from `dirPath` PLUS the referenced asset's `image.png` from
-  ///   `conditioningDirPath` as a conditioning input.
-  /// - **Local** (no `@`): own `image.png` from `resolvedDirPath` (= `dirPath`).
-  ///
-  /// Assets without an image file on disk are skipped silently.
-  Future<List<List<int>>> _buildVideoRefImages(SceneLoaded s) async {
-    final result = <List<int>>[];
-
-    Future<void> addIfExists(String dirPath) async {
-      final imageFile = File(p.join(dirPath, 'image.png'));
-      if (!await imageFile.exists()) return;
-      result.add(await imageFile.readAsBytes());
-    }
-
-    for (final asset in _sortedByTypePriority(s.assets)) {
-      if (asset.conditioningDirPath != null) {
-        // Variant: own image first, then referenced conditioning image.
-        await addIfExists(asset.dirPath);
-        await addIfExists(asset.conditioningDirPath!);
-      } else {
-        // Pass-through (resolvedDirPath = refDir) or local (resolvedDirPath = dirPath).
-        await addIfExists(asset.resolvedDirPath);
-      }
-    }
-
-    return result;
-  }
-
-  /// Sorts [assets] by type priority: background (0) → character (1) → object (2).
-  ///
-  /// Preserves the original FCFS order within each type group. Assets with a
-  /// null type are placed last. The sort is stable so relative order among
-  /// same-type assets is unchanged.
-  ///
-  /// This ordering ensures that ref lists sent to generation models are ranked
-  /// by scene relevance — backgrounds set the environment, characters carry the
-  /// narrative, objects are incidental — so a hard model cap (e.g. 3 refs)
-  /// always trims the least important assets first.
-  static List<SceneAsset> _sortedByTypePriority(List<SceneAsset> assets) {
-    int priority(AssetType? type) => switch (type) {
-          AssetType.background => 0,
-          AssetType.character => 1,
-          AssetType.object => 2,
-          null => 3,
-        };
-    return [...assets]
-      ..sort((a, b) => priority(a.type).compareTo(priority(b.type)));
-  }
-
-  // ── Video polling ─────────────────────────────────────────────────────────
-
-  void _startPolling({required String jobId, required String sceneDirPath}) {
-    _pollTimer?.cancel();
-    _pollTimer = Timer.periodic(const Duration(seconds: 10), (timer) async {
-      await _pollOnce(
-        jobId: jobId,
-        sceneDirPath: sceneDirPath,
-        timer: timer,
-      );
-    });
-  }
-
-  Future<void> _pollOnce({
-    required String jobId,
-    required String sceneDirPath,
-    required Timer timer,
-  }) async {
-    final videoKey = GenerationJobManager.videoKey(sceneDirPath);
-    try {
-      final raw = await apiClient.getVideoJobStatus(jobId: jobId);
-      final status = VideoStatusResponse.fromJson(raw);
-
-      if (status.isTerminal) {
-        timer.cancel();
-        if (status.isSuccess && status.url != null) {
-          // Download and save the video.
-          try {
-            final bytes = await apiClient.downloadBytes(status.url!);
-            final videoFile = fileService.videoFileForScene(sceneDirPath);
-            await videoFile.writeAsBytes(bytes);
-            jobManager.markDone(videoKey);
-            if (!isClosed && state is SceneLoaded) {
-              emit((state as SceneLoaded).copyWith(
-                isGeneratingVideo: false,
-                hasVideo: true,
-              ));
-            }
-          } catch (e) {
-            jobManager.markFailed(videoKey, 'Failed to save video: $e');
-            if (!isClosed && state is SceneLoaded) {
-              emit((state as SceneLoaded).copyWith(
-                isGeneratingVideo: false,
-                videoError: 'Failed to save video: $e',
-              ));
-            }
-          }
-        } else {
-          final errMsg = status.error ?? 'Video generation failed.';
-          jobManager.markFailed(videoKey, errMsg);
-          if (!isClosed && state is SceneLoaded) {
-            emit((state as SceneLoaded).copyWith(
-              isGeneratingVideo: false,
-              videoError: errMsg,
-            ));
-          }
-        }
-      }
-    } catch (_) {
-      // Transient network error — keep polling.
     }
   }
 
   // ── Error dismissal ───────────────────────────────────────────────────────
 
   void clearStoryboardError() {
+    _storyboardError = null;
     final s = state;
     if (s is SceneLoaded) emit(s.copyWith(storyboardError: null));
   }
 
   void clearVideoError() {
+    _videoError = null;
     final s = state;
     if (s is SceneLoaded) emit(s.copyWith(videoError: null));
   }
 
   // ── Utilities ─────────────────────────────────────────────────────────────
+
+  /// Extracts the base asset name from a pass-through reference.
+  ///
+  /// Reference format: `@/scenes/N/{baseName}` → returns `{baseName}`.
+  /// Falls back to the last path segment or the full name if the format
+  /// does not match.
+  static String _extractBaseName(String name) {
+    // Strip leading '@' before splitting.
+    final withoutAt =
+        name.startsWith('@') ? name.substring(1) : name;
+    final parts = withoutAt.split('/').where((s) => s.isNotEmpty).toList();
+    // Expected: ['scenes', 'N', 'baseName'] — take the last segment.
+    return parts.isNotEmpty ? parts.last : name;
+  }
+
+  /// Returns the global asset whose name matches [baseName] (case-insensitive).
+  AssetDocument? _findGlobalAsset(String baseName) {
+    final lower = baseName.toLowerCase();
+    for (final g in _globalAssets) {
+      if (g.name == baseName || g.name.toLowerCase() == lower) return g;
+    }
+    return null;
+  }
+
+  /// Sort priority for asset types — lower value sorts first.
+  ///
+  /// background (0) → character (1) → object (2).
+  /// This ordering ensures scene-defining refs are sent first to generation
+  /// models that enforce a hard ref cap (e.g. Veo's 3-image limit).
+  static int _typePriority(AssetType type) => switch (type) {
+        AssetType.background => 0,
+        AssetType.character => 1,
+        AssetType.object => 2,
+      };
 
   static String _apiErrorMessage(ApiError e) => switch (e) {
         ApiConflict(:final message) => message,
@@ -455,68 +419,13 @@ class SceneCubit extends Cubit<SceneState> {
         ApiUnauthorized() => 'Unauthorized',
       };
 
-  /// Extracts the body text for [sceneNumber] from the full `story.mdx` content.
-  ///
-  /// The story format uses `# N` headings as scene delimiters. Everything
-  /// Resolves a pass-through asset reference to the absolute directory path
-  /// of the referenced asset on disk.
-  ///
-  /// Reference format: `@/scenes/<N>/<assetName>`
-  /// - N = 0  → global asset: `<projectDir>/assets/<assetName>/`
-  /// - N > 0  → scene-local: `<projectDir>/scenes/<N>/assets/<assetName>/`
-  ///
-  /// Returns `null` when the name does not match the expected pattern so the
-  /// caller can treat the asset as not-ready rather than crashing.
-  static String? _resolveRefDir(String projectDir, String assetName) {
-    // Strip leading '@' — name is stored as '@/scenes/N/assetName'.
-    final withoutAt = assetName.startsWith('@') ? assetName.substring(1) : assetName;
-    // Expected segments after stripping: ['', 'scenes', 'N', 'assetName']
-    final parts = withoutAt.split('/').where((s) => s.isNotEmpty).toList();
-    // parts == ['scenes', 'N', 'assetName']
-    if (parts.length < 3 || parts[0] != 'scenes') return null;
-
-    final sceneNum = int.tryParse(parts[1]);
-    if (sceneNum == null) return null;
-
-    final name = parts.sublist(2).join('/'); // handles names that may contain '/'
-    if (sceneNum == 0) {
-      // Scene 0 is the global asset pool.
-      return p.join(projectDir, 'assets', name);
-    } else {
-      // Scene-local asset in scenes/<N>/assets/<name>/.
-      return p.join(projectDir, 'scenes', parts[1], 'assets', name);
-    }
-  }
-
-  /// between `# N` and the next `# N+1` heading (or end of file) is the
-  /// body for scene N.
-  static String _extractSceneText(String fullStory, int sceneNumber) {
-    // Split on lines starting with "# " followed by a number.
-    final lines = fullStory.split('\n');
-    final body = StringBuffer();
-    bool inScene = false;
-
-    for (final line in lines) {
-      final heading = RegExp(r'^#\s+(\d+)\s*$').firstMatch(line.trim());
-      if (heading != null) {
-        final n = int.parse(heading.group(1)!);
-        if (n == sceneNumber) {
-          inScene = true;
-          continue; // skip the heading line itself
-        } else if (inScene) {
-          break; // reached the next scene heading — stop
-        }
-      } else if (inScene) {
-        body.writeln(line);
-      }
-    }
-
-    return body.toString().trim();
-  }
+  // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   @override
   Future<void> close() {
-    _pollTimer?.cancel();
+    _sceneDocSub?.cancel();
+    _sceneAssetsSub?.cancel();
+    _globalAssetsSub?.cancel();
     return super.close();
   }
 }

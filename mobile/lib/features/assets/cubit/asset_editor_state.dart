@@ -23,10 +23,13 @@ class AssetEditorError extends AssetEditorState {
 
 class AssetEditorLoaded extends AssetEditorState {
   const AssetEditorLoaded({
-    required this.prompt,
-    required this.hasImage,
+    required this.assetId,
+    required this.name,
+    required this.type,
+    required this.description,
     required this.isGlobal,
-    this.imageVersion = 0,
+    this.promptBody,
+    this.gcsImagePath,
     this.isSaving = false,
     this.isGeneratingPrompt = false,
     this.isGeneratingImage = false,
@@ -34,44 +37,61 @@ class AssetEditorLoaded extends AssetEditorState {
     this.imageError,
   });
 
-  /// Parsed data from `prompt.mdx` (frontmatter + body).
-  final AssetPrompt prompt;
+  /// Firestore document ID for this asset (the last path segment).
+  final String assetId;
 
-  /// Whether `image.png` exists in the asset directory.
-  final bool hasImage;
+  /// From Firestore `name` field. Read-only — set by the backend on creation.
+  final String name;
 
-  /// Incremented each time a new image is saved to disk. Used as a cache-bust
-  /// key on [Image.file] so Flutter reloads the file instead of serving the
-  /// stale cached version after regeneration.
-  final int imageVersion;
+  /// From Firestore `type` field. User-editable.
+  final AssetType type;
+
+  /// From Firestore `description` field. User-editable.
+  final String description;
+
+  /// From Firestore `prompt_body` field. Null until generated. User-editable.
+  final String? promptBody;
+
+  /// From Firestore `gcs_image_path` field. Set by the image worker on
+  /// completion. Null until the worker writes it.
+  final String? gcsImagePath;
 
   /// True for assets directly under `assets/` (global scope).
-  /// False for assets under `scenes/N/assets/` (scene-local).
+  /// False for assets under `scenes/{id}/assets/` (scene-local).
   final bool isGlobal;
 
-  /// True while a file save is in progress.
+  /// True while a Firestore field write is in progress.
   final bool isSaving;
 
   /// True while the `/image-prompt` API call is running.
   final bool isGeneratingPrompt;
 
-  /// True while the `/image` API call + GCS download are running.
+  /// True from the moment POST /image returns a job_id until the Firestore
+  /// listener fires with a non-null `gcs_image_path`.
   final bool isGeneratingImage;
 
   /// Inline error from the last `/image-prompt` call.
+  /// `'__credits__'` means insufficient credits — show paywall dialog.
   final String? promptError;
 
   /// Inline error from the last `/image` call.
+  /// `'__credits__'` means insufficient credits — show paywall dialog.
   final String? imageError;
 
-  /// A scene-local asset with an empty description uses the global image
-  /// and does not need its own prompt or image generated.
-  bool get isPassThrough => !isGlobal && prompt.description.isEmpty;
+  /// A scene-local asset with an empty description uses the global asset's
+  /// image and does not need its own prompt or image generated.
+  bool get isPassThrough => !isGlobal && description.isEmpty;
+
+  bool get hasImage => gcsImagePath != null;
+  bool get hasPromptBody => promptBody != null && promptBody!.isNotEmpty;
 
   AssetEditorLoaded copyWith({
-    AssetPrompt? prompt,
-    bool? hasImage,
-    int? imageVersion,
+    String? assetId,
+    String? name,
+    AssetType? type,
+    String? description,
+    String? promptBody,
+    String? gcsImagePath,
     bool? isGlobal,
     bool? isSaving,
     bool? isGeneratingPrompt,
@@ -80,11 +100,15 @@ class AssetEditorLoaded extends AssetEditorState {
     String? imageError,
     bool clearPromptError = false,
     bool clearImageError = false,
+    bool clearGcsImagePath = false,
   }) {
     return AssetEditorLoaded(
-      prompt: prompt ?? this.prompt,
-      hasImage: hasImage ?? this.hasImage,
-      imageVersion: imageVersion ?? this.imageVersion,
+      assetId: assetId ?? this.assetId,
+      name: name ?? this.name,
+      type: type ?? this.type,
+      description: description ?? this.description,
+      promptBody: promptBody ?? this.promptBody,
+      gcsImagePath: clearGcsImagePath ? null : (gcsImagePath ?? this.gcsImagePath),
       isGlobal: isGlobal ?? this.isGlobal,
       isSaving: isSaving ?? this.isSaving,
       isGeneratingPrompt: isGeneratingPrompt ?? this.isGeneratingPrompt,
@@ -96,9 +120,12 @@ class AssetEditorLoaded extends AssetEditorState {
 
   @override
   List<Object?> get props => [
-        prompt,
-        hasImage,
-        imageVersion,
+        assetId,
+        name,
+        type,
+        description,
+        promptBody,
+        gcsImagePath,
         isGlobal,
         isSaving,
         isGeneratingPrompt,

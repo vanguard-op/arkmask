@@ -1,165 +1,176 @@
+import 'package:equatable/equatable.dart';
+
 import '../../../core/models/models.dart';
 
-/// A single asset as presented on the Scene Detail screen.
-class SceneAsset {
+/// A single scene asset resolved for UI display and generation use.
+///
+/// Pass-through assets (description.isEmpty) delegate their image to the
+/// global asset with the same base name. [gcsImagePath] for a pass-through is
+/// already resolved to the referenced global asset's GCS path by [SceneCubit].
+class SceneAsset extends Equatable {
   const SceneAsset({
+    required this.id,
     required this.name,
-    required this.dirPath,
-    required this.hasImage,
-    required this.isGlobal,
-    required this.isPassThrough,
     required this.type,
     required this.description,
-    required this.resolvedPrompt,
-    required this.resolvedDirPath,
-    this.conditioningDirPath,
+    this.promptBody,
+    this.gcsImagePath,
+    this.isPassThrough = false,
   });
 
-  /// Display name (from prompt.mdx frontmatter; may start with `@/`).
+  /// Firestore document ID.
+  final String id;
+
+  /// Raw name from Firestore (may start with `@/scenes/N/` for pass-throughs).
   final String name;
 
-  /// Absolute path to the asset directory on device.
-  final String dirPath;
-
-  /// Whether the *resolved* image file exists (global for pass-through,
-  /// local for variant).
-  final bool hasImage;
-
-  /// True when this is a global-scope asset.
-  final bool isGlobal;
-
-  /// True when this is a scene-local asset with empty description — meaning
-  /// it delegates its image to the corresponding global asset.
-  final bool isPassThrough;
-
-  final AssetType? type;
+  final AssetType type;
   final String description;
 
-  /// The prompt body to send to /video-prompt, resolved as follows:
-  /// - Own prompt body if non-empty.
-  /// - Referenced asset's prompt body if this is a pass-through
-  ///   (`@/scenes/0/<name>` → global, `@/scenes/N/<name>` → scene N local).
-  /// - Empty string if neither is available (asset is not ready).
-  final String resolvedPrompt;
+  /// Generated image prompt text. Null until the backend writes it.
+  final String? promptBody;
 
-  /// For pass-through assets, the absolute path to the *referenced* asset
-  /// directory — where the user should navigate to generate a prompt.
-  /// Equals [dirPath] for non-pass-through assets.
-  final String resolvedDirPath;
+  /// GCS object path for the generated image. For pass-throughs this is the
+  /// *referenced* global asset's gcs_image_path. Null until generated.
+  final String? gcsImagePath;
 
-  /// For **variant** assets only (`@`-name + non-empty description): the
-  /// directory of the referenced asset whose image is used as a conditioning
-  /// input alongside the variant's own image during video generation.
-  /// Null for pass-through and local assets.
-  final String? conditioningDirPath;
-
-  /// True when a prompt body has been resolved and the asset is ready for
-  /// storyboard generation. False means the user still needs to generate
-  /// a prompt for this asset (or its referenced asset).
-  bool get isPromptReady => resolvedPrompt.isNotEmpty;
+  /// True when description.isEmpty — the asset delegates its image to the
+  /// global asset with the same base name.
+  final bool isPassThrough;
 
   /// Short display name — strips the `@/scenes/N/` prefix for references.
   String get displayName =>
       name.contains('/') ? name.split('/').last : name;
+
+  @override
+  List<Object?> get props => [
+        id,
+        name,
+        type,
+        description,
+        promptBody,
+        gcsImagePath,
+        isPassThrough,
+      ];
 }
 
 // ── States ─────────────────────────────────────────────────────────────────────
 
-sealed class SceneState {}
+sealed class SceneState extends Equatable {}
 
-/// Shown while the scene directory is being read from disk.
-class SceneLoading extends SceneState {}
+/// Shown while Firestore listeners are being set up.
+class SceneLoading extends SceneState {
+  @override
+  List<Object?> get props => [];
+}
+
+/// Shown when a Firestore listener fails or the user is not authenticated.
+class SceneError extends SceneState {
+  SceneError({required this.message});
+  final String message;
+
+  @override
+  List<Object?> get props => [message];
+}
 
 /// Full scene detail is available and the screen is interactive.
 class SceneLoaded extends SceneState {
   SceneLoaded({
-    required this.storyboard,
-    required this.assets,
-    required this.sceneText,
-    required this.hasVideo,
-    required this.sceneDirPath,
     required this.sceneNumber,
-    this.selectedTabIndex = 0,
+    this.sceneText,
+    this.storyboardBody,
+    this.gcsVideoPath,
+    required this.assets,
     this.isGeneratingStoryboard = false,
     this.isGeneratingVideo = false,
     this.storyboardError,
     this.videoError,
+    this.selectedTabIndex = 0,
   });
 
-  final SceneStoryboard storyboard;
-  final List<SceneAsset> assets;
-
-  /// Raw content of `story.mdx` shown in the "Scene Text" expansion tile.
-  final String sceneText;
-
-  final bool hasVideo;
-  final String sceneDirPath;
   final int sceneNumber;
 
-  /// 0 = Assets tab, 1 = Storyboard tab.
-  final int selectedTabIndex;
+  /// Raw scene text from the Firestore `scene_text` field.
+  final String? sceneText;
+
+  /// Generated storyboard prompt from `storyboard_body`. Null until generated.
+  final String? storyboardBody;
+
+  /// GCS path for the generated video. Null until the video worker completes.
+  final String? gcsVideoPath;
+
+  /// All scene assets, pass-through GCS paths already resolved. Sorted by type
+  /// priority (background → character → object).
+  final List<SceneAsset> assets;
 
   final bool isGeneratingStoryboard;
+
+  /// True from when POST /video is sent until gcs_video_path is set in Firestore.
   final bool isGeneratingVideo;
 
-  /// Non-null when a storyboard error should be surfaced. `'__credits__'` is
-  /// a sentinel for the credit-exhaustion dialog.
+  /// Non-null when a storyboard error should be surfaced. `'__credits__'` is a
+  /// sentinel for the credit-exhaustion dialog.
   final String? storyboardError;
 
   /// Non-null when a video error should be surfaced. `'__credits__'` is a
   /// sentinel for the credit-exhaustion dialog.
   final String? videoError;
 
-  /// Variant assets (non-empty description) that are missing a generated image.
-  List<SceneAsset> get missingVariantAssets =>
-      assets.where((a) => !a.isPassThrough && !a.hasImage).toList();
+  /// 0 = Assets tab, 1 = Storyboard tab.
+  final int selectedTabIndex;
 
-  /// Assets that do not have a usable prompt body — either own prompt is empty
-  /// and there is no referenced global prompt to fall back to. Storyboard
-  /// generation is blocked until this list is empty.
-  List<SceneAsset> get missingPromptAssets =>
-      assets.where((a) => !a.isPromptReady).toList();
+  bool get hasStoryboard =>
+      storyboardBody != null && storyboardBody!.isNotEmpty;
+  bool get hasVideo => gcsVideoPath != null;
 
-  /// True when all preconditions for storyboard generation are met.
-  bool get canGenerateStoryboard =>
-      missingVariantAssets.isEmpty && missingPromptAssets.isEmpty;
+  /// True when every asset has a GCS image path — prerequisite for storyboard
+  /// generation.
+  bool get allAssetsHaveImages =>
+      assets.isNotEmpty && assets.every((a) => a.gcsImagePath != null);
 
   SceneLoaded copyWith({
-    SceneStoryboard? storyboard,
-    List<SceneAsset>? assets,
-    String? sceneText,
-    bool? hasVideo,
-    String? sceneDirPath,
     int? sceneNumber,
-    int? selectedTabIndex,
+    String? sceneText,
+    String? storyboardBody,
+    String? gcsVideoPath,
+    List<SceneAsset>? assets,
     bool? isGeneratingStoryboard,
     bool? isGeneratingVideo,
     Object? storyboardError = _sentinel,
     Object? videoError = _sentinel,
+    int? selectedTabIndex,
   }) {
     return SceneLoaded(
-      storyboard: storyboard ?? this.storyboard,
-      assets: assets ?? this.assets,
-      sceneText: sceneText ?? this.sceneText,
-      hasVideo: hasVideo ?? this.hasVideo,
-      sceneDirPath: sceneDirPath ?? this.sceneDirPath,
       sceneNumber: sceneNumber ?? this.sceneNumber,
-      selectedTabIndex: selectedTabIndex ?? this.selectedTabIndex,
+      sceneText: sceneText ?? this.sceneText,
+      storyboardBody: storyboardBody ?? this.storyboardBody,
+      gcsVideoPath: gcsVideoPath ?? this.gcsVideoPath,
+      assets: assets ?? this.assets,
       isGeneratingStoryboard:
           isGeneratingStoryboard ?? this.isGeneratingStoryboard,
       isGeneratingVideo: isGeneratingVideo ?? this.isGeneratingVideo,
-      storyboardError:
-          storyboardError == _sentinel ? this.storyboardError : storyboardError as String?,
+      storyboardError: storyboardError == _sentinel
+          ? this.storyboardError
+          : storyboardError as String?,
       videoError:
           videoError == _sentinel ? this.videoError : videoError as String?,
+      selectedTabIndex: selectedTabIndex ?? this.selectedTabIndex,
     );
   }
 
   static const Object _sentinel = Object();
-}
 
-/// Shown when the scene directory cannot be read.
-class SceneError extends SceneState {
-  SceneError({required this.message});
-  final String message;
+  @override
+  List<Object?> get props => [
+        sceneNumber,
+        sceneText,
+        storyboardBody,
+        gcsVideoPath,
+        assets,
+        isGeneratingStoryboard,
+        isGeneratingVideo,
+        storyboardError,
+        videoError,
+        selectedTabIndex,
+      ];
 }

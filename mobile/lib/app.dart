@@ -52,7 +52,10 @@ class _ArkMaskAppState extends State<ArkMaskApp> {
       storageService: _storage,
       firebaseAuth: FirebaseAuth.instance,
     );
-    _jobRegistryService = JobRegistryService()..pruneStale();
+    _jobRegistryService = JobRegistryService();
+    // Open the Hive CE box asynchronously. The registry is safe to read
+    // before init completes — all accessor methods guard against a null box.
+    _jobRegistryService.init().then((_) => _jobRegistryService.pruneStale());
     _fileService = ProjectFileService(); // uninitialized — Phase 2 only
     _jobManager = GenerationJobManager(); // Phase 2 compat
 

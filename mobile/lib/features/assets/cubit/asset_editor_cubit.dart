@@ -1,100 +1,167 @@
-import 'dart:io';
+import 'dart:async';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:path/path.dart' as p;
 
 import '../../../core/api/api_error.dart';
 import '../../../core/api/ark_mask_api_client.dart';
-import '../../../core/filesystem/project_file_service.dart';
-import '../../../core/jobs/generation_job_manager.dart';
+import '../../../core/jobs/job_registry_service.dart';
 import '../../../core/models/models.dart';
 import 'asset_editor_state.dart';
 
 /// Cubit for the Asset MDX Editor Screen (FEAT-010, FEAT-011, FEAT-012, FEAT-013).
 ///
-/// Owns the read/write lifecycle for a single `prompt.mdx` file.
-/// Generation calls update the [GenerationJobManager] for cross-screen
-/// status visibility (FEAT-017).
-///
-/// [conditioningDirPath] is the directory of the referenced (global or prior-
-/// scene) asset whose `image.png` is sent as a visual conditioning input when
-/// generating an image for a variant asset. Null for global and local assets.
+/// Manages real-time Firestore state for a single asset document. Field edits
+/// are written directly to Firestore; the real-time listener delivers updates
+/// back to the UI. Image generation is async — the cubit emits
+/// [isGeneratingImage] = true immediately and clears it when the Firestore
+/// listener fires with a non-null [gcs_image_path].
 class AssetEditorCubit extends Cubit<AssetEditorState> {
   AssetEditorCubit({
-    required this.assetDirPath,
-    required this.fileService,
+    required this.projectSlug,
+    required this.assetFirestorePath,
     required this.apiClient,
-    required this.jobManager,
-    this.conditioningDirPath,
+    required this.jobRegistryService,
   }) : super(const AssetEditorLoading());
 
-  final String assetDirPath;
+  /// Immutable project slug — Firestore document ID and GCS folder prefix.
+  final String projectSlug;
 
-  /// Path to the referenced asset directory used as a conditioning image source
-  /// for variant generation. Null when not a variant.
-  final String? conditioningDirPath;
+  /// Path segment below the project root:
+  /// - Global asset  → `"assets/{assetId}"`
+  /// - Scene-local   → `"scenes/{sceneId}/assets/{assetId}"`
+  final String assetFirestorePath;
 
-  final ProjectFileService fileService;
   final ArkMaskApiClient apiClient;
-  final GenerationJobManager jobManager;
+  final JobRegistryService jobRegistryService;
+
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _docSub;
+
+  /// Tracks the job_id of the most recent in-flight image generation job so
+  /// the registry can be updated to 'success' when the Firestore listener
+  /// delivers [gcs_image_path].
+  String? _currentImageJobId;
+
+  // ── Firestore helpers ──────────────────────────────────────────────────────
+
+  String? get _uid => FirebaseAuth.instance.currentUser?.uid;
+
+  /// Full Firestore path to the asset document.
+  String get _docPath => 'users/$_uid/projects/$projectSlug/$assetFirestorePath';
+
+  DocumentReference<Map<String, dynamic>> get _docRef =>
+      FirebaseFirestore.instance.doc(_docPath);
 
   // ── Load ──────────────────────────────────────────────────────────────────
 
-  /// Determines whether this asset is global or scene-local, then reads
-  /// `prompt.mdx` and checks for `image.png`.
-  Future<void> load() async {
+  /// Opens a real-time listener on the Firestore asset document.
+  ///
+  /// Emits [AssetEditorLoading] immediately, then [AssetEditorLoaded] on each
+  /// snapshot update, or [AssetEditorError] if the stream errors.
+  void load() {
     emit(const AssetEditorLoading());
-    try {
-      final prompt = await fileService.readAssetPrompt(assetDirPath);
-      final hasImage = await fileService.imageFileForAsset(assetDirPath).exists();
-      // A path containing 'scenes' means it's a scene-local asset.
-      final isGlobal = !assetDirPath.contains('${p.separator}scenes${p.separator}');
-      emit(AssetEditorLoaded(
-        prompt: prompt,
-        hasImage: hasImage,
-        isGlobal: isGlobal,
-      ));
-    } catch (e) {
-      emit(AssetEditorError(message: e.toString()));
-    }
+    // Derive isGlobal from the path prefix once — it never changes for this
+    // asset instance.
+    final isGlobal = assetFirestorePath.startsWith('assets/');
+
+    _docSub?.cancel();
+    _docSub = _docRef
+        .snapshots()
+        .listen(
+          (snap) => _onSnapshot(snap, isGlobal),
+          onError: (Object e) => emit(AssetEditorError(message: e.toString())),
+        );
   }
 
-  // ── Frontmatter edits ─────────────────────────────────────────────────────
+  void _onSnapshot(
+    DocumentSnapshot<Map<String, dynamic>> snap,
+    bool isGlobal,
+  ) {
+    if (!snap.exists || snap.data() == null) {
+      emit(const AssetEditorError(message: 'Asset not found.'));
+      return;
+    }
+
+    final data = snap.data()!;
+    final newGcsImagePath = data['gcs_image_path'] as String?;
+    final current = state;
+
+    // When an image job is in-flight and the worker has now written
+    // gcs_image_path, clear the generating flag and update the job registry.
+    bool clearGenerating = false;
+    if (current is AssetEditorLoaded &&
+        current.isGeneratingImage &&
+        newGcsImagePath != null &&
+        newGcsImagePath != current.gcsImagePath) {
+      clearGenerating = true;
+      // Update the registry entry to 'success' now that the image is ready.
+      if (_currentImageJobId != null) {
+        jobRegistryService.updateStatus(_currentImageJobId!, 'success',
+            resolvedAt: DateTime.now());
+        _currentImageJobId = null;
+      }
+    }
+
+    emit(AssetEditorLoaded(
+      assetId: snap.id,
+      name: data['name'] as String? ?? snap.id,
+      type: AssetType.fromString(data['type'] as String? ?? 'character'),
+      description: data['description'] as String? ?? '',
+      promptBody: data['prompt_body'] as String?,
+      gcsImagePath: newGcsImagePath,
+      isGlobal: isGlobal,
+      // Preserve transient UI flags from the current state where relevant.
+      isSaving: current is AssetEditorLoaded ? current.isSaving : false,
+      isGeneratingPrompt:
+          current is AssetEditorLoaded ? current.isGeneratingPrompt : false,
+      isGeneratingImage: clearGenerating
+          ? false
+          : (current is AssetEditorLoaded ? current.isGeneratingImage : false),
+      // Preserve errors until the user dismisses them.
+      promptError:
+          current is AssetEditorLoaded ? current.promptError : null,
+      imageError: current is AssetEditorLoaded ? current.imageError : null,
+    ));
+  }
+
+  // ── Field saves ────────────────────────────────────────────────────────────
 
   /// Called when the asset type selector changes.
-  void onTypeChanged(AssetType type) {
-    final s = state;
-    if (s is! AssetEditorLoaded) return;
-    final updated = s.copyWith(prompt: s.prompt.copyWith(type: type));
-    emit(updated);
-    _save(updated.prompt);
-  }
-
-  /// Called when the description field blurs.
-  void onDescriptionChanged(String description) {
-    final s = state;
-    if (s is! AssetEditorLoaded) return;
-    final updated = s.copyWith(prompt: s.prompt.copyWith(description: description));
-    emit(updated);
-    _save(updated.prompt);
-  }
-
-  /// Called when the prompt body `TextField` blurs.
-  void onPromptBodyChanged(String body) {
-    final s = state;
-    if (s is! AssetEditorLoaded) return;
-    final updated = s.copyWith(prompt: s.prompt.copyWith(promptBody: body));
-    emit(updated);
-    _save(updated.prompt);
-  }
-
-  Future<void> _save(AssetPrompt prompt) async {
+  Future<void> onTypeChanged(AssetType type) async {
     final s = state;
     if (s is! AssetEditorLoaded) return;
     emit(s.copyWith(isSaving: true));
     try {
-      await fileService.writeAssetPrompt(assetDirPath, prompt);
-    } finally {
+      await _docRef.update({'type': type.value});
+    } catch (e) {
+      // The Firestore listener will not fire on a failed write; restore flag.
+      final current = state;
+      if (current is AssetEditorLoaded) emit(current.copyWith(isSaving: false));
+    }
+  }
+
+  /// Called when the description field loses focus.
+  Future<void> onDescriptionChanged(String description) async {
+    final s = state;
+    if (s is! AssetEditorLoaded) return;
+    emit(s.copyWith(isSaving: true));
+    try {
+      await _docRef.update({'description': description});
+    } catch (e) {
+      final current = state;
+      if (current is AssetEditorLoaded) emit(current.copyWith(isSaving: false));
+    }
+  }
+
+  /// Called when the prompt body `TextField` loses focus.
+  Future<void> onPromptBodyChanged(String body) async {
+    final s = state;
+    if (s is! AssetEditorLoaded) return;
+    emit(s.copyWith(isSaving: true));
+    try {
+      await _docRef.update({'prompt_body': body});
+    } catch (e) {
       final current = state;
       if (current is AssetEditorLoaded) emit(current.copyWith(isSaving: false));
     }
@@ -102,52 +169,49 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
 
   // ── Generate Image Prompt ─────────────────────────────────────────────────
 
-  /// Calls `/image-prompt` with the asset's name, type, and description.
-  /// Writes the response to the prompt body of `prompt.mdx`.
+  /// Calls POST /image-prompt. The backend writes `prompt_body` to Firestore
+  /// and the real-time listener delivers the updated value — no manual state
+  /// update is needed. [isGeneratingPrompt] is cleared on API completion.
   Future<void> generatePrompt() async {
     final s = state;
-    if (s is! AssetEditorLoaded) return;
+    if (s is! AssetEditorLoaded || s.description.isEmpty) return;
 
-    final key = GenerationJobManager.promptKey(assetDirPath);
-    jobManager.markRunning(key);
-    emit(s.copyWith(
-      isGeneratingPrompt: true,
-      clearPromptError: true,
-    ));
+    emit(s.copyWith(isGeneratingPrompt: true, clearPromptError: true));
 
     try {
-      final promptText = await apiClient.generateImagePrompt(
-        name: s.prompt.name,
-        type: s.prompt.type.value,
-        description: s.prompt.description,
+      await apiClient.generateImagePrompt(
+        projectSlug: projectSlug,
+        assetFirestorePath: assetFirestorePath,
+        name: s.name,
+        type: s.type.value,
+        description: s.description,
       );
-
-      final updatedPrompt = s.prompt.copyWith(promptBody: promptText);
-      await fileService.writeAssetPrompt(assetDirPath, updatedPrompt);
-      jobManager.markDone(key);
-      emit((state as AssetEditorLoaded).copyWith(
-        prompt: updatedPrompt,
-        isGeneratingPrompt: false,
-      ));
+      // Backend wrote prompt_body to Firestore; the listener delivers it.
+      // Just clear the in-progress flag.
+      final current = state;
+      if (current is AssetEditorLoaded) {
+        emit(current.copyWith(isGeneratingPrompt: false));
+      }
     } on ApiInsufficientCredits {
-      jobManager.markFailed(key, 'Insufficient credits');
-      emit((state as AssetEditorLoaded).copyWith(
-        isGeneratingPrompt: false,
-        promptError: '__credits__',
-      ));
+      final current = state;
+      if (current is AssetEditorLoaded) {
+        emit(current.copyWith(
+          isGeneratingPrompt: false,
+          promptError: '__credits__',
+        ));
+      }
     } on ApiError catch (e) {
       final msg = _apiErrorMessage(e);
-      jobManager.markFailed(key, msg);
-      emit((state as AssetEditorLoaded).copyWith(
-        isGeneratingPrompt: false,
-        promptError: msg,
-      ));
+      final current = state;
+      if (current is AssetEditorLoaded) {
+        emit(current.copyWith(isGeneratingPrompt: false, promptError: msg));
+      }
     } catch (e) {
-      jobManager.markFailed(key, e.toString());
-      emit((state as AssetEditorLoaded).copyWith(
-        isGeneratingPrompt: false,
-        promptError: e.toString(),
-      ));
+      final current = state;
+      if (current is AssetEditorLoaded) {
+        emit(current.copyWith(
+            isGeneratingPrompt: false, promptError: e.toString()));
+      }
     }
   }
 
@@ -158,64 +222,104 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
 
   // ── Generate Asset Image ──────────────────────────────────────────────────
 
-  /// Calls `/image` with the prompt body, downloads from the GCS presigned URL,
-  /// and saves `image.png` into the asset directory.
+  /// Calls POST /image to enqueue an async image generation job.
+  ///
+  /// Resolves a conditioning GCS path for variant assets (name starts with
+  /// `@`): reads the referenced asset document once from Firestore to get its
+  /// `gcs_image_path`. Emits [isGeneratingImage] = true; the flag is cleared
+  /// when the Firestore listener fires with a non-null [gcs_image_path].
   Future<void> generateImage() async {
     final s = state;
-    if (s is! AssetEditorLoaded || s.prompt.promptBody.isEmpty) return;
+    if (s is! AssetEditorLoaded || !s.hasPromptBody) return;
+    // Pass-through assets have no independent image; the button is hidden so
+    // this guard is a defensive double-check.
+    if (s.isPassThrough) return;
 
-    final key = GenerationJobManager.imageKey(assetDirPath);
-    jobManager.markRunning(key);
-    emit(s.copyWith(
-      isGeneratingImage: true,
-      clearImageError: true,
-    ));
+    // Resolve conditioning GCS path for variant assets.
+    String? conditioningGcsPath;
+    if (s.name.startsWith('@')) {
+      conditioningGcsPath = await _resolveConditioningGcsPath(s.name);
+    }
+
+    emit(s.copyWith(isGeneratingImage: true, clearImageError: true));
 
     try {
-      // For variant assets, load the conditioning image bytes from the
-      // referenced asset directory and attach them as visual reference inputs.
-      final refImageBytes = <List<int>>[];
-      if (conditioningDirPath != null) {
-        final condFile = File(p.join(conditioningDirPath!, 'image.png'));
-        if (await condFile.exists()) {
-          refImageBytes.add(await condFile.readAsBytes());
-        }
-      }
-
-      final gcsUrl = await apiClient.generateImage(
-        promptBody: s.prompt.promptBody,
-        refImageBytes: refImageBytes,
+      final jobId = await apiClient.generateImage(
+        projectSlug: projectSlug,
+        assetFirestorePath: assetFirestorePath,
+        conditioningGcsPath: conditioningGcsPath,
       );
-      final bytes = await apiClient.downloadBytes(gcsUrl);
-      await fileService.saveImageToAssetDir(assetDirPath, bytes);
-      jobManager.markDone(key);
-      final current = state as AssetEditorLoaded;
-      emit(current.copyWith(
-        hasImage: true,
-        isGeneratingImage: false,
-        // Bump imageVersion so Image.file gets a new key and bypasses the
-        // Flutter file-image cache, showing the freshly written image.
-        imageVersion: current.imageVersion + 1,
+
+      // Register the job so the app can recover state after a restart and
+      // show status in the project browser.
+      await jobRegistryService.register(JobRegistryEntry(
+        jobId: jobId,
+        type: 'image',
+        projectId: projectSlug,
+        status: 'pending',
+        createdAt: DateTime.now(),
+        assetName: s.name,
       ));
+
+      // Store the job_id so the Firestore listener can mark it 'success' when
+      // gcs_image_path appears.
+      _currentImageJobId = jobId;
+
+      // Leave isGeneratingImage = true — the Firestore listener clears it
+      // when gcs_image_path is set by the worker.
     } on ApiInsufficientCredits {
-      jobManager.markFailed(key, 'Insufficient credits');
-      emit((state as AssetEditorLoaded).copyWith(
-        isGeneratingImage: false,
-        imageError: '__credits__',
-      ));
+      final current = state;
+      if (current is AssetEditorLoaded) {
+        emit(current.copyWith(
+          isGeneratingImage: false,
+          imageError: '__credits__',
+        ));
+      }
     } on ApiError catch (e) {
       final msg = _apiErrorMessage(e);
-      jobManager.markFailed(key, msg);
-      emit((state as AssetEditorLoaded).copyWith(
-        isGeneratingImage: false,
-        imageError: msg,
-      ));
+      final current = state;
+      if (current is AssetEditorLoaded) {
+        emit(current.copyWith(isGeneratingImage: false, imageError: msg));
+      }
     } catch (e) {
-      jobManager.markFailed(key, e.toString());
-      emit((state as AssetEditorLoaded).copyWith(
-        isGeneratingImage: false,
-        imageError: e.toString(),
-      ));
+      final current = state;
+      if (current is AssetEditorLoaded) {
+        emit(current.copyWith(
+            isGeneratingImage: false, imageError: e.toString()));
+      }
+    }
+  }
+
+  /// Resolves the GCS image path of the referenced asset for variant assets.
+  ///
+  /// The [name] field uses the format `@/scenes/0/{assetId}` (references a
+  /// global asset) or `@/scenes/N/{assetId}` (references a scene-local asset
+  /// in scene N). Scene number 0 maps to the global `assets/` collection.
+  Future<String?> _resolveConditioningGcsPath(String name) async {
+    try {
+      // Example: "@/scenes/0/hero" or "@/scenes/2/dragon"
+      final parts = name.split('/');
+      // Expected: ['@', 'scenes', '<sceneNum>', '<assetId>']
+      if (parts.length < 4) return null;
+      final sceneNum = int.tryParse(parts[2]);
+      final assetId = parts[3];
+
+      final String refSubPath;
+      if (sceneNum == null || sceneNum == 0) {
+        // Scene 0 → global asset collection
+        refSubPath = 'assets/$assetId';
+      } else {
+        refSubPath = 'scenes/$sceneNum/assets/$assetId';
+      }
+
+      final refPath = 'users/$_uid/projects/$projectSlug/$refSubPath';
+      final refSnap = await FirebaseFirestore.instance.doc(refPath).get();
+      if (!refSnap.exists) return null;
+      return refSnap.data()?['gcs_image_path'] as String?;
+    } catch (_) {
+      // If resolution fails, proceed without conditioning — image is still
+      // generated, just without the reference style input.
+      return null;
     }
   }
 
@@ -224,12 +328,17 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
     if (s is AssetEditorLoaded) emit(s.copyWith(clearImageError: true));
   }
 
+  // ── Lifecycle ──────────────────────────────────────────────────────────────
+
+  @override
+  Future<void> close() async {
+    await _docSub?.cancel();
+    return super.close();
+  }
+
   // ── Utilities ─────────────────────────────────────────────────────────────
 
   /// Extracts a human-readable message from a sealed [ApiError] subtype.
-  ///
-  /// Strips any residual SDK wrapper text (e.g. "Error code: 400 - {...}")
-  /// so only the clean provider message is shown to the user.
   static String _apiErrorMessage(ApiError e) {
     final raw = switch (e) {
       ApiConflict(:final message) => message,
@@ -243,16 +352,13 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
     return _cleanProviderMessage(raw);
   }
 
-  /// Strips SDK error wrappers like "Error code: 400 - {'error': {'message': '...'}}"
-  /// returning just the inner message string.
+  /// Strips SDK error wrappers like "Error code: 400 - {'error': {'message': '...'}}".
   static String _cleanProviderMessage(String raw) {
-    // If the string looks like "Error code: NNN - ..." try to pull out just
-    // the inner "message" value so JSON/dict braces never reach the UI.
     final dashIdx = raw.indexOf(' - ');
     if (dashIdx != -1) {
       final after = raw.substring(dashIdx + 3).trim();
-      // Simple regex extract of "message": "..." or 'message': '...'
-      final match = RegExp(r"""['"]message['"]\s*:\s*['"](.+?)['"]""", dotAll: true)
+      final match = RegExp(r"""['"]message['"]\s*:\s*['"](.+?)['"]""",
+              dotAll: true)
           .firstMatch(after);
       if (match != null) return match.group(1)!;
     }

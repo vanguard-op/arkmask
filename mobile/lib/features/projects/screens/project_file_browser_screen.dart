@@ -113,11 +113,32 @@ class _TreeView extends StatelessWidget {
   final String projectSlug;
   final bool isDark;
 
-  // ── Route helper: Phase 2 screens use projectSlug as the :projectName param.
+  // ── Route helpers ─────────────────────────────────────────────────────────
+  //
+  // The :assetPath param carries a qualified Firestore path segment so the
+  // AssetEditorCubit can construct the full document path without extra state:
+  //   Global asset     → "assets/{assetId}"
+  //   Scene-local      → "scenes/{sceneFirestoreId}/assets/{assetId}"
+  //
+  // AssetEditorCubit prepends "users/{uid}/projects/{slug}/" to obtain the
+  // complete Firestore path.
 
-  String _assetEditorPath(String assetId) => Routes.assetEditor
+  /// Route to a global asset editor (asset in the top-level `assets/` subcollection).
+  String _globalAssetEditorPath(String assetId) => Routes.assetEditor
       .replaceFirst(':projectName', Uri.encodeComponent(projectSlug))
-      .replaceFirst(':assetPath', Uri.encodeComponent(assetId));
+      .replaceFirst(':assetPath', Uri.encodeComponent('assets/$assetId'));
+
+  /// Route to a scene-local asset editor.
+  ///
+  /// [sceneFirestoreId] is the Firestore doc ID of the parent scene (not the
+  /// scene number) so the cubit can resolve the exact subcollection path.
+  String _sceneAssetEditorPath(String sceneFirestoreId, String assetId) =>
+      Routes.assetEditor
+          .replaceFirst(':projectName', Uri.encodeComponent(projectSlug))
+          .replaceFirst(
+            ':assetPath',
+            Uri.encodeComponent('scenes/$sceneFirestoreId/assets/$assetId'),
+          );
 
   String _sceneDetailPath(int sceneNumber) => Routes.sceneDetail
       .replaceFirst(':projectName', Uri.encodeComponent(projectSlug))
@@ -207,7 +228,7 @@ class _TreeView extends StatelessWidget {
             ],
             onTap: () async {
               context.read<FileBrowserCubit>().select(asset.id);
-              await context.push(_assetEditorPath(asset.id));
+              await context.push(_globalAssetEditorPath(asset.id));
               if (context.mounted) {
                 context.read<FileBrowserCubit>().load(projectSlug);
               }
@@ -286,7 +307,9 @@ class _TreeView extends StatelessWidget {
                       ],
                 onTap: () async {
                   context.read<FileBrowserCubit>().select(asset.id);
-                  await context.push(_assetEditorPath(asset.id));
+                  await context.push(
+                    _sceneAssetEditorPath(scene.id, asset.id),
+                  );
                   if (context.mounted) {
                     context.read<FileBrowserCubit>().load(projectSlug);
                   }

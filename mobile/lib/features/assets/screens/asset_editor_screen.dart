@@ -1,69 +1,63 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_flutter/lucide_flutter.dart';
-import 'package:path/path.dart' as p;
 
 import '../../../app.dart';
-import '../../../core/jobs/generation_job_manager.dart';
 import '../../../core/models/models.dart';
 import '../../../core/theme/app_colors.dart';
-import '../../billing/widgets/credits_exhausted_dialog.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../billing/widgets/credits_exhausted_dialog.dart';
+import '../../projects/widgets/generation_step_dots.dart';
 import '../cubit/asset_editor_cubit.dart';
 import '../cubit/asset_editor_state.dart';
 
 /// Asset MDX Editor Screen — FEAT-010, FEAT-011, FEAT-012, FEAT-013.
 ///
-/// Displays a single asset's `prompt.mdx` frontmatter (name, type, description)
-/// and image prompt body as editable fields. Generates image prompts via
-/// `/image-prompt` and reference images via `/image`.
+/// Displays a single asset's Firestore fields (name, type, description,
+/// prompt_body) as editable form fields. Generates image prompts via
+/// POST /image-prompt and reference images via POST /image (async).
+///
+/// [projectSlug] is the immutable project slug from the `:projectName` route
+/// param. [assetPath] is the URL-decoded `:assetPath` route param, e.g.
+/// `"assets/abc123"` or `"scenes/xyz/assets/def456"`.
 class AssetEditorScreen extends StatelessWidget {
   const AssetEditorScreen({
     super.key,
-    required this.projectName,
-    required this.assetDirPath,
-    this.conditioningDirPath,
+    required this.projectSlug,
+    required this.assetPath,
   });
 
-  final String projectName;
-  final String assetDirPath;
+  final String projectSlug;
 
-  /// Path to the referenced asset directory whose `image.png` is used as a
-  /// conditioning input during variant image generation. Null for non-variant
-  /// assets (global assets, pass-throughs, independent scene-local assets).
-  final String? conditioningDirPath;
+  /// URL-decoded Firestore sub-path for the asset document, e.g.
+  /// `"assets/abc123"` or `"scenes/xyz/assets/def456"`.
+  final String assetPath;
 
   @override
   Widget build(BuildContext context) {
     final services = ArkMaskServices.of(context);
     return BlocProvider(
       create: (_) => AssetEditorCubit(
-        assetDirPath: assetDirPath,
-        conditioningDirPath: conditioningDirPath,
-        fileService: services.fileService,
+        projectSlug: projectSlug,
+        assetFirestorePath: assetPath,
         apiClient: services.apiClient,
-        jobManager: services.jobManager,
+        jobRegistryService: services.jobRegistryService,
       )..load(),
-      child: _AssetEditorView(
-        assetDirPath: assetDirPath,
-        jobManager: services.jobManager,
-      ),
+      child: _AssetEditorView(projectSlug: projectSlug, assetPath: assetPath),
     );
   }
 }
 
 class _AssetEditorView extends StatelessWidget {
   const _AssetEditorView({
-    required this.assetDirPath,
-    required this.jobManager,
+    required this.projectSlug,
+    required this.assetPath,
   });
 
-  final String assetDirPath;
-  final GenerationJobManager jobManager;
+  final String projectSlug;
+  final String assetPath;
 
   @override
   Widget build(BuildContext context) {
@@ -76,7 +70,8 @@ class _AssetEditorView extends StatelessWidget {
                 content: Text(state.promptError!),
                 action: SnackBarAction(
                   label: 'Retry',
-                  onPressed: () => context.read<AssetEditorCubit>().generatePrompt(),
+                  onPressed: () =>
+                      context.read<AssetEditorCubit>().generatePrompt(),
                 ),
               ),
             );
@@ -92,7 +87,8 @@ class _AssetEditorView extends StatelessWidget {
                 content: Text(state.imageError!),
                 action: SnackBarAction(
                   label: 'Retry',
-                  onPressed: () => context.read<AssetEditorCubit>().generateImage(),
+                  onPressed: () =>
+                      context.read<AssetEditorCubit>().generateImage(),
                 ),
               ),
             );
@@ -106,22 +102,14 @@ class _AssetEditorView extends StatelessWidget {
       },
       builder: (context, state) {
         return Scaffold(
-          appBar: _AssetAppBar(
-            assetDirPath: assetDirPath,
-            state: state,
-            jobManager: jobManager,
-          ),
+          appBar: _AssetAppBar(state: state),
           body: switch (state) {
             AssetEditorLoading() => const _SkeletonBody(),
             AssetEditorError(:final message) => _ErrorBody(
                 message: message,
                 onRetry: () => context.read<AssetEditorCubit>().load(),
               ),
-            AssetEditorLoaded() => _LoadedBody(
-                state: state,
-                assetDirPath: assetDirPath,
-                jobManager: jobManager,
-              ),
+            AssetEditorLoaded() => _LoadedBody(state: state),
           },
         );
       },
@@ -132,15 +120,9 @@ class _AssetEditorView extends StatelessWidget {
 // ── AppBar ────────────────────────────────────────────────────────────────────
 
 class _AssetAppBar extends StatelessWidget implements PreferredSizeWidget {
-  const _AssetAppBar({
-    required this.assetDirPath,
-    required this.state,
-    required this.jobManager,
-  });
+  const _AssetAppBar({required this.state});
 
-  final String assetDirPath;
   final AssetEditorState state;
-  final GenerationJobManager jobManager;
 
   @override
   Size get preferredSize => const Size.fromHeight(kToolbarHeight);
@@ -148,12 +130,28 @@ class _AssetAppBar extends StatelessWidget implements PreferredSizeWidget {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final assetName = p.basename(assetDirPath);
-    final promptKey = GenerationJobManager.promptKey(assetDirPath);
-    final imageKey = GenerationJobManager.imageKey(assetDirPath);
-
-    // Filesystem-backed baseline: read from loaded state so dots survive restarts.
     final loaded = state is AssetEditorLoaded ? state as AssetEditorLoaded : null;
+
+    // Derive step states directly from Firestore-backed cubit state.
+    final promptStep = loaded == null
+        ? GenerationStepState.pending
+        : loaded.isGeneratingPrompt
+            ? GenerationStepState.running
+            : loaded.promptError != null
+                ? GenerationStepState.failed
+                : loaded.hasPromptBody
+                    ? GenerationStepState.done
+                    : GenerationStepState.pending;
+
+    final imageStep = loaded == null
+        ? GenerationStepState.pending
+        : loaded.isGeneratingImage
+            ? GenerationStepState.running
+            : loaded.imageError != null
+                ? GenerationStepState.failed
+                : loaded.hasImage
+                    ? GenerationStepState.done
+                    : GenerationStepState.pending;
 
     return AppBar(
       leading: IconButton(
@@ -161,7 +159,7 @@ class _AssetAppBar extends StatelessWidget implements PreferredSizeWidget {
         onPressed: () => context.pop(),
       ),
       title: Text(
-        assetName,
+        loaded?.name ?? '',
         style: AppTextStyles.body(context).copyWith(
           fontFamily: 'JetBrains Mono',
           color: isDark ? AppColors.textPrimaryDark : AppColors.textPrimaryLight,
@@ -170,98 +168,8 @@ class _AssetAppBar extends StatelessWidget implements PreferredSizeWidget {
         overflow: TextOverflow.ellipsis,
       ),
       actions: [
-        // Step indicator: 2 dots — Prompt and Image.
-        // The job manager overlays running/failed during active generation;
-        // filesystem state (hasPromptBody / hasImage) is the persistent source
-        // of truth so dots survive app restarts.
-        ListenableBuilder(
-          listenable: jobManager,
-          builder: (_, child) => _StepDotsAppBar(
-            promptState: _resolveState(
-              jobManager.stateFor(promptKey),
-              fallbackDone: loaded?.prompt.promptBody.isNotEmpty ?? false,
-            ),
-            imageState: _resolveState(
-              jobManager.stateFor(imageKey),
-              fallbackDone: loaded?.hasImage ?? false,
-            ),
-          ),
-        ),
+        GenerationStepDots(steps: [promptStep, imageStep]),
         const SizedBox(width: AppSpacing.s3),
-      ],
-    );
-  }
-
-  /// Returns [liveState] when it carries active signal (running/failed).
-  /// Falls back to [done] or [idle] derived from the persisted filesystem flag.
-  static GenerationJobState _resolveState(
-    GenerationJobState liveState, {
-    required bool fallbackDone,
-  }) {
-    if (liveState == GenerationJobState.running ||
-        liveState == GenerationJobState.failed) {
-      return liveState;
-    }
-    return fallbackDone ? GenerationJobState.done : GenerationJobState.idle;
-  }
-}
-
-// ── 2-dot step indicator (AppBar size) ───────────────────────────────────────
-
-class _StepDotsAppBar extends StatelessWidget {
-  const _StepDotsAppBar({
-    required this.promptState,
-    required this.imageState,
-  });
-
-  final GenerationJobState promptState;
-  final GenerationJobState imageState;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _Dot(state: promptState, label: 'Prompt'),
-        const SizedBox(width: AppSpacing.s2),
-        _Dot(state: imageState, label: 'Image'),
-      ],
-    );
-  }
-}
-
-class _Dot extends StatelessWidget {
-  const _Dot({required this.state, required this.label});
-
-  final GenerationJobState state;
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final color = switch (state) {
-      GenerationJobState.idle => isDark ? AppColors.textTertiaryDark : AppColors.textTertiaryLight,
-      GenerationJobState.running => isDark ? AppColors.primaryDark : AppColors.primaryLight,
-      GenerationJobState.done => isDark ? AppColors.successDark : AppColors.successLight,
-      GenerationJobState.failed => isDark ? AppColors.errorDark : AppColors.errorLight,
-    };
-
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          width: 8,
-          height: 8,
-          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-        ),
-        const SizedBox(height: 2),
-        Text(
-          label,
-          style: AppTextStyles.caption(context).copyWith(
-            fontSize: 9,
-            color: color,
-          ),
-        ),
       ],
     );
   }
@@ -270,15 +178,9 @@ class _Dot extends StatelessWidget {
 // ── Loaded body ───────────────────────────────────────────────────────────────
 
 class _LoadedBody extends StatelessWidget {
-  const _LoadedBody({
-    required this.state,
-    required this.assetDirPath,
-    required this.jobManager,
-  });
+  const _LoadedBody({required this.state});
 
   final AssetEditorLoaded state;
-  final String assetDirPath;
-  final GenerationJobManager jobManager;
 
   @override
   Widget build(BuildContext context) {
@@ -298,13 +200,13 @@ class _LoadedBody extends StatelessWidget {
 
               // ── Prompt body section ─────────────────────────────────────
               if (!state.isPassThrough)
-                _PromptBodySection(state: state, assetDirPath: assetDirPath),
+                _PromptBodySection(state: state),
 
               const SizedBox(height: AppSpacing.s4),
 
               // ── Image area ──────────────────────────────────────────────
               if (!state.isPassThrough)
-                _ImageSection(state: state, assetDirPath: assetDirPath),
+                _ImageSection(state: state),
 
               const SizedBox(height: AppSpacing.s8),
             ],
@@ -343,7 +245,9 @@ class _ReferenceIndicatorBanner extends StatelessWidget {
           Icon(
             isPassThrough ? LucideIcons.link : LucideIcons.imageOff,
             size: AppSizing.iconSm,
-            color: isPassThrough ? primaryColor : (isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight),
+            color: isPassThrough
+                ? primaryColor
+                : (isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight),
           ),
           const SizedBox(width: AppSpacing.s2),
           Container(
@@ -389,16 +293,17 @@ class _FrontmatterCardState extends State<_FrontmatterCard> {
   @override
   void initState() {
     super.initState();
-    _descController =
-        TextEditingController(text: widget.state.prompt.description);
+    _descController = TextEditingController(text: widget.state.description);
   }
 
   @override
   void didUpdateWidget(_FrontmatterCard old) {
     super.didUpdateWidget(old);
-    if (old.state.prompt.description != widget.state.prompt.description &&
-        _descController.text != widget.state.prompt.description) {
-      _descController.text = widget.state.prompt.description;
+    // Sync the controller when Firestore delivers an external update and the
+    // field is not currently being edited by the user.
+    if (old.state.description != widget.state.description &&
+        _descController.text != widget.state.description) {
+      _descController.text = widget.state.description;
     }
   }
 
@@ -411,7 +316,8 @@ class _FrontmatterCardState extends State<_FrontmatterCard> {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final dividerColor = isDark ? AppColors.borderSubtleDark : AppColors.borderSubtleLight;
+    final dividerColor =
+        isDark ? AppColors.borderSubtleDark : AppColors.borderSubtleLight;
     final primaryColor = isDark ? AppColors.primaryDark : AppColors.primaryLight;
 
     return Container(
@@ -433,11 +339,11 @@ class _FrontmatterCardState extends State<_FrontmatterCard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // NAME (read-only)
+          // NAME (read-only — set by backend on asset creation)
           _FieldRow(
             label: 'NAME',
             child: Text(
-              widget.state.prompt.name,
+              widget.state.name,
               style: AppTextStyles.body(context),
             ),
           ),
@@ -446,9 +352,10 @@ class _FrontmatterCardState extends State<_FrontmatterCard> {
           _FieldRow(
             label: 'TYPE',
             child: _TypeSelector(
-              selected: widget.state.prompt.type,
+              selected: widget.state.type,
               primaryColor: primaryColor,
-              onChanged: (t) => context.read<AssetEditorCubit>().onTypeChanged(t),
+              onChanged: (t) =>
+                  context.read<AssetEditorCubit>().onTypeChanged(t),
             ),
           ),
           Divider(height: 1, color: dividerColor),
@@ -463,11 +370,12 @@ class _FrontmatterCardState extends State<_FrontmatterCard> {
                 border: InputBorder.none,
                 hintText: 'Describe this asset\'s role and visual style...',
                 hintStyle: AppTextStyles.body(context).copyWith(
-                  color: isDark ? AppColors.textTertiaryDark : AppColors.textTertiaryLight,
+                  color: isDark
+                      ? AppColors.textTertiaryDark
+                      : AppColors.textTertiaryLight,
                 ),
                 contentPadding: EdgeInsets.zero,
               ),
-              onChanged: (_) {}, // track changes on blur only
               onEditingComplete: () {
                 context
                     .read<AssetEditorCubit>()
@@ -501,7 +409,9 @@ class _FieldRow extends StatelessWidget {
           Text(
             label,
             style: AppTextStyles.caption(context).copyWith(
-              color: isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight,
+              color: isDark
+                  ? AppColors.textSecondaryDark
+                  : AppColors.textSecondaryLight,
               letterSpacing: 0.8,
             ),
           ),
@@ -547,7 +457,9 @@ class _TypeSelector extends StatelessWidget {
                 border: Border.all(
                   color: isSelected
                       ? primaryColor
-                      : (isDark ? AppColors.borderDefaultDark : AppColors.borderDefaultLight),
+                      : (isDark
+                          ? AppColors.borderDefaultDark
+                          : AppColors.borderDefaultLight),
                 ),
               ),
               child: Text(
@@ -555,7 +467,9 @@ class _TypeSelector extends StatelessWidget {
                 style: AppTextStyles.bodySmall(context).copyWith(
                   color: isSelected
                       ? primaryColor
-                      : (isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight),
+                      : (isDark
+                          ? AppColors.textSecondaryDark
+                          : AppColors.textSecondaryLight),
                 ),
               ),
             ),
@@ -575,10 +489,9 @@ class _TypeSelector extends StatelessWidget {
 // ── Prompt body section ───────────────────────────────────────────────────────
 
 class _PromptBodySection extends StatefulWidget {
-  const _PromptBodySection({required this.state, required this.assetDirPath});
+  const _PromptBodySection({required this.state});
 
   final AssetEditorLoaded state;
-  final String assetDirPath;
 
   @override
   State<_PromptBodySection> createState() => _PromptBodySectionState();
@@ -590,15 +503,18 @@ class _PromptBodySectionState extends State<_PromptBodySection> {
   @override
   void initState() {
     super.initState();
-    _controller = TextEditingController(text: widget.state.prompt.promptBody);
+    _controller = TextEditingController(text: widget.state.promptBody ?? '');
   }
 
   @override
   void didUpdateWidget(_PromptBodySection old) {
     super.didUpdateWidget(old);
-    if (old.state.prompt.promptBody != widget.state.prompt.promptBody &&
-        _controller.text != widget.state.prompt.promptBody) {
-      _controller.text = widget.state.prompt.promptBody;
+    // Sync when the Firestore listener delivers a new prompt_body (e.g. after
+    // generation completes) and the field is not being actively edited.
+    final newBody = widget.state.promptBody ?? '';
+    final oldBody = old.state.promptBody ?? '';
+    if (oldBody != newBody && _controller.text != newBody) {
+      _controller.text = newBody;
     }
   }
 
@@ -614,8 +530,8 @@ class _PromptBodySectionState extends State<_PromptBodySection> {
     final primaryColor = isDark ? AppColors.primaryDark : AppColors.primaryLight;
     final s = widget.state;
 
-    final hasBody = s.prompt.promptBody.isNotEmpty;
-    final canGenerate = !s.isGeneratingPrompt && s.prompt.description.isNotEmpty;
+    final hasBody = s.hasPromptBody;
+    final canGenerate = !s.isGeneratingPrompt && s.description.isNotEmpty;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: AppSpacing.s4),
@@ -628,7 +544,9 @@ class _PromptBodySectionState extends State<_PromptBodySection> {
               Text(
                 'IMAGE PROMPT',
                 style: AppTextStyles.caption(context).copyWith(
-                  color: isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight,
+                  color: isDark
+                      ? AppColors.textSecondaryDark
+                      : AppColors.textSecondaryLight,
                   letterSpacing: 0.8,
                 ),
               ),
@@ -641,7 +559,8 @@ class _PromptBodySectionState extends State<_PromptBodySection> {
                 primaryColor: primaryColor,
                 onPressed: () async {
                   if (hasBody) {
-                    final confirmed = await _confirmOverwrite(context, 'Replace the existing image prompt?');
+                    final confirmed = await _confirmOverwrite(
+                        context, 'Replace the existing image prompt?');
                     if (!confirmed) return;
                   }
                   if (context.mounted) {
@@ -657,14 +576,18 @@ class _PromptBodySectionState extends State<_PromptBodySection> {
             constraints: const BoxConstraints(minHeight: 120),
             padding: const EdgeInsets.all(AppSpacing.s3),
             decoration: BoxDecoration(
-              color: isDark ? AppColors.surfaceSunkenDark : AppColors.surfaceSunkenLight,
+              color: isDark
+                  ? AppColors.surfaceSunkenDark
+                  : AppColors.surfaceSunkenLight,
               borderRadius: BorderRadius.circular(AppSizing.radiusMd),
             ),
             child: s.isGeneratingPrompt
                 ? Text(
                     'Generating prompt...',
                     style: AppTextStyles.monoBody(context).copyWith(
-                      color: isDark ? AppColors.textTertiaryDark : AppColors.textTertiaryLight,
+                      color: isDark
+                          ? AppColors.textTertiaryDark
+                          : AppColors.textTertiaryLight,
                       fontStyle: FontStyle.italic,
                     ),
                   )
@@ -677,7 +600,9 @@ class _PromptBodySectionState extends State<_PromptBodySection> {
                       hintText:
                           'No image prompt generated yet. Add a description and tap Generate Prompt.',
                       hintStyle: AppTextStyles.monoBody(context).copyWith(
-                        color: isDark ? AppColors.textTertiaryDark : AppColors.textTertiaryLight,
+                        color: isDark
+                            ? AppColors.textTertiaryDark
+                            : AppColors.textTertiaryLight,
                       ),
                       contentPadding: EdgeInsets.zero,
                     ),
@@ -736,7 +661,8 @@ class _GeneratePromptButton extends StatelessWidget {
           ? SizedBox(
               width: 10,
               height: 10,
-              child: CircularProgressIndicator(strokeWidth: 1.5, color: primaryColor),
+              child: CircularProgressIndicator(
+                  strokeWidth: 1.5, color: primaryColor),
             )
           : Icon(LucideIcons.sparkles, size: AppSizing.iconSm, color: primaryColor),
       label: Text(
@@ -744,7 +670,10 @@ class _GeneratePromptButton extends StatelessWidget {
         style: AppTextStyles.bodySmall(context).copyWith(color: primaryColor),
       ),
       style: OutlinedButton.styleFrom(
-        side: BorderSide(color: canGenerate ? primaryColor.withValues(alpha: 0.4) : Colors.transparent),
+        side: BorderSide(
+            color: canGenerate
+                ? primaryColor.withValues(alpha: 0.4)
+                : Colors.transparent),
         minimumSize: const Size(0, AppSizing.buttonSm),
         padding: const EdgeInsets.symmetric(horizontal: AppSpacing.s2),
         shape: RoundedRectangleBorder(
@@ -758,81 +687,80 @@ class _GeneratePromptButton extends StatelessWidget {
 // ── Image section ─────────────────────────────────────────────────────────────
 
 class _ImageSection extends StatelessWidget {
-  const _ImageSection({required this.state, required this.assetDirPath});
+  const _ImageSection({required this.state});
 
   final AssetEditorLoaded state;
-  final String assetDirPath;
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final primaryColor = isDark ? AppColors.primaryDark : AppColors.primaryLight;
-    final imageFile = File(p.join(assetDirPath, 'image.png'));
-    final canGenerate = !state.isGeneratingImage && state.prompt.promptBody.isNotEmpty;
+    final services = ArkMaskServices.of(context);
+    final canGenerate = !state.isGeneratingImage && state.hasPromptBody;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: AppSpacing.s4),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Image preview — tap to view fullscreen.
-          if (state.hasImage && !state.isGeneratingImage)
-            GestureDetector(
-              onTap: () => _openFullscreen(context, imageFile),
-              child: Hero(
-                tag: 'asset-image-${imageFile.path}',
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(AppSizing.radiusMd),
-                  child: Image.file(
-                    imageFile,
-                    // Key tied to imageVersion so Flutter discards the cached
-                    // file image and reloads from disk after regeneration.
-                    key: ValueKey(state.imageVersion),
-                    fit: BoxFit.cover,
-                    height: 240,
-                    width: double.infinity,
-                    errorBuilder: (context, err, stack) => _ImagePlaceholder(isDark: isDark),
-                  ),
-                ),
-              ),
-            )
-          else if (state.isGeneratingImage)
-            Container(
-              height: 120,
-              decoration: BoxDecoration(
-                color: isDark ? AppColors.surfaceSunkenDark : AppColors.surfaceSunkenLight,
-                borderRadius: BorderRadius.circular(AppSizing.radiusMd),
-              ),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  LinearProgressIndicator(
-                    color: primaryColor,
-                    backgroundColor: Colors.transparent,
-                  ),
-                  const SizedBox(height: AppSpacing.s2),
-                  Text(
-                    'Generating image...',
-                    style: AppTextStyles.caption(context).copyWith(
-                      color: isDark ? AppColors.textTertiaryDark : AppColors.textTertiaryLight,
+          // Image preview or placeholder.
+          if (state.isGeneratingImage)
+            _GeneratingImagePlaceholder(
+                isDark: isDark, primaryColor: primaryColor)
+          else if (state.hasImage)
+            // Fetch a fresh presigned URL each time gcsImagePath changes.
+            // ValueKey forces a new FutureBuilder when the GCS path changes
+            // (new image generated), bypassing Flutter's widget diffing cache.
+            FutureBuilder<String>(
+              key: ValueKey(state.gcsImagePath),
+              future: services.apiClient
+                  .getPresignedUrl(gcsPath: state.gcsImagePath!),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return _ImageLoadingPlaceholder(isDark: isDark);
+                }
+                if (snapshot.hasError || !snapshot.hasData) {
+                  return _ImagePlaceholder(isDark: isDark);
+                }
+                final url = snapshot.data!;
+                return GestureDetector(
+                  onTap: () => _openFullscreen(context, url,
+                      heroTag: 'asset-image-${state.gcsImagePath}'),
+                  child: Hero(
+                    tag: 'asset-image-${state.gcsImagePath}',
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(AppSizing.radiusMd),
+                      child: Image.network(
+                        url,
+                        fit: BoxFit.cover,
+                        height: 240,
+                        width: double.infinity,
+                        errorBuilder: (ctx, err, stack) =>
+                            _ImagePlaceholder(isDark: isDark),
+                        loadingBuilder: (_, child, progress) {
+                          if (progress == null) return child;
+                          return _ImageLoadingPlaceholder(isDark: isDark);
+                        },
+                      ),
                     ),
                   ),
-                ],
-              ),
+                );
+              },
             )
           else
             _ImagePlaceholder(isDark: isDark),
 
           const SizedBox(height: AppSpacing.s3),
 
-          // Generate Image button
+          // Generate / Regenerate Image button
           OutlinedButton.icon(
             onPressed: canGenerate
                 ? () async {
                     if (state.hasImage) {
                       final confirmed = await _confirmOverwrite(
                         context,
-                        'Replace the existing reference image? This will use ${CreditCost.imageGeneration} credits.',
+                        'Replace the existing reference image? This will use '
+                        '${CreditCost.imageGeneration} credits.',
                       );
                       if (!confirmed) return;
                     }
@@ -841,14 +769,17 @@ class _ImageSection extends StatelessWidget {
                     }
                   }
                 : null,
-            icon: Icon(LucideIcons.image, size: AppSizing.iconSm, color: primaryColor),
+            icon: Icon(LucideIcons.image,
+                size: AppSizing.iconSm, color: primaryColor),
             label: Text(
               state.hasImage ? 'Regenerate Image' : 'Generate Image',
               style: AppTextStyles.body(context).copyWith(color: primaryColor),
             ),
             style: OutlinedButton.styleFrom(
               side: BorderSide(
-                color: canGenerate ? primaryColor.withValues(alpha: 0.4) : Colors.transparent,
+                color: canGenerate
+                    ? primaryColor.withValues(alpha: 0.4)
+                    : Colors.transparent,
               ),
               minimumSize: const Size.fromHeight(AppSizing.buttonMd),
               shape: RoundedRectangleBorder(
@@ -857,14 +788,16 @@ class _ImageSection extends StatelessWidget {
             ),
           ),
 
-          // Disabled tooltip helper text
-          if (state.prompt.promptBody.isEmpty)
+          // Helper text when prompt body is absent
+          if (!state.hasPromptBody)
             Padding(
               padding: const EdgeInsets.only(top: AppSpacing.s1),
               child: Text(
                 'Generate a prompt first to enable image generation.',
                 style: AppTextStyles.caption(context).copyWith(
-                  color: isDark ? AppColors.textTertiaryDark : AppColors.textTertiaryLight,
+                  color: isDark
+                      ? AppColors.textTertiaryDark
+                      : AppColors.textTertiaryLight,
                 ),
                 textAlign: TextAlign.center,
               ),
@@ -875,8 +808,8 @@ class _ImageSection extends StatelessWidget {
   }
 
   /// Opens the generated image fullscreen with a hero animation.
-  /// Pinch-to-zoom and pan are supported via [InteractiveViewer].
-  void _openFullscreen(BuildContext context, File imageFile) {
+  void _openFullscreen(BuildContext context, String url,
+      {required String heroTag}) {
     Navigator.of(context).push(
       PageRouteBuilder<void>(
         opaque: false,
@@ -884,7 +817,7 @@ class _ImageSection extends StatelessWidget {
         barrierDismissible: true,
         pageBuilder: (context, animation, _) => FadeTransition(
           opacity: animation,
-          child: _FullscreenImageViewer(imageFile: imageFile),
+          child: _FullscreenImageViewer(url: url, heroTag: heroTag),
         ),
       ),
     );
@@ -915,32 +848,34 @@ class _ImageSection extends StatelessWidget {
 // ── Fullscreen image viewer ───────────────────────────────────────────────────
 
 class _FullscreenImageViewer extends StatelessWidget {
-  const _FullscreenImageViewer({required this.imageFile});
+  const _FullscreenImageViewer({
+    required this.url,
+    required this.heroTag,
+  });
 
-  final File imageFile;
+  final String url;
+  final String heroTag;
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.transparent,
-      // Close on tap outside the image (the AppBar close button also works).
       body: GestureDetector(
         onTap: () => Navigator.of(context).pop(),
         behavior: HitTestBehavior.opaque,
         child: Stack(
           fit: StackFit.expand,
           children: [
-            // Pinch-to-zoom + pan via InteractiveViewer.
             InteractiveViewer(
               minScale: 0.5,
               maxScale: 6.0,
               child: Center(
                 child: Hero(
-                  tag: 'asset-image-${imageFile.path}',
-                  child: Image.file(
-                    imageFile,
+                  tag: heroTag,
+                  child: Image.network(
+                    url,
                     fit: BoxFit.contain,
-                    errorBuilder: (_, __, ___) => const Icon(
+                    errorBuilder: (ctx, err, stack) => const Icon(
                       Icons.broken_image_outlined,
                       color: Colors.white54,
                       size: 64,
@@ -949,13 +884,11 @@ class _FullscreenImageViewer extends StatelessWidget {
                 ),
               ),
             ),
-
             // Close button top-right.
             Positioned(
               top: MediaQuery.of(context).padding.top + 8,
               right: 12,
               child: GestureDetector(
-                // Stop the tap bubbling up to the background dismissal detector.
                 onTap: () => Navigator.of(context).pop(),
                 child: Container(
                   decoration: BoxDecoration(
@@ -974,6 +907,63 @@ class _FullscreenImageViewer extends StatelessWidget {
   }
 }
 
+// ── Image placeholder widgets ─────────────────────────────────────────────────
+
+class _GeneratingImagePlaceholder extends StatelessWidget {
+  const _GeneratingImagePlaceholder({
+    required this.isDark,
+    required this.primaryColor,
+  });
+
+  final bool isDark;
+  final Color primaryColor;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 120,
+      decoration: BoxDecoration(
+        color: isDark ? AppColors.surfaceSunkenDark : AppColors.surfaceSunkenLight,
+        borderRadius: BorderRadius.circular(AppSizing.radiusMd),
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          LinearProgressIndicator(
+            color: primaryColor,
+            backgroundColor: Colors.transparent,
+          ),
+          const SizedBox(height: AppSpacing.s2),
+          Text(
+            'Generating image...',
+            style: AppTextStyles.caption(context).copyWith(
+              color: isDark ? AppColors.textTertiaryDark : AppColors.textTertiaryLight,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ImageLoadingPlaceholder extends StatelessWidget {
+  const _ImageLoadingPlaceholder({required this.isDark});
+
+  final bool isDark;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 120,
+      decoration: BoxDecoration(
+        color: isDark ? AppColors.surfaceSunkenDark : AppColors.surfaceSunkenLight,
+        borderRadius: BorderRadius.circular(AppSizing.radiusMd),
+      ),
+      child: const Center(child: CircularProgressIndicator()),
+    );
+  }
+}
+
 class _ImagePlaceholder extends StatelessWidget {
   const _ImagePlaceholder({required this.isDark});
 
@@ -986,7 +976,6 @@ class _ImagePlaceholder extends StatelessWidget {
       decoration: BoxDecoration(
         border: Border.all(
           color: isDark ? AppColors.borderDefaultDark : AppColors.borderDefaultLight,
-          style: BorderStyle.solid,
         ),
         borderRadius: BorderRadius.circular(AppSizing.radiusMd),
       ),

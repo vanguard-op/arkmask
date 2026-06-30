@@ -122,21 +122,18 @@ GoRouter buildRouter({
       GoRoute(
         path: Routes.assetEditor,
         builder: (context, state) {
-          final projectName = Uri.decodeComponent(
+          // :projectName holds the project slug; :assetPath holds the qualified
+          // Firestore path segment (e.g. "assets/abc123" or
+          // "scenes/xyz/assets/def456"), URL-encoded by the file browser.
+          final projectSlug = Uri.decodeComponent(
             state.pathParameters['projectName'] ?? '',
           );
-          final assetDirPath = Uri.decodeComponent(
+          final assetPath = Uri.decodeComponent(
             state.pathParameters['assetPath'] ?? '',
           );
-          final rawConditioning = state.uri.queryParameters['conditioningPath'];
-          final conditioningDirPath =
-              rawConditioning != null && rawConditioning.isNotEmpty
-                  ? Uri.decodeComponent(rawConditioning)
-                  : null;
           return AssetEditorScreen(
-            projectName: projectName,
-            assetDirPath: assetDirPath,
-            conditioningDirPath: conditioningDirPath,
+            projectSlug: projectSlug,
+            assetPath: assetPath,
           );
         },
       ),

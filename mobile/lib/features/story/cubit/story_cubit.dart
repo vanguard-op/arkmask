@@ -1,58 +1,93 @@
 import 'dart:async';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../core/api/api_error.dart';
 import '../../../core/api/ark_mask_api_client.dart';
-import '../../../core/filesystem/project_file_service.dart';
 import '../../../core/models/models.dart';
 import 'story_state.dart';
 
 /// Cubit for the Story Editor Screen (FEAT-008, FEAT-009).
 ///
 /// Responsibilities:
-/// - Load `story.mdx`, parse `# N` headings into [StoryScene] blocks.
+/// - Subscribe to the Firestore project document and parse `story_content`
+///   (a `# N` headed MDX string) into [StoryScene] blocks.
 /// - Track per-scene body edits and auto-save on a debounce timer.
-/// - Trigger `/assets` extraction and delegate directory creation to
-///   [ProjectFileService].
+/// - Trigger `/assets` extraction and write asset documents to Firestore.
 class StoryCubit extends Cubit<StoryState> {
   StoryCubit({
-    required this.projectName,
-    required this.fileService,
+    required this.projectSlug,
     required this.apiClient,
   }) : super(const StoryLoading());
 
-  final String projectName;
-  final ProjectFileService fileService;
+  final String projectSlug;
   final ArkMaskApiClient apiClient;
 
   Timer? _saveTimer;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _docSub;
+
+  /// True while the user has uncommitted edits that should not be clobbered
+  /// by incoming Firestore snapshots.
+  bool _isEditing = false;
+
+  // ── Firestore helpers ────────────────────────────────────────────────────────
+
+  String? get _uid => FirebaseAuth.instance.currentUser?.uid;
+
+  DocumentReference<Map<String, dynamic>> get _projectDoc =>
+      FirebaseFirestore.instance
+          .collection('users')
+          .doc(_uid)
+          .collection('projects')
+          .doc(projectSlug);
+
+  CollectionReference<Map<String, dynamic>> get _globalAssetsCol =>
+      _projectDoc.collection('assets');
 
   // ── Load ──────────────────────────────────────────────────────────────────
 
-  /// Reads `story.mdx` from device and emits [StoryLoaded] with parsed scenes.
-  Future<void> load() async {
+  /// Subscribes to the Firestore project document and emits [StoryLoaded] on
+  /// the first snapshot. Subsequent snapshots only update state when the user
+  /// is NOT mid-edit (to avoid clobbering in-flight changes).
+  void load() {
+    _docSub?.cancel();
     emit(const StoryLoading());
-    try {
-      final raw = await fileService.readStory(projectName);
-      emit(StoryLoaded(scenes: _parseScenes(raw)));
-    } catch (e) {
-      emit(StoryError(message: e.toString()));
-    }
+
+    _docSub = _projectDoc.snapshots().listen(
+      (snap) {
+        final raw = snap.data()?['story_content'] as String? ?? '';
+        final scenes = _parseScenes(raw);
+
+        if (state is StoryLoading) {
+          // First snapshot — always emit loaded state.
+          emit(StoryLoaded(scenes: scenes));
+        } else if (!_isEditing) {
+          // Subsequent remote update while the user is not typing.
+          final current = state;
+          if (current is StoryLoaded) {
+            emit(current.copyWith(scenes: scenes));
+          }
+        }
+        // If _isEditing is true we intentionally drop the remote snapshot so
+        // the user's in-progress text is not replaced by the last-saved version.
+      },
+      onError: (Object e) => emit(StoryError(message: e.toString())),
+    );
   }
 
   // ── Scene edits ───────────────────────────────────────────────────────────
 
-  /// Called when the body of scene [sceneNumber] changes in the editor.
+  /// Called on the first keystroke and on every subsequent character change.
   ///
-  /// Updates the in-memory state immediately and schedules a debounced save
-  /// (1.5 s idle time triggers a write to `story.mdx`).
-  ///
-  /// If the scene doesn't exist yet (e.g. typing into the empty-state
-  /// placeholder for scene 1), it is appended and then sorted.
+  /// Sets [_isEditing] = true so remote snapshots do not overwrite the user's
+  /// work until auto-save completes.
   void onSceneBodyChanged(int sceneNumber, String body) {
     final current = state;
     if (current is! StoryLoaded) return;
+
+    _isEditing = true;
 
     final List<StoryScene> updated;
     if (current.scenes.any((s) => s.number == sceneNumber)) {
@@ -127,7 +162,7 @@ class StoryCubit extends Cubit<StoryState> {
     _saveTimer = Timer(const Duration(milliseconds: 1500), _save);
   }
 
-  /// Saves immediately (e.g. on back gesture before pop).
+  /// Cancels the debounce timer and saves immediately (called on back gesture).
   Future<void> saveNow() async {
     _saveTimer?.cancel();
     await _save();
@@ -136,15 +171,26 @@ class StoryCubit extends Cubit<StoryState> {
   Future<void> _save() async {
     final current = state;
     if (current is! StoryLoaded) return;
-    // Capture scenes NOW before emitting isSaving (which triggers a rebuild).
+
+    // Capture scenes before the isSaving emit so the serialized content
+    // matches exactly what is displayed in the editor at this moment.
     final scenesToWrite = List<StoryScene>.from(current.scenes);
     emit(current.copyWith(isSaving: true));
+
     try {
-      await fileService.writeStory(projectName, _serializeScenes(scenesToWrite));
+      await _projectDoc.update({
+        'story_content': _serializeScenes(scenesToWrite),
+        'updated_at': FieldValue.serverTimestamp(),
+      });
+
+      // Clear editing flag after a successful save so subsequent Firestore
+      // snapshots are no longer suppressed.
+      _isEditing = false;
+
       emit((state as StoryLoaded).copyWith(isSaving: false, savedRecently: true));
-      // Auto-clear "Saved ✓" indicator after 2 s.
-      // Guard isClosed: the user may navigate away before the timer fires,
-      // which closes the cubit. Emitting on a closed cubit throws a Bad State.
+
+      // Auto-clear "Saved ✓" indicator after 2 s. Guard isClosed in case the
+      // user navigates away before the timer fires.
       Timer(const Duration(seconds: 2), () {
         if (isClosed) return;
         final s = state;
@@ -159,39 +205,51 @@ class StoryCubit extends Cubit<StoryState> {
 
   // ── Asset extraction ──────────────────────────────────────────────────────
 
-  /// Sends the story content to `/assets` and creates directories on device.
+  /// Sends the story content to `/assets` and writes asset documents to
+  /// Firestore.
   ///
-  /// If assets already exist, the caller is expected to show a confirmation
-  /// dialog before calling this method (the cubit does not check — it always
-  /// proceeds).
-  Future<void> extractAssets() async {
+  /// Pass [force] = true to skip the existing-assets guard (the screen shows
+  /// a confirmation dialog when `state.hasExistingAssets == true` and calls
+  /// this method with `force: true` on user confirmation).
+  Future<void> extractAssets({bool force = false}) async {
     final current = state;
     if (current is! StoryLoaded) return;
+
     if (current.sceneCount == 0) {
       emit(current.copyWith(
           extractError: 'Write at least one scene before extracting assets.'));
       return;
     }
 
-    // Save first so the API receives the latest content.
+    if (!force) {
+      // Check whether any asset documents already exist in Firestore.
+      final existing = await _globalAssetsCol.limit(1).get();
+      if (existing.docs.isNotEmpty) {
+        // Signal the screen to show a confirmation dialog.
+        emit(current.copyWith(hasExistingAssets: true));
+        return;
+      }
+    }
+
+    // Flush any pending debounce before sending content to the API.
     _saveTimer?.cancel();
     await _save();
 
     final s = state;
     if (s is! StoryLoaded) return;
-    emit(s.copyWith(isExtracting: true, clearExtractError: true));
+    emit(s.copyWith(isExtracting: true, clearExtractError: true, hasExistingAssets: false));
 
     try {
       final storyContent = _serializeScenes(s.scenes);
-      final assets = await apiClient.extractAssets(storyContent: storyContent);
-      final extractedList = (assets['assets'] as List<dynamic>)
+      final response = await apiClient.extractAssets(
+        projectSlug: projectSlug,
+        storyContent: storyContent,
+      );
+      final extractedList = (response['assets'] as List<dynamic>)
           .map((e) => ExtractedAsset.fromJson(e as Map<String, dynamic>))
           .toList();
 
-      await fileService.createAssetDirectories(
-        projectName: projectName,
-        assets: extractedList,
-      );
+      await _writeAssetDocuments(extractedList);
 
       emit((state as StoryLoaded).copyWith(isExtracting: false));
     } on ApiInsufficientCredits {
@@ -206,12 +264,75 @@ class StoryCubit extends Cubit<StoryState> {
     }
   }
 
+  /// Writes [assets] to Firestore.
+  ///
+  /// Global assets (sceneNumber == 0) go to the project-level `assets`
+  /// subcollection. Scene-local assets go under
+  /// `scenes/{sceneNumber}/assets/{slug}`. Scene documents are created with
+  /// merge semantics so existing scene data (storyboard, video path) is not
+  /// overwritten.
+  Future<void> _writeAssetDocuments(List<ExtractedAsset> assets) async {
+    final batch = FirebaseFirestore.instance.batch();
+    final now = FieldValue.serverTimestamp();
+
+    // Track which scene numbers need a parent scene document.
+    final sceneNumbers = <int>{};
+
+    for (final asset in assets) {
+      final slug = _slugify(asset.name);
+      final data = <String, dynamic>{
+        'name': asset.name,
+        'type': asset.type.value,
+        'description': asset.description,
+        'prompt_body': null,
+        'gcs_image_path': null,
+        'created_at': now,
+        'scene_number': asset.sceneNumber,
+      };
+
+      if (asset.isGlobal) {
+        batch.set(_globalAssetsCol.doc(slug), data);
+      } else {
+        sceneNumbers.add(asset.sceneNumber);
+        final assetRef = _projectDoc
+            .collection('scenes')
+            .doc('${asset.sceneNumber}')
+            .collection('assets')
+            .doc(slug);
+        batch.set(assetRef, data);
+      }
+    }
+
+    // Ensure parent scene documents exist without overwriting existing content.
+    for (final n in sceneNumbers) {
+      final sceneRef = _projectDoc.collection('scenes').doc('$n');
+      batch.set(
+        sceneRef,
+        {'scene_number': n, 'created_at': now},
+        SetOptions(merge: true),
+      );
+    }
+
+    await batch.commit();
+  }
+
   void clearExtractError() {
     final s = state;
     if (s is StoryLoaded) emit(s.copyWith(clearExtractError: true));
   }
 
   // ── Utilities ─────────────────────────────────────────────────────────────
+
+  /// Converts an asset name to a URL-safe lowercase slug.
+  ///
+  /// E.g. "Forest Background" → "forest-background".
+  static String _slugify(String name) {
+    return name
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9\s-]'), '')
+        .trim()
+        .replaceAll(RegExp(r'\s+'), '-');
+  }
 
   static String _apiErrorMessage(ApiError e) => switch (e) {
         ApiConflict(:final message) => message,
@@ -234,7 +355,7 @@ class StoryCubit extends Cubit<StoryState> {
     final matches = headingPattern.allMatches(raw).toList();
 
     if (matches.isEmpty) {
-      // No headings: treat the whole file as scene 1.
+      // No headings: treat the whole content as scene 1.
       return [StoryScene(number: 1, body: raw.trim())];
     }
 
@@ -263,6 +384,7 @@ class StoryCubit extends Cubit<StoryState> {
   @override
   Future<void> close() {
     _saveTimer?.cancel();
+    _docSub?.cancel();
     return super.close();
   }
 }
