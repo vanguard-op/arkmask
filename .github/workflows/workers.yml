@@ -1,0 +1,116 @@
+name: Deploy — Workers
+
+# Builds the workers Docker image (Cloud Tasks handlers: image / video / merge)
+# and deploys to Cloud Run. Workers are NOT publicly accessible — invoked via
+# Cloud Tasks using OIDC.
+#
+# NOTE: Expects a workers/Dockerfile at the repo root.
+# Until the workers/ directory exists this workflow is skipped (path filter below).
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'workers/**'
+      - '.github/workflows/workers.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  IMAGE_BASE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/arkmask/workers
+
+jobs:
+  build:
+    name: Build & Push Workers Image
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP via WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_WIF_SA_EMAIL }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Docker metadata
+        id: meta
+        run: |
+          SHA="${{ github.sha }}"
+          SHORT_SHA="${SHA:0:7}"
+          IMAGE="${{ env.IMAGE_BASE }}:${SHORT_SHA}"
+          echo "image=${IMAGE}" >> $GITHUB_OUTPUT
+
+      - name: Build and push workers image
+        uses: docker/build-push-action@v6
+        with:
+          context: workers
+          file: workers/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}
+            ${{ env.IMAGE_BASE }}:latest
+          # Workers image includes FFmpeg — layer caching keeps build times reasonable.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-staging:
+    name: Deploy Workers to Staging
+    runs-on: ubuntu-latest
+    needs: build
+    environment: staging
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP via WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_WIF_SA_EMAIL }}
+
+      - name: Setup gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy workers to Cloud Run (staging)
+        run: |
+          gcloud run deploy staging-arkmask-workers \
+            --image="${{ needs.build.outputs.image }}" \
+            --region="${{ vars.GCP_REGION }}" \
+            --project="${{ secrets.GCP_PROJECT_ID }}" \
+            --quiet
+
+  deploy-prod:
+    name: Deploy Workers to Prod
+    runs-on: ubuntu-latest
+    needs: [build, deploy-staging]
+    environment: prod
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP via WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_WIF_SA_EMAIL }}
+
+      - name: Setup gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy workers to Cloud Run (prod)
+        run: |
+          gcloud run deploy prod-arkmask-workers \
+            --image="${{ needs.build.outputs.image }}" \
+            --region="${{ vars.GCP_REGION }}" \
+            --project="${{ secrets.GCP_PROJECT_ID }}" \
+            --quiet

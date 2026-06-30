@@ -1,0 +1,29 @@
+rules_version = '2';
+
+// ArkMask Firestore security rules.
+//
+// Users can only read/write their own project subtree.
+// The backend uses Firebase Admin SDK (bypasses these rules) for all server-side writes.
+//
+// Deploy: firebase deploy --only firestore:rules
+//         (run from the project root with firebase.json pointing here)
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // All project content is isolated under the authenticated user's UID.
+    // This single rule covers the entire subtree:
+    //   users/{uid}/projects/{projectSlug}
+    //   users/{uid}/projects/{projectSlug}/assets/{assetSlug}
+    //   users/{uid}/projects/{projectSlug}/scenes/{n}
+    //   users/{uid}/projects/{projectSlug}/scenes/{n}/assets/{assetSlug}
+    match /users/{uid}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // Deny all other paths by default (Firestore denies by default, but explicit is clearer).
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
