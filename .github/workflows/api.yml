@@ -50,12 +50,10 @@ jobs:
           service_account: ${{ secrets.GCP_WIF_SA_EMAIL }}
           token_format: access_token
 
-      - name: Debug — docker config and token principal
+      - name: Debug — test token against Artifact Registry API
         run: |
-          echo "=== docker config ==="
-          cat ~/.docker/config.json || echo "no config"
-          echo "=== token principal ==="
-          curl -s "https://oauth2.googleapis.com/tokeninfo?access_token=${{ steps.auth.outputs.access_token }}"
+          curl -s -H "Authorization: Bearer ${{ steps.auth.outputs.access_token }}" \
+            "https://artifactregistry.googleapis.com/v1/projects/arkmask/locations/europe-west1/repositories/arkmask"
 
       - name: Login to Artifact Registry
         uses: docker/login-action@v4
