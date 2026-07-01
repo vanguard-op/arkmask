@@ -38,7 +38,7 @@ jobs:
   prod-plan:
     name: Prod — Plan
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    # if: github.event_name == 'pull_request'
     defaults:
       run:
         working-directory: infra/terraform/envs/prod
@@ -90,7 +90,7 @@ jobs:
   prod-apply:
     name: Prod — Apply
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment: prod
     defaults:
       run:
@@ -122,10 +122,10 @@ jobs:
   firebase-rules:
     name: Deploy Firestore Rules
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/main' &&
-      contains(github.event.head_commit.modified, 'infra/firebase/')
+    # if: |
+    #   github.event_name == 'push' &&
+    #   github.ref == 'refs/heads/main' &&
+    #   contains(github.event.head_commit.modified, 'infra/firebase/')
     needs: prod-apply
 
     steps:
