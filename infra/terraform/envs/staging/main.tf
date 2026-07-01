@@ -128,6 +128,13 @@ module "api" {
       version = "latest"
     }
   }
+
+  # Explicit dependency: Cloud Run needs the api SA's secretAccessor grant
+  # (module.iam.api_secretmanager) to exist and propagate before the revision
+  # starts. The implicit dependency via service_account_email only tracks the
+  # SA resource itself, not its IAM bindings, so without this Cloud Run can
+  # race ahead and fail with "Permission denied on secret".
+  depends_on = [module.iam]
 }
 
 # ── Cloud Run — Workers ───────────────────────────────────────────────────────
@@ -168,6 +175,10 @@ module "workers" {
       version = "latest"
     }
   }
+
+  # See note on module.api above — same IAM propagation race applies here,
+  # and this is precisely the module whose secret access denial we hit.
+  depends_on = [module.iam]
 }
 
 # ── Outputs ───────────────────────────────────────────────────────────────────

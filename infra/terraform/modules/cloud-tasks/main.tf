@@ -9,7 +9,10 @@
 # configured in the API code when tasks are enqueued (not here).
 
 resource "google_cloud_tasks_queue" "image" {
-  name     = "${var.env}-arkmask-img-q"
+  # Note: suffixed "-v2" because the original "-img-q" name was deleted during
+  # earlier setup and GCP enforces a cooldown period before a queue name can
+  # be reused, even after it no longer appears in listings.
+  name     = "${var.env}-arkmask-img-q-v2"
   location = var.region
   project  = var.project_id
 
@@ -27,7 +30,8 @@ resource "google_cloud_tasks_queue" "image" {
 }
 
 resource "google_cloud_tasks_queue" "video" {
-  name     = "${var.env}-arkmask-vid-q"
+  # See "-v2" note on the image queue above — same cooldown issue applies.
+  name     = "${var.env}-arkmask-vid-q-v2"
   location = var.region
   project  = var.project_id
 
@@ -47,7 +51,8 @@ resource "google_cloud_tasks_queue" "video" {
 }
 
 resource "google_cloud_tasks_queue" "merge" {
-  name     = "${var.env}-arkmask-mrg-q"
+  # See "-v2" note on the image queue above — same cooldown issue applies.
+  name     = "${var.env}-arkmask-mrg-q-v2"
   location = var.region
   project  = var.project_id
 
