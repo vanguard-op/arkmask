@@ -29,6 +29,7 @@ on:
 permissions:
   contents: read
   pull-requests: write  # Required to post plan output as a PR comment
+  id-token: write  # Required for Workload Identity Federation auth to GCP
 
 env:
   TF_VERSION: '1.9.8'

@@ -30,6 +30,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write  # Required for Workload Identity Federation auth to GCP
 
 env:
   IMAGE_BASE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/arkmask/api
