@@ -64,7 +64,7 @@ jobs:
         run: terraform plan -no-color -out=tfplan
         env:
           TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
-          TF_VAR_github_repo: ${{ vars.GITHUB_REPO }}
+          TF_VAR_github_repo: ${{ vars.GCP_GITHUB_REPO }}
 
       # Post plan output as a PR comment for review.
       - name: Post plan to PR
@@ -115,7 +115,7 @@ jobs:
         run: terraform apply -auto-approve
         env:
           TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
-          TF_VAR_github_repo: ${{ vars.GITHUB_REPO }}
+          TF_VAR_github_repo: ${{ vars.GCP_GITHUB_REPO }}
 
   # ── Firebase rules deploy ──────────────────────────────────────────────────
   firebase-rules:

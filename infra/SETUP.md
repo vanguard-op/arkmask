@@ -186,7 +186,7 @@ In GitHub → **Settings → Secrets and variables → Actions**:
 | Variable | Value |
 |---|---|
 | `GCP_REGION` | `europe-west1` |
-| `GITHUB_REPO` | `owner/arkmask` (e.g. `khidirahmad05/arkmask`) |
+| `GCP_GITHUB_REPO` | `owner/arkmask` (e.g. `khidirahmad05/arkmask`) |
 
 > No `TF_VAR_DB_PASSWORD` — there is no database password. Firestore is the sole data store
 > and is accessed via the service account's IAM binding, not a connection string.
