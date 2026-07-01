@@ -8,6 +8,10 @@ name: Deploy — API
 # for prod. Steps: add deploy-staging job, set deploy-prod.needs to
 # [build, deploy-staging], and gate deploy-prod with environment: prod
 # (Required reviewers in GitHub Environments settings).
+#
+# TODO: Migrate back to Workload Identity Federation once WIF token issues
+# are resolved. Replace credentials_json with workload_identity_provider +
+# service_account + token_format: access_token in google-github-actions/auth.
 
 on:
   push:
@@ -27,7 +31,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 env:
   IMAGE_BASE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/arkmask/api
@@ -42,37 +45,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Authenticate to GCP via WIF
-        id: auth
+      - name: Authenticate to GCP
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_WIF_SA_EMAIL }}
-          token_format: access_token
-
-      - name: Debug — test token against Artifact Registry API
-        run: |
-          curl -s -H "Authorization: Bearer ${{ steps.auth.outputs.access_token }}" \
-            "https://artifactregistry.googleapis.com/v1/projects/arkmask/locations/europe-west1/repositories/arkmask"
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
 
       - name: Login to Artifact Registry
         uses: docker/login-action@v4
         with:
           registry: ${{ vars.GCP_REGION }}-docker.pkg.dev
-          username: oauth2accesstoken
-          password: ${{ steps.auth.outputs.access_token }}
+          username: _json_key
+          password: ${{ secrets.GCP_CREDENTIALS }}
 
       - name: Build and push Docker image
+        id: meta
         run: |
           SHORT_SHA="${GITHUB_SHA:0:7}"
           IMAGE="${{ env.IMAGE_BASE }}:${SHORT_SHA}"
-          echo "image=${IMAGE}" >> $GITHUB_OUTPUT
           docker build -t "${IMAGE}" -t "${{ env.IMAGE_BASE }}:latest" \
             -f backend/Dockerfile backend/
           docker push "${IMAGE}"
           docker push "${{ env.IMAGE_BASE }}:latest"
           echo "image=${IMAGE}" >> $GITHUB_OUTPUT
-        id: meta
 
   deploy-prod:
     name: Deploy to Prod
@@ -83,11 +77,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Authenticate to GCP via WIF
+      - name: Authenticate to GCP
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_WIF_SA_EMAIL }}
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
 
       - name: Setup gcloud CLI
         uses: google-github-actions/setup-gcloud@v2
