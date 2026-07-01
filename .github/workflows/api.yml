@@ -1,8 +1,13 @@
 name: Deploy — API
 
 # Builds the backend Docker image and deploys to Cloud Run.
-# Staging deploys automatically on merge to main.
-# Prod deploys after staging succeeds and a manual approval is granted.
+# Prod deploys automatically on merge to main (single active environment).
+#
+# TODO: When a separate staging environment is stood up, reinstate the
+# two-stage flow: auto-deploy staging first, then require manual approval
+# for prod. Steps: add deploy-staging job, set deploy-prod.needs to
+# [build, deploy-staging], and gate deploy-prod with environment: prod
+# (Required reviewers in GitHub Environments settings).
 
 on:
   push:
@@ -16,9 +21,9 @@ on:
       environment:
         description: 'Deploy to which environment?'
         required: true
-        default: 'staging'
+        default: 'prod'
         type: choice
-        options: [staging, prod]
+        options: [prod]
 
 permissions:
   contents: read
@@ -67,46 +72,10 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  deploy-staging:
-    name: Deploy to Staging
-    runs-on: ubuntu-latest
-    needs: build
-    environment: staging
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Authenticate to GCP via WIF
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_WIF_SA_EMAIL }}
-
-      - name: Setup gcloud CLI
-        uses: google-github-actions/setup-gcloud@v2
-
-      - name: Deploy to Cloud Run (staging)
-        run: |
-          gcloud run deploy staging-arkmask-api \
-            --image="${{ needs.build.outputs.image }}" \
-            --region="${{ vars.GCP_REGION }}" \
-            --project="${{ secrets.GCP_PROJECT_ID }}" \
-            --quiet
-
-      - name: Verify deployment
-        run: |
-          URL=$(gcloud run services describe staging-arkmask-api \
-            --region="${{ vars.GCP_REGION }}" \
-            --project="${{ secrets.GCP_PROJECT_ID }}" \
-            --format="value(status.url)")
-          echo "Staging API: ${URL}"
-          curl --fail --silent --show-error "${URL}/health" || exit 1
-
   deploy-prod:
     name: Deploy to Prod
     runs-on: ubuntu-latest
-    needs: [build, deploy-staging]
-    # Requires manual approval via GitHub Environments (prod → Required reviewers).
+    needs: build
     environment: prod
 
     steps:

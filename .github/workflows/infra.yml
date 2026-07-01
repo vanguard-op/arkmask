@@ -1,7 +1,13 @@
 name: Infrastructure (Terraform)
 
 # Runs terraform plan on every PR that touches infra/terraform/.
-# Runs terraform apply (staging first, then prod with manual approval) on merge to main.
+# Runs terraform apply (prod only, automatically) on merge to main.
+#
+# TODO: When a separate staging environment is stood up, reinstate the
+# two-stage flow: staging-plan/apply runs first, then prod-plan/apply
+# requires manual approval (prod environment → Required reviewers in
+# GitHub Environments settings). Add staging jobs back above prod-plan,
+# set prod-plan.needs: staging-apply, and set prod-apply.environment: prod.
 
 on:
   pull_request:
@@ -24,14 +30,14 @@ env:
   TF_VERSION: '1.9.8'
 
 jobs:
-  # ── Staging plan / apply ───────────────────────────────────────────────────
-  staging-plan:
-    name: Staging — Plan
+  # ── Prod plan (runs on PRs for review) ────────────────────────────────────
+  prod-plan:
+    name: Prod — Plan
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     defaults:
       run:
-        working-directory: infra/terraform/envs/staging
+        working-directory: infra/terraform/envs/prod
 
     steps:
       - uses: actions/checkout@v4
@@ -66,7 +72,7 @@ jobs:
         if: always()
         with:
           script: |
-            const output = `#### Terraform Plan — Staging 🔍
+            const output = `#### Terraform Plan — Prod 🔍
             \`\`\`
             ${{ steps.plan.outputs.stdout }}
             \`\`\`
@@ -78,14 +84,15 @@ jobs:
               body: output
             });
 
-  staging-apply:
-    name: Staging — Apply
+  # ── Prod apply (auto on merge to main) ────────────────────────────────────
+  prod-apply:
+    name: Prod — Apply
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    environment: staging
+    environment: prod
     defaults:
       run:
-        working-directory: infra/terraform/envs/staging
+        working-directory: infra/terraform/envs/prod
 
     steps:
       - uses: actions/checkout@v4
@@ -118,7 +125,7 @@ jobs:
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
       contains(github.event.head_commit.modified, 'infra/firebase/')
-    needs: staging-apply
+    needs: prod-apply
 
     steps:
       - uses: actions/checkout@v4
@@ -134,69 +141,3 @@ jobs:
 
       - name: Deploy Firestore rules and indexes
         run: firebase deploy --only firestore --project ${{ secrets.GCP_PROJECT_ID }}
-
-  # ── Prod plan / apply (manual gate) ───────────────────────────────────────
-  prod-plan:
-    name: Prod — Plan
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: staging-apply
-    defaults:
-      run:
-        working-directory: infra/terraform/envs/prod
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Authenticate to GCP via WIF
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_WIF_SA_EMAIL }}
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-
-      - name: Terraform Init
-        run: terraform init
-
-      - name: Terraform Plan
-        run: terraform plan -no-color
-        env:
-          TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
-          TF_VAR_github_repo: ${{ vars.GITHUB_REPO }}
-
-  prod-apply:
-    name: Prod — Apply
-    runs-on: ubuntu-latest
-    # Requires manual approval in GitHub Environments settings (prod environment → Required reviewers).
-    environment: prod
-    needs: prod-plan
-    defaults:
-      run:
-        working-directory: infra/terraform/envs/prod
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Authenticate to GCP via WIF
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_WIF_SA_EMAIL }}
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-
-      - name: Terraform Init
-        run: terraform init
-
-      - name: Terraform Apply
-        run: terraform apply -auto-approve
-        env:
-          TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
-          TF_VAR_github_repo: ${{ vars.GITHUB_REPO }}
