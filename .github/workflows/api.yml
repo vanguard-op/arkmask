@@ -9,9 +9,8 @@ name: Deploy — API
 # [build, deploy-staging], and gate deploy-prod with environment: prod
 # (Required reviewers in GitHub Environments settings).
 #
-# TODO: Migrate back to Workload Identity Federation once WIF token issues
-# are resolved. Replace credentials_json with workload_identity_provider +
-# service_account + token_format: access_token in google-github-actions/auth.
+# GCP authentication (WIF or SA key via GCP_CREDENTIALS) is provisioned and
+# owned outside of this repo's Terraform.
 
 on:
   push:

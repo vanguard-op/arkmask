@@ -50,16 +50,13 @@ module "gcs" {
   force_destroy = false
 }
 
-# ── IAM + WIF ─────────────────────────────────────────────────────────────────
+# ── IAM ───────────────────────────────────────────────────────────────────────
 
 module "iam" {
   source            = "../../modules/iam"
   project_id        = var.project_id
   env               = local.env
   media_bucket_name = module.gcs.bucket_name
-  github_repo       = var.github_repo
-  # WIF pool + provider created once in prod (project-scoped).
-  create_wif = true
 }
 
 # ── Cloud Tasks ───────────────────────────────────────────────────────────────
@@ -162,14 +159,4 @@ output "api_url" {
 output "workers_url" {
   description = "Production workers URL (internal)."
   value       = module.workers.service_url
-}
-
-output "workload_identity_provider" {
-  description = "WIF provider resource name (only relevant if you switch to WIF auth later)."
-  value       = module.iam.workload_identity_provider
-}
-
-output "github_sa_email" {
-  description = "GitHub Actions SA email."
-  value       = module.iam.github_sa_email
 }

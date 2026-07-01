@@ -10,9 +10,8 @@ name: Deploy — Workers
 # two-stage flow: auto-deploy staging first, then require manual approval
 # for prod (mirrors api.yml pattern).
 #
-# TODO: Migrate back to Workload Identity Federation once WIF token issues
-# are resolved. Replace credentials_json with workload_identity_provider +
-# service_account in google-github-actions/auth.
+# GCP authentication (WIF or SA key via GCP_CREDENTIALS) is provisioned and
+# owned outside of this repo's Terraform.
 #
 # NOTE: Requires workers/Dockerfile to exist. The path trigger only
 # fires on changes to workers/** so this workflow won't run until

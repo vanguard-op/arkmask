@@ -75,9 +75,6 @@ module "iam" {
   project_id        = var.project_id
   env               = local.env
   media_bucket_name = module.gcs.bucket_name
-  github_repo       = var.github_repo
-  # WIF is created in prod only (project-scoped; avoid duplicate pool error).
-  create_wif = false
 }
 
 # ── Cloud Tasks ───────────────────────────────────────────────────────────────

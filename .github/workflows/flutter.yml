@@ -31,16 +31,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Read Flutter version from FVM config
-        id: flutter-version
-        run: |
-          VERSION=$(cat .fvm/fvm_config.json | python3 -c "import sys,json; print(json.load(sys.stdin)['flutterSdkVersion'])")
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ steps.flutter-version.outputs.version }}
+          flutter-version: 3.44
           cache: true
 
       - name: Install dependencies
@@ -71,12 +65,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Read Flutter version
-        id: flutter-version
-        run: |
-          VERSION=$(cat .fvm/fvm_config.json | python3 -c "import sys,json; print(json.load(sys.stdin)['flutterSdkVersion'])")
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-
       - name: Setup Java (required for Android builds)
         uses: actions/setup-java@v5
         with:
@@ -86,7 +74,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ steps.flutter-version.outputs.version }}
+          flutter-version: 3.44
           cache: true
 
       - name: Install dependencies

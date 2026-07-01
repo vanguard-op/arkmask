@@ -1,7 +1,14 @@
 # ArkMask Infrastructure Setup
 
-One-time steps to bootstrap Terraform remote state, Workload Identity Federation,
-and GitHub secrets before CI/CD can run.
+One-time steps to bootstrap Terraform remote state and GitHub secrets before
+CI/CD can run.
+
+> **Note:** GitHub Actions authentication to GCP (Workload Identity Federation
+> or a service account key) is provisioned and owned outside of this
+> Terraform config. This project's Terraform only manages resources needed
+> to run the app itself (service accounts for Cloud Run, IAM bindings for
+> those service accounts, storage, queues, etc). Set up your own WIF pool /
+> SA key and populate the GitHub secrets in Step 7 accordingly.
 
 ---
 
@@ -10,6 +17,7 @@ and GitHub secrets before CI/CD can run.
 - `gcloud` CLI authenticated as a project owner
 - `terraform` >= 1.9 installed locally
 - GitHub repo admin access
+- GitHub Actions → GCP authentication (WIF or SA key) already set up by you
 
 ---
 
@@ -26,8 +34,8 @@ from a variable. Open both env files and replace the placeholder with your actua
 grep -rn "REPLACE_ME" infra/terraform/envs/
 ```
 
-Everything else (`project_id`, `github_repo`) is injected at runtime via
-environment variables — no other hardcoded values to change.
+Everything else (`project_id`) is injected at runtime via environment
+variables — no other hardcoded values to change.
 
 ---
 
@@ -69,26 +77,14 @@ gcloud services enable \
 
 ---
 
-## Step 4 — Bootstrap prod Terraform (creates WIF)
-
-Prod is applied first because it creates the Workload Identity Pool, the WIF provider,
-and the GitHub Actions service account (`arkmask-github-actions`) — all project-scoped
-resources that CI/CD depends on.
+## Step 4 — Bootstrap prod Terraform
 
 ```bash
 export TF_VAR_project_id="your-gcp-project-id"
-export TF_VAR_github_repo="owner/arkmask"   # e.g. khidirahmad05/arkmask
 
 cd infra/terraform/envs/prod
 terraform init
 terraform apply
-```
-
-Note the two outputs — you'll need them for GitHub secrets in Step 7:
-
-```
-workload_identity_provider = "projects/.../providers/arkmask-github-provider"
-github_sa_email            = "arkmask-github-actions@{project-id}.iam.gserviceaccount.com"
 ```
 
 ---
@@ -99,7 +95,7 @@ github_sa_email            = "arkmask-github-actions@{project-id}.iam.gserviceac
 cd infra/terraform/envs/staging
 terraform init
 terraform apply
-# (TF_VAR_* exports from Step 4 are still in your shell)
+# (TF_VAR_project_id export from Step 4 is still in your shell)
 ```
 
 ---
@@ -175,8 +171,7 @@ In GitHub → **Settings → Secrets and variables → Actions**:
 
 | Secret | Value |
 |---|---|
-| `GCP_WIF_PROVIDER` | `workload_identity_provider` output from Step 4 |
-| `GCP_WIF_SA_EMAIL` | `github_sa_email` output from Step 4 |
+| `GCP_WIF_PROVIDER` / `GCP_CREDENTIALS` | Your own WIF provider or SA key, set up outside this Terraform config |
 | `GCP_PROJECT_ID` | Your GCP project ID |
 | `STAGING_API_BASE_URL` | `api_url` output from staging `terraform apply` |
 | `STRIPE_PUBLISHABLE_KEY_TEST` | Stripe test publishable key (for Flutter APK builds) |
@@ -186,7 +181,6 @@ In GitHub → **Settings → Secrets and variables → Actions**:
 | Variable | Value |
 |---|---|
 | `GCP_REGION` | `europe-west1` |
-| `GCP_GITHUB_REPO` | `owner/arkmask` (e.g. `khidirahmad05/arkmask`) |
 
 > No `TF_VAR_DB_PASSWORD` — there is no database password. Firestore is the sole data store
 > and is accessed via the service account's IAM binding, not a connection string.
