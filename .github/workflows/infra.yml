@@ -24,6 +24,7 @@ on:
     paths:
       - 'infra/terraform/**'
       - 'infra/firebase/**'
+  workflow_dispatch:
 
 permissions:
   contents: read
