@@ -50,6 +50,11 @@ jobs:
           service_account: ${{ secrets.GCP_WIF_SA_EMAIL }}
           token_format: access_token
 
+      - name: Debug — verify token principal
+        run: |
+          curl -s "https://oauth2.googleapis.com/tokeninfo?access_token=${{ steps.auth.outputs.access_token }}" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print('email:', d.get('email','N/A')); print('scope:', d.get('scope','N/A')[:80])"
+
       - name: Login to Artifact Registry
         uses: docker/login-action@v4
         with:
