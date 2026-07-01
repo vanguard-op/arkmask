@@ -131,10 +131,20 @@ resource "google_iam_workload_identity_pool_provider" "github" {
 }
 
 # Allow GitHub Actions tokens (for the ArkMask repo) to impersonate the SA.
+# workloadIdentityUser: exchange OIDC token for federated credential.
+# serviceAccountTokenCreator: generate OAuth2 access tokens (required for
+# Artifact Registry auth via gcloud / docker login).
 resource "google_service_account_iam_member" "github_wif" {
   count              = var.create_wif ? 1 : 0
   service_account_id = google_service_account.github[0].name
   role               = "roles/iam.workloadIdentityUser"
+  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github[0].name}/attribute.repository/${var.github_repo}"
+}
+
+resource "google_service_account_iam_member" "github_token_creator" {
+  count              = var.create_wif ? 1 : 0
+  service_account_id = google_service_account.github[0].name
+  role               = "roles/iam.serviceAccountTokenCreator"
   member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github[0].name}/attribute.repository/${var.github_repo}"
 }
 
