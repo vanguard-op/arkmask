@@ -32,7 +32,7 @@ permissions:
   contents: read
 
 env:
-  IMAGE_BASE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/arkmask/api
+  IMAGE_BASE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/arkmask/api
 
 jobs:
   build:
@@ -47,7 +47,8 @@ jobs:
       - name: Authenticate to GCP
         uses: google-github-actions/auth@v3
         with:
-          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SA }}
 
       - name: Setup gcloud CLI
         uses: google-github-actions/setup-gcloud@v3
@@ -78,7 +79,8 @@ jobs:
       - name: Authenticate to GCP
         uses: google-github-actions/auth@v3
         with:
-          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SA }}
 
       - name: Setup gcloud CLI
         uses: google-github-actions/setup-gcloud@v3
@@ -88,14 +90,14 @@ jobs:
           gcloud run deploy prod-arkmask-api \
             --image="${{ needs.build.outputs.image }}" \
             --region="${{ vars.GCP_REGION }}" \
-            --project="${{ secrets.GCP_PROJECT_ID }}" \
+            --project="${{ vars.GCP_PROJECT_ID }}" \
             --quiet
 
       - name: Verify deployment
         run: |
           URL=$(gcloud run services describe prod-arkmask-api \
             --region="${{ vars.GCP_REGION }}" \
-            --project="${{ secrets.GCP_PROJECT_ID }}" \
+            --project="${{ vars.GCP_PROJECT_ID }}" \
             --format="value(status.url)")
           echo "Prod API: ${URL}"
           curl --fail --silent --show-error "${URL}/health" || exit 1
