@@ -128,6 +128,9 @@ jobs:
     #   github.ref == 'refs/heads/main' &&
     #   contains(github.event.head_commit.modified, 'infra/firebase/')
     needs: prod-apply
+    defaults:
+      run:
+        working-directory: infra/firebase
 
     steps:
       - uses: actions/checkout@v4

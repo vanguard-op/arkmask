@@ -22,8 +22,12 @@ infra/terraform/**/tfplan
 infra/terraform/**/*.auto.tfvars
 infra/terraform/**/terraform.tfvars
 
-# Firebase local credentials (service account JSON)
+# Firebase local credentials (service account JSON) — firebase.json (CLI
+# config) and firestore.indexes.json are checked-in project config, not
+# secrets, so they're explicitly un-ignored below.
 infra/firebase/*.json
+!infra/firebase/firebase.json
+!infra/firebase/firestore.indexes.json
 
 # SETUP scratch files that may contain real secret values
 infra/*.json
