@@ -73,5 +73,35 @@ services:
       - ./arkmask-firebase.json:/run/secrets/firebase-credentials.json:ro
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
+  # Optional — the API falls back to running image/video/merge jobs inline
+  # (see app.routers.generation, the `cloud_tasks_configured` check) when no
+  # Cloud Tasks queues are configured, so this service is NOT required for
+  # local dev to work end-to-end. Bring it up only to test the actual workers
+  # container image directly (e.g. before deploying, or to debug FFmpeg merge
+  # behavior) — it isn't wired to receive jobs automatically in this compose
+  # file since that would require a real (or emulated) Cloud Tasks queue.
+  workers:
+    build:
+      context: ..
+      dockerfile: workers/Dockerfile
+    depends_on:
+      minio:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      STORAGE_BUCKET: arkmask-local
+      STORAGE_ENDPOINT_URL: http://minio:9000
+      STORAGE_ACCESS_KEY: minioadmin
+      STORAGE_SECRET_KEY: minioadmin
+      STORAGE_PRESIGN_TTL: 7200
+      APP_ENV: local
+      FIREBASE_CREDENTIALS_PATH: /run/secrets/firebase-credentials.json
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./arkmask-firebase.json:/run/secrets/firebase-credentials.json:ro
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+
 volumes:
   minio_data:

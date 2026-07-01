@@ -32,11 +32,12 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from google.cloud.firestore_v1 import SERVER_TIMESTAMP
 from google.cloud.firestore_v1.transaction import transactional
 from pydantic import BaseModel, Field
 
+from app.config import get_settings
 from app.dependencies import get_ai_provider, get_current_user, _firestore
 from app.models.user import UserProfile
 from app.routers.projects import _firestore_client
@@ -48,6 +49,7 @@ from app.schemas.generation import (
     VideoStatusEnum,
     VideoStatusResponse,
 )
+from app.services import cloud_tasks
 from app.services.ai.base import AIProvider, RefImage
 from app.services.firebase import send_fcm_notification
 from app.services.media_store import MediaStore
@@ -322,10 +324,16 @@ async def enqueue_image(
     body: ImageEnqueueRequest,
     user: UserProfile = Depends(get_current_user),
     provider: AIProvider = Depends(get_ai_provider),
+    x_provider_type: str = Header(..., alias="X-Provider-Type"),
+    x_provider_key: str = Header(..., alias="X-Provider-Key"),
 ) -> VideoEnqueueResponse:
     """
     Enqueue an image generation job.  Returns job_id immediately.
-    Worker reads prompt_body from Firestore, generates image, writes gcs_image_path.
+
+    On Cloud Run, dispatches to the workers service via Cloud Tasks (see
+    app.services.cloud_tasks) — the worker reads prompt_body from Firestore,
+    generates the image, and writes gcs_image_path. Locally (no Cloud Tasks
+    configured), runs the same steps inline via asyncio as a dev-only fallback.
     Credits deducted: 5 (on terminal success only).
     """
     _check_credits(user, "/image")
@@ -333,6 +341,19 @@ async def enqueue_image(
     job_id = _create_job(firebase_uid, "image", body.project_slug, asset_path=body.asset_path)
     pname = _provider_name(provider)
 
+    if get_settings().cloud_tasks_configured:
+        cloud_tasks.enqueue_job("image", {
+            "firebase_uid": firebase_uid,
+            "job_id": job_id,
+            "project_slug": body.project_slug,
+            "asset_path": body.asset_path,
+            "conditioning_gcs_path": body.conditioning_gcs_path,
+            "provider_type": x_provider_type,
+            "provider_key": x_provider_key,
+        })
+        return VideoEnqueueResponse(job_id=job_id)
+
+    # ── Local dev fallback: run inline instead of dispatching to Cloud Tasks ──
     async def _run():
         try:
             _update_job(firebase_uid, job_id, "running")
@@ -458,10 +479,16 @@ async def enqueue_video(
     body: VideoEnqueueCloudRequest,
     user: UserProfile = Depends(get_current_user),
     provider: AIProvider = Depends(get_ai_provider),
+    x_provider_type: str = Header(..., alias="X-Provider-Type"),
+    x_provider_key: str = Header(..., alias="X-Provider-Key"),
 ) -> VideoEnqueueResponse:
     """
     Enqueue a video generation job.  Returns job_id immediately.
-    Worker reads storyboard_body from Firestore, fetches ref images, generates video.
+
+    On Cloud Run, dispatches to the workers service via Cloud Tasks — the
+    worker reads storyboard_body from Firestore, fetches ref images, and
+    generates the video. Locally (no Cloud Tasks configured), runs inline via
+    asyncio as a dev-only fallback.
     Credits deducted: 20 (on terminal success only).
     """
     _check_credits(user, "/video")
@@ -469,6 +496,19 @@ async def enqueue_video(
     job_id = _create_job(firebase_uid, "video", body.project_slug, scene_index=body.scene_index)
     pname = _provider_name(provider)
 
+    if get_settings().cloud_tasks_configured:
+        cloud_tasks.enqueue_job("video", {
+            "firebase_uid": firebase_uid,
+            "job_id": job_id,
+            "project_slug": body.project_slug,
+            "scene_index": body.scene_index,
+            "ref_image_gcs_paths": body.ref_image_gcs_paths,
+            "provider_type": x_provider_type,
+            "provider_key": x_provider_key,
+        })
+        return VideoEnqueueResponse(job_id=job_id)
+
+    # ── Local dev fallback: run inline instead of dispatching to Cloud Tasks ──
     async def _run():
         try:
             _update_job(firebase_uid, job_id, "running")
@@ -535,15 +575,28 @@ async def enqueue_merge(
 ) -> VideoEnqueueResponse:
     """
     Enqueue a video merge job.  Returns job_id immediately.
-    Worker downloads scene videos from GCS, runs FFmpeg with trims + transitions,
-    uploads final.mp4 to GCS, writes gcs_final_path to Firestore project doc.
+
+    On Cloud Run, dispatches to the workers service via Cloud Tasks — the
+    worker downloads scene videos from GCS, runs FFmpeg with trims and
+    transitions, uploads final.mp4, and writes gcs_final_path. Locally (no
+    Cloud Tasks configured), runs inline via asyncio as a dev-only fallback
+    (requires the ffmpeg binary in PATH on the local machine/container).
     Credits deducted: 5 (on terminal success only).
-    NOTE: Requires ffmpeg binary in PATH on the server.
     """
     _check_credits(user, "/merge")
     firebase_uid = user.firebase_uid
     job_id = _create_job(firebase_uid, "merge", body.project_slug)
 
+    if get_settings().cloud_tasks_configured:
+        cloud_tasks.enqueue_job("merge", {
+            "firebase_uid": firebase_uid,
+            "job_id": job_id,
+            "project_slug": body.project_slug,
+            "scenes": [s.model_dump() for s in body.scenes],
+        })
+        return VideoEnqueueResponse(job_id=job_id)
+
+    # ── Local dev fallback: run inline instead of dispatching to Cloud Tasks ──
     async def _run():
         try:
             _update_job(firebase_uid, job_id, "running")

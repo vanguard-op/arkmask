@@ -13,9 +13,12 @@ name: Deploy — Workers
 # GCP authentication (WIF or SA key via GCP_CREDENTIALS) is provisioned and
 # owned outside of this repo's Terraform.
 #
-# NOTE: Requires workers/Dockerfile to exist. The path trigger only
-# fires on changes to workers/** so this workflow won't run until
-# the workers directory is created.
+# The workers image reuses shared service modules (AI providers, Firestore/
+# FCM, GCS, config, instructions) owned by backend/app rather than
+# duplicating them — see workers/Dockerfile. Build context is the repo root,
+# not workers/, so the Dockerfile can COPY from backend/. The path trigger
+# below covers both workers/** and the specific backend/ paths workers
+# depends on, so a shared-module change rebuilds workers too.
 
 on:
   push:
@@ -23,6 +26,10 @@ on:
       - main
     paths:
       - 'workers/**'
+      - 'backend/app/services/**'
+      - 'backend/app/config.py'
+      - 'backend/instructions/**'
+      - 'backend/pyproject.toml'
   workflow_dispatch:
 
 permissions:
@@ -60,7 +67,7 @@ jobs:
           SHORT_SHA="${GITHUB_SHA:0:7}"
           IMAGE="${{ env.IMAGE_BASE }}:${SHORT_SHA}"
           docker build -t "${IMAGE}" -t "${{ env.IMAGE_BASE }}:latest" \
-            -f workers/Dockerfile workers/
+            -f workers/Dockerfile .
           docker push "${IMAGE}"
           docker push "${{ env.IMAGE_BASE }}:latest"
           echo "image=${IMAGE}" >> $GITHUB_OUTPUT

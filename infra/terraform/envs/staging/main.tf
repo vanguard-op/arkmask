@@ -113,13 +113,18 @@ module "api" {
   timeout_seconds = 60
 
   env_vars = {
-    APP_ENV                 = "staging"
-    STORAGE_BUCKET          = module.gcs.bucket_name
-    FIREBASE_PROJECT_ID     = var.project_id
-    CLOUD_TASKS_IMAGE_QUEUE = module.cloud_tasks.image_queue_name
-    CLOUD_TASKS_VIDEO_QUEUE = module.cloud_tasks.video_queue_name
-    CLOUD_TASKS_MERGE_QUEUE = module.cloud_tasks.merge_queue_name
-    WORKERS_SERVICE_URL     = module.workers.service_url
+    APP_ENV                  = "staging"
+    STORAGE_BUCKET           = module.gcs.bucket_name
+    FIREBASE_PROJECT_ID      = var.project_id
+    GCP_PROJECT_ID           = var.project_id
+    GCP_REGION               = local.region
+    CLOUD_TASKS_IMAGE_QUEUE  = module.cloud_tasks.image_queue_name
+    CLOUD_TASKS_VIDEO_QUEUE  = module.cloud_tasks.video_queue_name
+    CLOUD_TASKS_MERGE_QUEUE  = module.cloud_tasks.merge_queue_name
+    WORKERS_SERVICE_URL      = module.workers.service_url
+    # OIDC identity Cloud Tasks presents when calling the workers service —
+    # already granted roles/run.invoker on workers (see invoker_members below).
+    API_SERVICE_ACCOUNT_EMAIL = module.iam.api_sa_email
   }
 
   secret_env_vars = {

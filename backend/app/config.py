@@ -68,12 +68,43 @@ class Settings(BaseSettings):
     # URL shown as the "Return to app" link inside the Customer Portal.
     stripe_billing_portal_return_url: str = "https://arkmask.app/billing"
 
+    # Cloud Tasks (async image/video/merge job dispatch to the workers service).
+    # In Cloud Run these come from Terraform-injected env vars (see
+    # infra/terraform/envs/*/main.tf); locally, async jobs run inline instead
+    # (see app.services.cloud_tasks.enqueue_job).
+    gcp_project_id: str = ""              # falls back to firebase_project_id if unset
+    gcp_region: str = "europe-west1"
+    cloud_tasks_image_queue: str = ""
+    cloud_tasks_video_queue: str = ""
+    cloud_tasks_merge_queue: str = ""
+    workers_service_url: str = ""
+    # Service account whose OIDC identity Cloud Tasks presents to the workers
+    # Cloud Run service. Must already be granted roles/run.invoker on workers
+    # (see infra/terraform/modules/iam — invoker_members on module.workers).
+    api_service_account_email: str = ""
+
     # Environment
     app_env: str = "local"
 
     @property
     def is_local(self) -> bool:
         return self.app_env == "local"
+
+    @property
+    def gcp_project(self) -> str:
+        """Project ID for Cloud Tasks — same GCP project as Firebase (see architecture.md)."""
+        return self.gcp_project_id or self.firebase_project_id
+
+    @property
+    def cloud_tasks_configured(self) -> bool:
+        """True once all Cloud Tasks env vars are present (i.e. running on Cloud Run)."""
+        return bool(
+            self.workers_service_url
+            and self.cloud_tasks_image_queue
+            and self.cloud_tasks_video_queue
+            and self.cloud_tasks_merge_queue
+            and self.api_service_account_email
+        )
 
 
 @lru_cache

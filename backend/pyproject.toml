@@ -30,6 +30,9 @@ dependencies = [
     # Object storage (GCS / MinIO)
     "boto3==1.38.39",
 
+    # Cloud Tasks — dispatches async image/video/merge jobs to the workers service
+    "google-cloud-tasks==2.23.0",
+
     # HTTP client for downloading AI-generated media
     "httpx==0.28.1",
 
