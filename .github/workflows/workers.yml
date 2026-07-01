@@ -10,8 +10,8 @@ name: Deploy — Workers
 # two-stage flow: auto-deploy staging first, then require manual approval
 # for prod (mirrors api.yml pattern).
 #
-# NOTE: Requires workers/Dockerfile to exist. Jobs are gated on
-# hashFiles('workers/Dockerfile') so the workflow is a no-op until
+# NOTE: Requires workers/Dockerfile to exist. The path trigger only
+# fires on changes to workers/** so this workflow won't run until
 # the workers directory is created.
 
 on:
@@ -20,7 +20,6 @@ on:
       - main
     paths:
       - 'workers/**'
-      - '.github/workflows/workers.yml'
   workflow_dispatch:
 
 permissions:
@@ -34,8 +33,6 @@ jobs:
   build:
     name: Build & Push Workers Image
     runs-on: ubuntu-latest
-    # Skip entirely until workers/Dockerfile exists.
-    if: hashFiles('workers/Dockerfile') != ''
     outputs:
       image: ${{ steps.meta.outputs.image }}
 
