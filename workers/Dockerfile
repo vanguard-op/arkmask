@@ -8,17 +8,13 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # ffmpeg is required by the merge worker (trims + transitions + concat).
-# libpq-dev matches backend/Dockerfile in case any shared module ends up
-# depending on it transitively (psycopg2-binary's shared lib).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
-    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Reuse the backend's dependency manifest — workers need the same AI
 # provider, Firestore, and GCS client libraries as the API.
 COPY backend/pyproject.toml ./pyproject.toml
-RUN pip install --no-cache-dir --only-binary=:all: psycopg2-binary
 
 # Shared service modules — owned by backend/app, copied here rather than
 # duplicated across two independently-built images.
