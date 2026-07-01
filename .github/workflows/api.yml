@@ -57,23 +57,17 @@ jobs:
           username: oauth2accesstoken
           password: ${{ steps.auth.outputs.access_token }}
 
-      - name: Docker metadata
-        id: meta
+      - name: Build and push Docker image
         run: |
-          SHA="${{ github.sha }}"
-          SHORT_SHA="${SHA:0:7}"
+          SHORT_SHA="${GITHUB_SHA:0:7}"
           IMAGE="${{ env.IMAGE_BASE }}:${SHORT_SHA}"
           echo "image=${IMAGE}" >> $GITHUB_OUTPUT
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v7
-        with:
-          context: backend
-          file: backend/Dockerfile
-          push: true
-          tags: |
-            ${{ steps.meta.outputs.image }}
-            ${{ env.IMAGE_BASE }}:latest
+          docker build -t "${IMAGE}" -t "${{ env.IMAGE_BASE }}:latest" \
+            -f backend/Dockerfile backend/
+          docker push "${IMAGE}"
+          docker push "${{ env.IMAGE_BASE }}:latest"
+          echo "image=${IMAGE}" >> $GITHUB_OUTPUT
+        id: meta
 
   deploy-prod:
     name: Deploy to Prod
