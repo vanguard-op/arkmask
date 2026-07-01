@@ -24,7 +24,6 @@ on:
     paths:
       - 'infra/terraform/**'
       - 'infra/firebase/**'
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -97,9 +96,7 @@ jobs:
   prod-apply:
     name: Prod — Apply
     runs-on: ubuntu-latest
-    if: |
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment: prod
     defaults:
       run:
@@ -131,10 +128,10 @@ jobs:
   firebase-rules:
     name: Deploy Firestore Rules
     runs-on: ubuntu-latest
-    # if: |
-    #   github.event_name == 'push' &&
-    #   github.ref == 'refs/heads/main' &&
-    #   contains(github.event.head_commit.modified, 'infra/firebase/')
+    if: |
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      contains(github.event.head_commit.modified, 'infra/firebase/')
     needs: prod-apply
     defaults:
       run:
