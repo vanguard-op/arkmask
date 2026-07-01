@@ -1,13 +1,6 @@
 {
   "indexes": [
     {
-      "collectionGroup": "projects",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "updated_at", "order": "DESCENDING" }
-      ]
-    },
-    {
       "collectionGroup": "generation_jobs",
       "queryScope": "COLLECTION",
       "fields": [
