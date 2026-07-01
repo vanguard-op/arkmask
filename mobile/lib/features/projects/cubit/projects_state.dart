@@ -19,39 +19,63 @@ final class ProjectsLoaded extends ProjectsState {
     required this.projects,
     this.creditBalance,
     this.tier,
-    this.deletingName,
+    this.deletingSlug,
     this.renameError,
+    this.generatingCounts = const {},
+    this.storageSummaries = const {},
   });
 
-  final List<ProjectMeta> projects;
+  /// Live project list from the Firestore `users/{uid}/projects` collection.
+  final List<ProjectDocument> projects;
+
   final int? creditBalance;
   final UserTier? tier;
 
-  /// The project name currently being deleted (shows loading on that card).
-  final String? deletingName;
+  /// The project slug currently being deleted (shows a loading indicator on
+  /// that card). Set while [ProjectsCubit.deleteProject] is in flight; cleared
+  /// once the Firestore listener confirms removal.
+  final String? deletingSlug;
 
   /// Non-null when a rename operation failed; consumed once and cleared.
   final String? renameError;
 
+  /// Maps project slug → count of active (pending/running) jobs in the Hive CE
+  /// registry. Used to display "N generating" badges on project cards (FEAT-006).
+  final Map<String, int> generatingCounts;
+
+  /// Maps project slug → GCS storage summary (FEAT-027).
+  ///
+  /// Populated asynchronously after the project list loads — entries arrive
+  /// one at a time as each per-project storage fetch completes. Cards show
+  /// a placeholder ("—") until the summary arrives.
+  final Map<String, ProjectStorageSummary> storageSummaries;
+
   ProjectsLoaded copyWith({
-    List<ProjectMeta>? projects,
+    List<ProjectDocument>? projects,
     int? creditBalance,
     UserTier? tier,
-    String? deletingName,
-    bool clearDeletingName = false,
+    String? deletingSlug,
+    bool clearDeletingSlug = false,
     String? renameError,
     bool clearRenameError = false,
+    Map<String, int>? generatingCounts,
+    Map<String, ProjectStorageSummary>? storageSummaries,
   }) =>
       ProjectsLoaded(
         projects: projects ?? this.projects,
         creditBalance: creditBalance ?? this.creditBalance,
         tier: tier ?? this.tier,
-        deletingName: clearDeletingName ? null : (deletingName ?? this.deletingName),
-        renameError: clearRenameError ? null : (renameError ?? this.renameError),
+        deletingSlug:
+            clearDeletingSlug ? null : (deletingSlug ?? this.deletingSlug),
+        renameError:
+            clearRenameError ? null : (renameError ?? this.renameError),
+        generatingCounts: generatingCounts ?? this.generatingCounts,
+        storageSummaries: storageSummaries ?? this.storageSummaries,
       );
 
   @override
-  List<Object?> get props => [projects, creditBalance, tier, deletingName, renameError];
+  List<Object?> get props =>
+      [projects, creditBalance, tier, deletingSlug, renameError, generatingCounts, storageSummaries];
 }
 
 final class ProjectsError extends ProjectsState {

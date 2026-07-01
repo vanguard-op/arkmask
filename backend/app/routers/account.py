@@ -5,11 +5,10 @@ import logging
 import secrets
 
 from fastapi import APIRouter, Depends, status
-from sqlalchemy.orm import Session
+from google.cloud.firestore_v1 import SERVER_TIMESTAMP
 
-from app.database import get_db
-from app.dependencies import get_current_user
-from app.models.db import User
+from app.dependencies import _firestore, get_current_user
+from app.models.user import UserProfile
 from app.schemas.auth import (
     CreditsResponse,
     PlatformKeyResponse,
@@ -22,12 +21,13 @@ logger = logging.getLogger(__name__)
 
 
 @router.get("/me/credits", response_model=CreditsResponse)
-def get_credits(current_user: User = Depends(get_current_user)) -> CreditsResponse:
+def get_credits(current_user: UserProfile = Depends(get_current_user)) -> CreditsResponse:
     """
     Return the authenticated user's current credit balance and subscription tier.
 
     Called by the Flutter app on home screen load to populate the credit pill
-    and on settings screen load.
+    and on settings screen load.  Values come directly from the UserProfile
+    constructed by ``get_current_user`` (single Firestore read already done).
     """
     return CreditsResponse(
         credits=current_user.credit_balance,
@@ -37,50 +37,69 @@ def get_credits(current_user: User = Depends(get_current_user)) -> CreditsRespon
 
 @router.get("/usage", response_model=UsageListResponse)
 def get_usage(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    current_user: UserProfile = Depends(get_current_user),
 ) -> UsageListResponse:
     """
     Return the authenticated user's generation event history (FEAT-024).
 
-    Events are returned newest-first. The Flutter app uses this to render
+    Events are returned newest-first.  The Flutter app uses this to render
     the Usage Dashboard screen.
+
+    Reads from ``users/{uid}/usage_events`` ordered by timestamp descending.
+    Capped at 200 events to keep the response payload manageable.
     """
-    events = (
-        current_user.usage_events
-        if current_user.usage_events
-        else []
+    db = _firestore()
+    uid = current_user.firebase_uid
+    events_ref = (
+        db.collection(f"users/{uid}/usage_events")
+        .order_by("timestamp", direction="DESCENDING")
+        .limit(200)
     )
-    # Sort newest first; usage_events are lazy-loaded so we sort in Python.
-    sorted_events = sorted(events, key=lambda e: e.timestamp, reverse=True)
+    docs = events_ref.stream()
     return UsageListResponse(
         events=[
             UsageEventResponse(
-                endpoint=e.endpoint,
-                provider=e.provider,
-                credits_deducted=e.credits_deducted,
-                status=e.status,
-                timestamp=e.timestamp.isoformat(),
+                endpoint=d.get("endpoint") or "",
+                provider=d.get("provider") or "",
+                credits_deducted=d.get("credits_deducted") or 0,
+                status=d.get("status") or "success",
+                timestamp=(d.get("timestamp").isoformat() if d.get("timestamp") else ""),
             )
-            for e in sorted_events
+            for d in docs
         ]
     )
 
 
 @router.post("/keys/regenerate", response_model=PlatformKeyResponse)
 def regenerate_key(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    current_user: UserProfile = Depends(get_current_user),
 ) -> PlatformKeyResponse:
     """
     Rotate the authenticated user's platform API key (FEAT-025).
 
-    Issues a new key, hashes it, replaces the old hash in the database, and
-    returns the raw key to the app. The old key is immediately invalidated.
-    Use this if a platform key is compromised.
+    Issues a new key, hashes it, deletes the old ``api_keys/{old_hash}``
+    document, writes ``api_keys/{new_hash}``, and updates the profile.
+    The old key is immediately invalidated.
     """
+    db = _firestore()
+    uid = current_user.firebase_uid
+    old_hash = current_user.platform_api_key  # already hashed (set by get_current_user)
+
     raw = secrets.token_hex(32)
-    current_user.platform_api_key = hashlib.sha256(raw.encode()).hexdigest()
-    db.commit()
-    logger.info("Platform key rotated: user_id=%s", current_user.id)
+    new_hash = hashlib.sha256(raw.encode()).hexdigest()
+
+    # Atomically invalidate the old key and register the new one.
+    db.collection("api_keys").document(old_hash).delete()
+    db.collection("api_keys").document(new_hash).set({
+        "firebase_uid": uid,
+        "created_at": SERVER_TIMESTAMP,
+    })
+
+    # Persist new hash on profile for future login rotations.
+    db.document(f"users/{uid}/profile").update({
+        "platform_api_key_hash": new_hash,
+        "updated_at": SERVER_TIMESTAMP,
+    })
+
+    logger.info("Platform key rotated: uid=%s", uid)
     return PlatformKeyResponse(platform_api_key=raw)

@@ -1,19 +1,14 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_flutter/lucide_flutter.dart';
-import 'package:path/path.dart' as p;
 
 import '../../../app.dart';
-import '../../../core/jobs/generation_job_manager.dart';
 import '../../../core/models/models.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../billing/widgets/credits_exhausted_dialog.dart';
-import '../../projects/widgets/generation_step_dots.dart';
 import '../cubit/scene_cubit.dart';
 import '../cubit/scene_state.dart';
 
@@ -21,6 +16,9 @@ import '../cubit/scene_state.dart';
 /// (Storyboard MDX Editor), FEAT-016 (Generate Scene Video).
 ///
 /// Route: `/project/:projectName/scene/:sceneId`
+///
+/// Phase 2: All data comes from Firestore real-time listeners in [SceneCubit].
+/// No local filesystem reads or Timer.periodic polling.
 class SceneDetailScreen extends StatelessWidget {
   const SceneDetailScreen({
     super.key,
@@ -36,16 +34,14 @@ class SceneDetailScreen extends StatelessWidget {
     final services = ArkMaskServices.of(context);
     return BlocProvider(
       create: (_) => SceneCubit(
-        projectName: projectName,
+        projectSlug: projectName,
         sceneNumber: sceneId,
-        fileService: services.fileService,
         apiClient: services.apiClient,
-        jobManager: services.jobManager,
+        jobRegistryService: services.jobRegistryService,
       )..load(),
       child: _SceneDetailView(
         projectName: projectName,
         sceneId: sceneId,
-        jobManager: services.jobManager,
       ),
     );
   }
@@ -57,12 +53,10 @@ class _SceneDetailView extends StatefulWidget {
   const _SceneDetailView({
     required this.projectName,
     required this.sceneId,
-    required this.jobManager,
   });
 
   final String projectName;
   final int sceneId;
-  final GenerationJobManager jobManager;
 
   @override
   State<_SceneDetailView> createState() => _SceneDetailViewState();
@@ -95,23 +89,24 @@ class _SceneDetailViewState extends State<_SceneDetailView>
       listener: (context, state) {
         if (state is! SceneLoaded) return;
 
-        // Sync tab controller with cubit's selected tab.
+        // Sync tab controller with cubit's selected tab index.
         if (_tabController.index != state.selectedTabIndex) {
           _tabController.animateTo(state.selectedTabIndex);
         }
 
-        // Storyboard errors.
+        // Handle storyboard errors.
         final sbErr = state.storyboardError;
         if (sbErr != null) {
           if (sbErr == '__credits__') {
-            _showCreditsDialog(context, 'Storyboard generation requires ${CreditCost.videoPrompt} credits.');
+            showCreditsExhaustedDialog(context);
           } else {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text(sbErr),
                 action: SnackBarAction(
                   label: 'Retry',
-                  onPressed: () => context.read<SceneCubit>().generateStoryboard(),
+                  onPressed: () =>
+                      context.read<SceneCubit>().generateStoryboard(),
                 ),
               ),
             );
@@ -119,11 +114,11 @@ class _SceneDetailViewState extends State<_SceneDetailView>
           context.read<SceneCubit>().clearStoryboardError();
         }
 
-        // Video errors.
+        // Handle video errors.
         final vidErr = state.videoError;
         if (vidErr != null) {
           if (vidErr == '__credits__') {
-            _showCreditsDialog(context, 'Video generation requires ${CreditCost.videoGeneration} credits.');
+            showCreditsExhaustedDialog(context);
           } else {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(content: Text(vidErr)),
@@ -138,10 +133,10 @@ class _SceneDetailViewState extends State<_SceneDetailView>
           appBar: _SceneAppBar(
             sceneId: widget.sceneId,
             state: state,
-            jobManager: widget.jobManager,
           ),
           body: switch (state) {
-            SceneLoading() => const Center(child: CircularProgressIndicator()),
+            SceneLoading() =>
+              const Center(child: CircularProgressIndicator()),
             SceneError(:final message) => _ErrorBody(
                 message: message,
                 onRetry: () => context.read<SceneCubit>().load(),
@@ -150,16 +145,11 @@ class _SceneDetailViewState extends State<_SceneDetailView>
                 state: state,
                 projectName: widget.projectName,
                 tabController: _tabController,
-                jobManager: widget.jobManager,
               ),
           },
         );
       },
     );
-  }
-
-  void _showCreditsDialog(BuildContext context, String message) {
-    showCreditsExhaustedDialog(context);
   }
 }
 
@@ -169,12 +159,10 @@ class _SceneAppBar extends StatelessWidget implements PreferredSizeWidget {
   const _SceneAppBar({
     required this.sceneId,
     required this.state,
-    required this.jobManager,
   });
 
   final int sceneId;
   final SceneState state;
-  final GenerationJobManager jobManager;
 
   @override
   Size get preferredSize => const Size.fromHeight(kToolbarHeight);
@@ -182,7 +170,26 @@ class _SceneAppBar extends StatelessWidget implements PreferredSizeWidget {
   @override
   Widget build(BuildContext context) {
     final loaded = state is SceneLoaded ? state as SceneLoaded : null;
-    final sceneDirPath = loaded?.sceneDirPath;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    // Derive status dot color from cubit state flags (no jobManager needed).
+    final Color dotColor;
+    if (loaded != null) {
+      if (loaded.isGeneratingStoryboard || loaded.isGeneratingVideo) {
+        dotColor =
+            isDark ? AppColors.stateRunningDark : AppColors.stateRunningLight;
+      } else if (loaded.hasVideo) {
+        dotColor = isDark ? AppColors.stateDoneDark : AppColors.stateDoneLight;
+      } else if (loaded.hasStoryboard) {
+        dotColor = isDark ? AppColors.stateDoneDark : AppColors.stateDoneLight;
+      } else {
+        dotColor =
+            isDark ? AppColors.statePendingDark : AppColors.statePendingLight;
+      }
+    } else {
+      dotColor =
+          isDark ? AppColors.statePendingDark : AppColors.statePendingLight;
+    }
 
     return AppBar(
       leading: IconButton(
@@ -194,75 +201,14 @@ class _SceneAppBar extends StatelessWidget implements PreferredSizeWidget {
         style: AppTextStyles.h2(context),
       ),
       actions: [
-        if (sceneDirPath != null)
-          ListenableBuilder(
-            listenable: jobManager,
-            builder: (context2, child2) => _AggregateJobDot(
-              sceneDirPath: sceneDirPath,
-              jobManager: jobManager,
-              loaded: loaded,
-            ),
-          ),
+        Container(
+          width: 8,
+          height: 8,
+          decoration: BoxDecoration(color: dotColor, shape: BoxShape.circle),
+        ),
         const SizedBox(width: AppSpacing.s3),
       ],
     );
-  }
-}
-
-/// Single dot in the AppBar showing the worst state of storyboard/video jobs.
-class _AggregateJobDot extends StatelessWidget {
-  const _AggregateJobDot({
-    required this.sceneDirPath,
-    required this.jobManager,
-    required this.loaded,
-  });
-
-  final String sceneDirPath;
-  final GenerationJobManager jobManager;
-  final SceneLoaded? loaded;
-
-  @override
-  Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    var sbState = jobManager.stateFor(GenerationJobManager.storyboardKey(sceneDirPath));
-    var vidState = jobManager.stateFor(GenerationJobManager.videoKey(sceneDirPath));
-
-    // Fall back to on-disk state when no job has run in this session.
-    final hasStoryboard = loaded?.storyboard.storyboardBody.isNotEmpty ?? false;
-    final hasVideo = loaded?.hasVideo ?? false;
-    if (sbState == GenerationJobState.idle && hasStoryboard) {
-      sbState = GenerationJobState.done;
-    }
-    if (vidState == GenerationJobState.idle && hasVideo) {
-      vidState = GenerationJobState.done;
-    }
-
-    final worst = _worstState(sbState, vidState);
-    final color = switch (worst) {
-      GenerationJobState.running => isDark ? AppColors.stateRunningDark : AppColors.stateRunningLight,
-      GenerationJobState.done => isDark ? AppColors.stateDoneDark : AppColors.stateDoneLight,
-      GenerationJobState.failed => isDark ? AppColors.stateFailedDark : AppColors.stateFailedLight,
-      GenerationJobState.idle => isDark ? AppColors.statePendingDark : AppColors.statePendingLight,
-    };
-
-    return Container(
-      width: 8,
-      height: 8,
-      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-    );
-  }
-
-  static GenerationJobState _worstState(
-      GenerationJobState a, GenerationJobState b) {
-    const priority = [
-      GenerationJobState.running,
-      GenerationJobState.failed,
-      GenerationJobState.done,
-      GenerationJobState.idle,
-    ];
-    final ai = priority.indexOf(a);
-    final bi = priority.indexOf(b);
-    return ai <= bi ? a : b;
   }
 }
 
@@ -273,19 +219,16 @@ class _LoadedBody extends StatelessWidget {
     required this.state,
     required this.projectName,
     required this.tabController,
-    required this.jobManager,
   });
 
   final SceneLoaded state;
   final String projectName;
   final TabController tabController;
-  final GenerationJobManager jobManager;
 
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
-        // Custom tab row.
         _CustomTabBar(controller: tabController),
         Expanded(
           child: TabBarView(
@@ -294,13 +237,8 @@ class _LoadedBody extends StatelessWidget {
               _AssetsTab(
                 state: state,
                 projectName: projectName,
-                jobManager: jobManager,
               ),
-              _StoryboardTab(
-                state: state,
-                projectName: projectName,
-                jobManager: jobManager,
-              ),
+              _StoryboardTab(state: state),
             ],
           ),
         ),
@@ -319,8 +257,10 @@ class _CustomTabBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final primaryColor = isDark ? AppColors.primaryDark : AppColors.primaryLight;
-    final surfaceRaised = isDark ? AppColors.surfaceRaisedDark : AppColors.surfaceRaisedLight;
+    final primaryColor =
+        isDark ? AppColors.primaryDark : AppColors.primaryLight;
+    final surfaceRaised =
+        isDark ? AppColors.surfaceRaisedDark : AppColors.surfaceRaisedLight;
 
     return AnimatedBuilder(
       animation: controller,
@@ -367,14 +307,17 @@ class _TabItem extends StatelessWidget {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final textColor = isActive
         ? (isDark ? AppColors.textPrimaryDark : AppColors.textPrimaryLight)
-        : (isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight);
+        : (isDark
+            ? AppColors.textSecondaryDark
+            : AppColors.textSecondaryLight);
 
     return Expanded(
       child: GestureDetector(
         onTap: onTap,
         behavior: HitTestBehavior.opaque,
         child: Container(
-          padding: const EdgeInsets.symmetric(vertical: AppSpacing.s3),
+          padding:
+              const EdgeInsets.symmetric(vertical: AppSpacing.s3),
           decoration: isActive
               ? BoxDecoration(
                   border: Border(
@@ -384,7 +327,8 @@ class _TabItem extends StatelessWidget {
               : null,
           child: Text(
             label,
-            style: AppTextStyles.body(context).copyWith(color: textColor),
+            style:
+                AppTextStyles.body(context).copyWith(color: textColor),
             textAlign: TextAlign.center,
           ),
         ),
@@ -399,19 +343,17 @@ class _AssetsTab extends StatelessWidget {
   const _AssetsTab({
     required this.state,
     required this.projectName,
-    required this.jobManager,
   });
 
   final SceneLoaded state;
   final String projectName;
-  final GenerationJobManager jobManager;
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final missingImages = state.missingVariantAssets;
-    final missingPrompts = state.missingPromptAssets;
-    final hasMissing = missingImages.isNotEmpty || missingPrompts.isNotEmpty;
+
+    // Storyboard generation is blocked until every asset has a GCS image.
+    final isBlocked = !state.allAssetsHaveImages;
 
     return Column(
       children: [
@@ -427,9 +369,8 @@ class _AssetsTab extends StatelessWidget {
                 children: [
                   Text(
                     'SCENE ASSETS',
-                    style: AppTextStyles.caption(context).copyWith(
-                      letterSpacing: 0.8,
-                    ),
+                    style: AppTextStyles.caption(context)
+                        .copyWith(letterSpacing: 0.8),
                   ),
                   const Spacer(),
                   Text(
@@ -440,46 +381,42 @@ class _AssetsTab extends StatelessWidget {
               ),
               const SizedBox(height: AppSpacing.s3),
 
-              // Missing images warning.
-              if (missingImages.isNotEmpty)
+              // Banner shown when one or more assets are missing images.
+              if (isBlocked && state.assets.isNotEmpty)
                 _MissingImagesBanner(
-                  missing: missingImages,
-                  projectName: projectName,
+                  missing: state.assets
+                      .where((a) => a.gcsImagePath == null)
+                      .toList(),
                 ),
-
-              // Missing prompts warning.
-              if (missingPrompts.isNotEmpty) ...[
-                if (missingImages.isNotEmpty) const SizedBox(height: AppSpacing.s2),
-                _MissingPromptsBanner(
-                  missing: missingPrompts,
-                  projectName: projectName,
-                ),
-              ],
 
               // Asset list.
               if (state.assets.isEmpty)
                 Padding(
-                  padding: const EdgeInsets.symmetric(vertical: AppSpacing.s6),
+                  padding:
+                      const EdgeInsets.symmetric(vertical: AppSpacing.s6),
                   child: Center(
                     child: Text(
                       'No assets in this scene.',
                       style: AppTextStyles.body(context).copyWith(
-                        color: isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight,
+                        color: isDark
+                            ? AppColors.textSecondaryDark
+                            : AppColors.textSecondaryLight,
                       ),
                     ),
                   ),
                 )
               else
-                ...state.assets.map((asset) => _AssetRow(
-                      asset: asset,
-                      projectName: projectName,
-                      jobManager: jobManager,
-                    )),
+                ...state.assets.map(
+                  (asset) => _AssetRow(
+                    asset: asset,
+                    projectName: projectName,
+                  ),
+                ),
 
               const SizedBox(height: AppSpacing.s4),
 
               // Scene text expansion tile.
-              _SceneTextTile(sceneText: state.sceneText),
+              _SceneTextTile(sceneText: state.sceneText ?? ''),
 
               const SizedBox(height: AppSpacing.s8),
             ],
@@ -489,7 +426,7 @@ class _AssetsTab extends StatelessWidget {
         // Generate Storyboard button pinned to bottom.
         _GenerateStoryboardButton(
           state: state,
-          isBlocked: hasMissing,
+          isBlocked: isBlocked,
         ),
       ],
     );
@@ -499,20 +436,18 @@ class _AssetsTab extends StatelessWidget {
 // ── Missing images warning banner ─────────────────────────────────────────────
 
 class _MissingImagesBanner extends StatelessWidget {
-  const _MissingImagesBanner({
-    required this.missing,
-    required this.projectName,
-  });
+  const _MissingImagesBanner({required this.missing});
 
   final List<SceneAsset> missing;
-  final String projectName;
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final warningColor = isDark ? AppColors.warningDark : AppColors.warningLight;
-    final surfaceOverlay =
-        isDark ? AppColors.surfaceOverlayDark : AppColors.surfaceOverlayLight;
+    final warningColor =
+        isDark ? AppColors.warningDark : AppColors.warningLight;
+    final surfaceOverlay = isDark
+        ? AppColors.surfaceOverlayDark
+        : AppColors.surfaceOverlayLight;
 
     return Container(
       margin: const EdgeInsets.only(bottom: AppSpacing.s3),
@@ -522,123 +457,20 @@ class _MissingImagesBanner extends StatelessWidget {
         border: Border(left: BorderSide(color: warningColor, width: 3)),
       ),
       padding: const EdgeInsets.all(AppSpacing.s3),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
         children: [
-          Row(
-            children: [
-              Icon(LucideIcons.triangleAlert,
-                  size: AppSizing.iconSm, color: warningColor),
-              const SizedBox(width: AppSpacing.s2),
-              Expanded(
-                child: Text(
-                  '${missing.length} asset${missing.length == 1 ? '' : 's'} are missing reference images.',
-                  style: AppTextStyles.bodySmall(context)
-                      .copyWith(color: warningColor),
-                ),
-              ),
-            ],
+          Icon(LucideIcons.triangleAlert,
+              size: AppSizing.iconSm, color: warningColor),
+          const SizedBox(width: AppSpacing.s2),
+          Expanded(
+            child: Text(
+              '${missing.length} asset${missing.length == 1 ? '' : 's'} '
+              '${missing.length == 1 ? 'is' : 'are'} missing a generated '
+              'image. Generate images for all assets first.',
+              style: AppTextStyles.bodySmall(context)
+                  .copyWith(color: warningColor),
+            ),
           ),
-          const SizedBox(height: AppSpacing.s2),
-          ...missing.map((asset) => GestureDetector(
-                onTap: () => context.push(
-                  Uri(
-                    path: '/project/${Uri.encodeComponent(projectName)}'
-                        '/asset/${Uri.encodeComponent(asset.dirPath)}',
-                    queryParameters: asset.conditioningDirPath != null
-                        ? {'conditioningPath': Uri.encodeComponent(asset.conditioningDirPath!)}
-                        : null,
-                  ).toString(),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.only(top: AppSpacing.s1),
-                  child: Text(
-                    asset.displayName,
-                    style: AppTextStyles.bodySmall(context).copyWith(
-                      color: isDark ? AppColors.primaryDark : AppColors.primaryLight,
-                      decoration: TextDecoration.underline,
-                      decorationColor:
-                          isDark ? AppColors.primaryDark : AppColors.primaryLight,
-                    ),
-                  ),
-                ),
-              )),
-        ],
-      ),
-    );
-  }
-}
-
-// ── Missing prompts warning banner ────────────────────────────────────────────
-
-class _MissingPromptsBanner extends StatelessWidget {
-  const _MissingPromptsBanner({
-    required this.missing,
-    required this.projectName,
-  });
-
-  final List<SceneAsset> missing;
-  final String projectName;
-
-  @override
-  Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final warningColor = isDark ? AppColors.warningDark : AppColors.warningLight;
-    final surfaceOverlay =
-        isDark ? AppColors.surfaceOverlayDark : AppColors.surfaceOverlayLight;
-
-    return Container(
-      margin: const EdgeInsets.only(bottom: AppSpacing.s3),
-      decoration: BoxDecoration(
-        color: surfaceOverlay,
-        borderRadius: BorderRadius.circular(AppSizing.radiusMd),
-        border: Border(left: BorderSide(color: warningColor, width: 3)),
-      ),
-      padding: const EdgeInsets.all(AppSpacing.s3),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(LucideIcons.triangleAlert,
-                  size: AppSizing.iconSm, color: warningColor),
-              const SizedBox(width: AppSpacing.s2),
-              Expanded(
-                child: Text(
-                  '${missing.length} asset${missing.length == 1 ? '' : 's'} '
-                  '${missing.length == 1 ? 'has' : 'have'} no image prompt. '
-                  'Generate a prompt for each asset first.',
-                  style: AppTextStyles.bodySmall(context)
-                      .copyWith(color: warningColor),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: AppSpacing.s2),
-          ...missing.map((asset) => GestureDetector(
-                onTap: () {
-                  // Navigate to the referenced asset editor so the user can
-                  // generate a prompt there. For pass-through assets this is
-                  // the global or scene-local referenced dir, not the
-                  // placeholder dir owned by this scene.
-                  context.push(
-                    '/project/${Uri.encodeComponent(projectName)}'
-                    '/asset/${Uri.encodeComponent(asset.resolvedDirPath)}',
-                  );
-                },
-                child: Padding(
-                  padding: const EdgeInsets.only(top: AppSpacing.s1),
-                  child: Text(
-                    asset.displayName,
-                    style: AppTextStyles.bodySmall(context).copyWith(
-                      color: isDark ? AppColors.primaryDark : AppColors.primaryLight,
-                      decoration: TextDecoration.underline,
-                      decorationColor:
-                          isDark ? AppColors.primaryDark : AppColors.primaryLight,
-                    ),
-                  ),
-                ),
-              )),
         ],
       ),
     );
@@ -651,105 +483,88 @@ class _AssetRow extends StatelessWidget {
   const _AssetRow({
     required this.asset,
     required this.projectName,
-    required this.jobManager,
   });
 
   final SceneAsset asset;
   final String projectName;
-  final GenerationJobManager jobManager;
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final primaryColor = isDark ? AppColors.primaryDark : AppColors.primaryLight;
+    final primaryColor =
+        isDark ? AppColors.primaryDark : AppColors.primaryLight;
     final surfaceRaised =
         isDark ? AppColors.surfaceRaisedDark : AppColors.surfaceRaisedLight;
-
-    // Pass-through assets have no own image — show the referenced asset's image.
-    // Variants and local assets always use their own image.
-    final imageFile = File(p.join(asset.resolvedDirPath, 'image.png'));
-
-    // Tapping a pass-through navigates to the referenced asset so the user
-    // can see/edit it. Variants and locals navigate to their own dir.
-    final editorPath = asset.resolvedDirPath;
 
     return Padding(
       padding: const EdgeInsets.only(bottom: AppSpacing.s2),
       child: Material(
         color: surfaceRaised,
         borderRadius: BorderRadius.circular(AppSizing.radiusSm),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(AppSizing.radiusSm),
-          onTap: () => context.push(
-            Uri(
-              path: '/project/${Uri.encodeComponent(projectName)}'
-                  '/asset/${Uri.encodeComponent(editorPath)}',
-              queryParameters: asset.conditioningDirPath != null
-                  ? {'conditioningPath': Uri.encodeComponent(asset.conditioningDirPath!)}
-                  : null,
-            ).toString(),
-          ),
-          child: SizedBox(
-            height: 56,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.s3),
-              child: Row(
-                children: [
-                  // Thumbnail.
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(AppSizing.radiusXs),
-                    child: SizedBox(
-                      width: 40,
-                      height: 40,
-                      child: asset.hasImage
-                          ? Image.file(imageFile, fit: BoxFit.cover,
-                              errorBuilder: (ctx, err, stack) =>
-                                  _greyPlaceholder(isDark))
-                          : _greyPlaceholder(isDark),
-                    ),
+        // Phase 2: asset navigation path is not yet defined for Firestore-based
+        // asset IDs. Asset rows are non-tappable until the asset editor migrates.
+        child: SizedBox(
+          height: 56,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: AppSpacing.s3),
+            child: Row(
+              children: [
+                // Thumbnail: fetch presigned URL from GCS path.
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(AppSizing.radiusXs),
+                  child: SizedBox(
+                    width: 40,
+                    height: 40,
+                    child: asset.gcsImagePath != null
+                        ? _GcsImageThumbnail(gcsPath: asset.gcsImagePath!)
+                        : _greyPlaceholder(isDark),
                   ),
-                  const SizedBox(width: AppSpacing.s3),
+                ),
+                const SizedBox(width: AppSpacing.s3),
 
-                  // Name + badge.
-                  Expanded(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          _displayName(asset.name),
-                          style: AppTextStyles.body(context),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(height: 2),
-                        _AssetBadge(
-                          asset: asset,
-                          primaryColor: primaryColor,
-                        ),
-                      ],
-                    ),
+                // Name + badge.
+                Expanded(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        asset.displayName,
+                        style: AppTextStyles.body(context),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 2),
+                      _AssetBadge(
+                        asset: asset,
+                        primaryColor: primaryColor,
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: AppSpacing.s2),
+                ),
+                const SizedBox(width: AppSpacing.s2),
 
-                  // Step dots (2: prompt, image).
-                  ListenableBuilder(
-                    listenable: jobManager,
-                    builder: (context2, child2) => GenerationStepDots(
-                      steps: [
-                        _jobStateToStepState(
-                            jobManager.stateFor(
-                                GenerationJobManager.promptKey(asset.dirPath)),
-                            fallbackDone: asset.isPromptReady),
-                        _jobStateToStepState(
-                            jobManager.stateFor(
-                                GenerationJobManager.imageKey(asset.dirPath)),
-                            fallbackDone: asset.hasImage),
-                      ],
-                    ),
+                // Status dot: filled = has image, outlined = pending.
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: asset.gcsImagePath != null
+                        ? (isDark
+                            ? AppColors.stateDoneDark
+                            : AppColors.stateDoneLight)
+                        : null,
+                    border: asset.gcsImagePath == null
+                        ? Border.all(
+                            color: isDark
+                                ? AppColors.statePendingDark
+                                : AppColors.statePendingLight,
+                          )
+                        : null,
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ),
@@ -758,31 +573,97 @@ class _AssetRow extends StatelessWidget {
   }
 
   Widget _greyPlaceholder(bool isDark) => Container(
-        color: isDark ? AppColors.surfaceOverlayDark : AppColors.surfaceOverlayLight,
+        color: isDark
+            ? AppColors.surfaceOverlayDark
+            : AppColors.surfaceOverlayLight,
         child: Icon(
           LucideIcons.image,
           size: 16,
-          color: isDark ? AppColors.textTertiaryDark : AppColors.textTertiaryLight,
+          color: isDark
+              ? AppColors.textTertiaryDark
+              : AppColors.textTertiaryLight,
         ),
       );
-
-  /// Shows only the last path segment for reference names like `@/scenes/0/lyra`.
-  String _displayName(String name) =>
-      name.contains('/') ? name.split('/').last : name;
-
-  GenerationStepState _jobStateToStepState(
-    GenerationJobState job, {
-    required bool fallbackDone,
-  }) {
-    return switch (job) {
-      GenerationJobState.running => GenerationStepState.running,
-      GenerationJobState.failed => GenerationStepState.failed,
-      GenerationJobState.done => GenerationStepState.done,
-      GenerationJobState.idle =>
-        fallbackDone ? GenerationStepState.done : GenerationStepState.pending,
-    };
-  }
 }
+
+/// Fetches a presigned GCS URL once and renders the image.
+///
+/// Uses a [StatefulWidget] to cache the [Future] so it does not refire on
+/// every parent rebuild (a raw [FutureBuilder] passed `apiClient.getPresignedUrl()`
+/// directly would create a new Future on each build).
+class _GcsImageThumbnail extends StatefulWidget {
+  const _GcsImageThumbnail({required this.gcsPath});
+
+  final String gcsPath;
+
+  @override
+  State<_GcsImageThumbnail> createState() => _GcsImageThumbnailState();
+}
+
+class _GcsImageThumbnailState extends State<_GcsImageThumbnail> {
+  // Initialised in didChangeDependencies (first call after initState completes)
+  // to avoid calling ArkMaskServices.of(context) before the widget is in tree.
+  Future<String>? _urlFuture;
+  String? _lastGcsPath;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Fetch once on first mount, then only when the GCS path changes.
+    if (_lastGcsPath != widget.gcsPath) {
+      _lastGcsPath = widget.gcsPath;
+      _urlFuture = _fetchUrl();
+    }
+  }
+
+  @override
+  void didUpdateWidget(_GcsImageThumbnail old) {
+    super.didUpdateWidget(old);
+    // Re-fetch if the GCS path changed (e.g., after regeneration).
+    if (old.gcsPath != widget.gcsPath) {
+      _lastGcsPath = widget.gcsPath;
+      _urlFuture = _fetchUrl();
+    }
+  }
+
+  Future<String> _fetchUrl() {
+    final apiClient = ArkMaskServices.of(context).apiClient;
+    return apiClient.getPresignedUrl(gcsPath: widget.gcsPath);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return FutureBuilder<String>(
+      future: _urlFuture,
+      builder: (context, snap) {
+        if (snap.hasData) {
+          return Image.network(
+            snap.data!,
+            fit: BoxFit.cover,
+            errorBuilder: (ctx, err, stack) => _placeholder(isDark),
+          );
+        }
+        // Loading or error — show placeholder.
+        return _placeholder(isDark);
+      },
+    );
+  }
+
+  Widget _placeholder(bool isDark) => Container(
+        color: isDark
+            ? AppColors.surfaceOverlayDark
+            : AppColors.surfaceOverlayLight,
+        child: Icon(
+          LucideIcons.image,
+          size: 16,
+          color: isDark
+              ? AppColors.textTertiaryDark
+              : AppColors.textTertiaryLight,
+        ),
+      );
+}
+
 
 class _AssetBadge extends StatelessWidget {
   const _AssetBadge({
@@ -797,32 +678,34 @@ class _AssetBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
-    // Badge classification:
-    //   Global   — asset lives in the global pool, or is a pass-through ref
-    //              (delegates everything to a global/prior-scene asset)
-    //   Variant  — @-named asset that has its own description/prompt/image
-    //   Scene    — plain local asset with no reference
-    final bool isGlobalOrPassThrough =
-        asset.isGlobal || (asset.isPassThrough && asset.name.startsWith('@'));
-    final bool isVariant =
-        asset.name.startsWith('@') && asset.description.isNotEmpty;
-
     final String label;
     final Color bgColor;
     final Color textColor;
 
-    if (isGlobalOrPassThrough) {
-      label = 'Global';
+    if (asset.isPassThrough) {
+      // Pass-through: delegates image to the referenced global asset.
+      label = 'Pass-through';
       bgColor = primaryColor.withValues(alpha: 0.15);
       textColor = primaryColor;
-    } else if (isVariant) {
+    } else if (asset.name.startsWith('@') &&
+        asset.description.isNotEmpty) {
+      // Variant: @-named asset with its own description.
       label = 'Variant';
-      bgColor = isDark ? AppColors.surfaceOverlayDark : AppColors.surfaceOverlayLight;
-      textColor = isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight;
+      bgColor = isDark
+          ? AppColors.surfaceOverlayDark
+          : AppColors.surfaceOverlayLight;
+      textColor = isDark
+          ? AppColors.textSecondaryDark
+          : AppColors.textSecondaryLight;
     } else {
+      // Local: independent asset owned by this scene.
       label = 'Scene';
-      bgColor = isDark ? AppColors.surfaceOverlayDark : AppColors.surfaceOverlayLight;
-      textColor = isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight;
+      bgColor = isDark
+          ? AppColors.surfaceOverlayDark
+          : AppColors.surfaceOverlayLight;
+      textColor = isDark
+          ? AppColors.textSecondaryDark
+          : AppColors.textSecondaryLight;
     }
 
     return Container(
@@ -854,10 +737,7 @@ class _SceneTextTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return ExpansionTile(
-      title: Text(
-        'Scene Text',
-        style: AppTextStyles.h3(context),
-      ),
+      title: Text('Scene Text', style: AppTextStyles.h3(context)),
       tilePadding: EdgeInsets.zero,
       children: [
         Padding(
@@ -865,7 +745,9 @@ class _SceneTextTile extends StatelessWidget {
           child: Text(
             sceneText.isEmpty ? 'No story text found.' : sceneText,
             style: AppTextStyles.bodyLarge(context).copyWith(
-              color: isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight,
+              color: isDark
+                  ? AppColors.textSecondaryDark
+                  : AppColors.textSecondaryLight,
             ),
           ),
         ),
@@ -884,16 +766,17 @@ class _GenerateStoryboardButton extends StatelessWidget {
 
   final SceneLoaded state;
 
-  /// True when missing images or missing prompts block storyboard generation.
+  /// True when assets are missing images — blocks storyboard generation.
   final bool isBlocked;
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final primaryColor = isDark ? AppColors.primaryDark : AppColors.primaryLight;
+    final primaryColor =
+        isDark ? AppColors.primaryDark : AppColors.primaryLight;
     final isGenerating = state.isGeneratingStoryboard;
     final isDisabled = isBlocked || isGenerating;
-    final hasExisting = state.storyboard.storyboardBody.isNotEmpty;
+    final hasExisting = state.hasStoryboard;
 
     final button = ElevatedButton(
       onPressed: isDisabled ? null : () => _onTap(context),
@@ -930,7 +813,9 @@ class _GenerateStoryboardButton extends StatelessWidget {
               hasExisting ? 'Regenerate Storyboard' : 'Generate Storyboard',
               style: AppTextStyles.body(context).copyWith(
                 color: isDisabled
-                    ? (isDark ? AppColors.textTertiaryDark : AppColors.textTertiaryLight)
+                    ? (isDark
+                        ? AppColors.textTertiaryDark
+                        : AppColors.textTertiaryLight)
                     : primaryColor,
               ),
             ),
@@ -949,7 +834,8 @@ class _GenerateStoryboardButton extends StatelessWidget {
           children: [
             if (isBlocked)
               Tooltip(
-                message: 'Resolve all warnings above before generating a storyboard.',
+                message:
+                    'All asset images must be generated before creating a storyboard.',
                 child: button,
               )
             else
@@ -967,9 +853,12 @@ class _GenerateStoryboardButton extends StatelessWidget {
   }
 
   Future<void> _onTap(BuildContext context) async {
-    // Warn if many character assets.
+    // Warn if many character assets (may affect generation quality).
     final charAssets = state.assets
-        .where((a) => !a.isPassThrough && a.type == AssetType.character && a.hasImage)
+        .where((a) =>
+            !a.isPassThrough &&
+            a.type == AssetType.character &&
+            a.gcsImagePath != null)
         .toList();
     if (charAssets.length > 4) {
       final confirmed = await showDialog<bool>(
@@ -977,8 +866,8 @@ class _GenerateStoryboardButton extends StatelessWidget {
         builder: (_) => AlertDialog(
           title: const Text('Many Character Assets'),
           content: Text(
-            'This scene has ${charAssets.length} character assets with reference images. '
-            'This may affect generation quality. Continue?',
+            'This scene has ${charAssets.length} character assets with '
+            'reference images. This may affect generation quality. Continue?',
           ),
           actions: [
             TextButton(
@@ -1001,38 +890,29 @@ class _GenerateStoryboardButton extends StatelessWidget {
 // ── Storyboard Tab ────────────────────────────────────────────────────────────
 
 class _StoryboardTab extends StatelessWidget {
-  const _StoryboardTab({
-    required this.state,
-    required this.projectName,
-    required this.jobManager,
-  });
+  const _StoryboardTab({required this.state});
 
   final SceneLoaded state;
-  final String projectName;
-  final GenerationJobManager jobManager;
 
   @override
   Widget build(BuildContext context) {
-    final hasStoryboard = state.storyboard.storyboardBody.isNotEmpty;
-
     return Column(
       children: [
         Expanded(
-          child: hasStoryboard
-              ? _StoryboardEditor(storyboard: state.storyboard)
+          child: state.hasStoryboard
+              ? _StoryboardDisplay(
+                  storyboardBody: state.storyboardBody!,
+                )
               : _EmptyStoryboardState(),
         ),
 
-        // Job status strip.
-        _JobStatusStrip(
-          state: state,
-          jobManager: jobManager,
-        ),
+        // Generation status strip — driven by cubit state, no jobManager.
+        _GenerationStatusStrip(state: state),
 
-        // Video preview.
+        // Video preview: shows a card with a play button when video is ready.
         if (state.hasVideo)
           _VideoPreviewArea(
-            sceneDirPath: state.sceneDirPath,
+            gcsVideoPath: state.gcsVideoPath!,
           ),
 
         // Generate Video button.
@@ -1048,7 +928,8 @@ class _EmptyStoryboardState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final primaryColor = isDark ? AppColors.primaryDark : AppColors.primaryLight;
+    final primaryColor =
+        isDark ? AppColors.primaryDark : AppColors.primaryLight;
 
     return Center(
       child: Column(
@@ -1060,15 +941,14 @@ class _EmptyStoryboardState extends StatelessWidget {
             color: primaryColor.withValues(alpha: 0.4),
           ),
           const SizedBox(height: AppSpacing.s4),
-          Text(
-            'No storyboard yet',
-            style: AppTextStyles.h3(context),
-          ),
+          Text('No storyboard yet', style: AppTextStyles.h3(context)),
           const SizedBox(height: AppSpacing.s2),
           Text(
             'Generate a storyboard from the Assets tab.',
             style: AppTextStyles.body(context).copyWith(
-              color: isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight,
+              color: isDark
+                  ? AppColors.textSecondaryDark
+                  : AppColors.textSecondaryLight,
             ),
             textAlign: TextAlign.center,
           ),
@@ -1078,33 +958,38 @@ class _EmptyStoryboardState extends StatelessWidget {
   }
 }
 
-// ── Storyboard editor ─────────────────────────────────────────────────────────
+// ── Storyboard display ────────────────────────────────────────────────────────
 
-class _StoryboardEditor extends StatefulWidget {
-  const _StoryboardEditor({required this.storyboard});
+/// Read-only display of the storyboard body written by the backend.
+///
+/// Phase 2: The storyboard lives in Firestore (`storyboard_body`). The
+/// Firestore listener in [SceneCubit] delivers updates automatically.
+/// There is no client-side save path — display only.
+class _StoryboardDisplay extends StatefulWidget {
+  const _StoryboardDisplay({required this.storyboardBody});
 
-  final SceneStoryboard storyboard;
+  final String storyboardBody;
 
   @override
-  State<_StoryboardEditor> createState() => _StoryboardEditorState();
+  State<_StoryboardDisplay> createState() => _StoryboardDisplayState();
 }
 
-class _StoryboardEditorState extends State<_StoryboardEditor> {
+class _StoryboardDisplayState extends State<_StoryboardDisplay> {
   late final TextEditingController _controller;
 
   @override
   void initState() {
     super.initState();
-    _controller =
-        TextEditingController(text: widget.storyboard.storyboardBody);
+    _controller = TextEditingController(text: widget.storyboardBody);
   }
 
   @override
-  void didUpdateWidget(_StoryboardEditor old) {
+  void didUpdateWidget(_StoryboardDisplay old) {
     super.didUpdateWidget(old);
-    if (old.storyboard.storyboardBody != widget.storyboard.storyboardBody &&
-        _controller.text != widget.storyboard.storyboardBody) {
-      _controller.text = widget.storyboard.storyboardBody;
+    // Keep the display in sync when the Firestore listener delivers new text.
+    if (old.storyboardBody != widget.storyboardBody &&
+        _controller.text != widget.storyboardBody) {
+      _controller.text = widget.storyboardBody;
     }
   }
 
@@ -1125,6 +1010,7 @@ class _StoryboardEditorState extends State<_StoryboardEditor> {
       padding: const EdgeInsets.all(AppSpacing.s3),
       child: TextField(
         controller: _controller,
+        readOnly: true,
         maxLines: null,
         expands: true,
         textAlignVertical: TextAlignVertical.top,
@@ -1133,29 +1019,26 @@ class _StoryboardEditorState extends State<_StoryboardEditor> {
           border: InputBorder.none,
           contentPadding: EdgeInsets.zero,
         ),
-        onEditingComplete: () => _save(),
       ),
     );
   }
-
-  void _save() {
-    context.read<SceneCubit>().onStoryboardChanged(_controller.text);
-  }
 }
 
-// ── Job status strip ──────────────────────────────────────────────────────────
+// ── Generation status strip ───────────────────────────────────────────────────
 
-class _JobStatusStrip extends StatefulWidget {
-  const _JobStatusStrip({required this.state, required this.jobManager});
+/// Shows the storyboard and video generation status driven by [SceneLoaded]
+/// state — no [GenerationJobManager] dependency.
+class _GenerationStatusStrip extends StatefulWidget {
+  const _GenerationStatusStrip({required this.state});
 
   final SceneLoaded state;
-  final GenerationJobManager jobManager;
 
   @override
-  State<_JobStatusStrip> createState() => _JobStatusStripState();
+  State<_GenerationStatusStrip> createState() =>
+      _GenerationStatusStripState();
 }
 
-class _JobStatusStripState extends State<_JobStatusStrip>
+class _GenerationStatusStripState extends State<_GenerationStatusStrip>
     with SingleTickerProviderStateMixin {
   late final AnimationController _pulse;
   late final Animation<double> _scaleAnim;
@@ -1180,85 +1063,79 @@ class _JobStatusStripState extends State<_JobStatusStrip>
 
   @override
   Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: widget.jobManager,
-      builder: (context, _) {
-        final sceneDirPath = widget.state.sceneDirPath;
-        final sbJobState =
-            widget.jobManager.stateFor(GenerationJobManager.storyboardKey(sceneDirPath));
-        final vidJobState =
-            widget.jobManager.stateFor(GenerationJobManager.videoKey(sceneDirPath));
+    final hasRunning = widget.state.isGeneratingStoryboard ||
+        widget.state.isGeneratingVideo;
 
-        final hasRunning = sbJobState == GenerationJobState.running ||
-            vidJobState == GenerationJobState.running;
-        if (hasRunning && !_pulse.isAnimating) {
-          _pulse.repeat(reverse: true);
-        } else if (!hasRunning && _pulse.isAnimating) {
-          _pulse.stop();
-          _pulse.reset();
-        }
+    if (hasRunning && !_pulse.isAnimating) {
+      _pulse.repeat(reverse: true);
+    } else if (!hasRunning && _pulse.isAnimating) {
+      _pulse.stop();
+      _pulse.reset();
+    }
 
-        return Container(
-          padding: const EdgeInsets.symmetric(
-            horizontal: AppSpacing.s4,
-            vertical: AppSpacing.s3,
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.s4,
+        vertical: AppSpacing.s3,
+      ),
+      child: Row(
+        children: [
+          _StatusDot(
+            icon: LucideIcons.scroll,
+            label: 'Storyboard',
+            isRunning: widget.state.isGeneratingStoryboard,
+            isDone: widget.state.hasStoryboard,
+            scaleAnim: _scaleAnim,
+            subLabel: widget.state.isGeneratingStoryboard
+                ? 'Generating…'
+                : null,
           ),
-          child: Row(
-            children: [
-              _StatusStep(
-                icon: LucideIcons.scroll,
-                label: 'Storyboard',
-                jobState: sbJobState,
-                scaleAnim: _scaleAnim,
-                errorMessage: widget.jobManager
-                    .errorFor(GenerationJobManager.storyboardKey(sceneDirPath)),
-              ),
-              const SizedBox(width: AppSpacing.s6),
-              _StatusStep(
-                icon: LucideIcons.video,
-                label: 'Video',
-                jobState: vidJobState,
-                scaleAnim: _scaleAnim,
-                subLabel: vidJobState == GenerationJobState.running
-                    ? 'This may take a few minutes.'
-                    : null,
-                errorMessage: widget.jobManager
-                    .errorFor(GenerationJobManager.videoKey(sceneDirPath)),
-              ),
-            ],
+          const SizedBox(width: AppSpacing.s6),
+          _StatusDot(
+            icon: LucideIcons.video,
+            label: 'Video',
+            isRunning: widget.state.isGeneratingVideo,
+            isDone: widget.state.hasVideo,
+            scaleAnim: _scaleAnim,
+            subLabel: widget.state.isGeneratingVideo
+                ? 'This may take a few minutes.'
+                : null,
           ),
-        );
-      },
+        ],
+      ),
     );
   }
 }
 
-class _StatusStep extends StatelessWidget {
-  const _StatusStep({
+class _StatusDot extends StatelessWidget {
+  const _StatusDot({
     required this.icon,
     required this.label,
-    required this.jobState,
+    required this.isRunning,
+    required this.isDone,
     required this.scaleAnim,
     this.subLabel,
-    this.errorMessage,
   });
 
   final IconData icon;
   final String label;
-  final GenerationJobState jobState;
+  final bool isRunning;
+  final bool isDone;
   final Animation<double> scaleAnim;
   final String? subLabel;
-  final String? errorMessage;
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final color = switch (jobState) {
-      GenerationJobState.idle => isDark ? AppColors.statePendingDark : AppColors.statePendingLight,
-      GenerationJobState.running => isDark ? AppColors.stateRunningDark : AppColors.stateRunningLight,
-      GenerationJobState.done => isDark ? AppColors.stateDoneDark : AppColors.stateDoneLight,
-      GenerationJobState.failed => isDark ? AppColors.stateFailedDark : AppColors.stateFailedLight,
-    };
+
+    final Color color;
+    if (isRunning) {
+      color = isDark ? AppColors.stateRunningDark : AppColors.stateRunningLight;
+    } else if (isDone) {
+      color = isDark ? AppColors.stateDoneDark : AppColors.stateDoneLight;
+    } else {
+      color = isDark ? AppColors.statePendingDark : AppColors.statePendingLight;
+    }
 
     final dot = Container(
       width: 8,
@@ -1269,10 +1146,10 @@ class _StatusStep extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        jobState == GenerationJobState.running
+        isRunning
             ? AnimatedBuilder(
                 animation: scaleAnim,
-                builder: (context2, child2) =>
+                builder: (_, child) =>
                     Transform.scale(scale: scaleAnim.value, child: dot),
               )
             : dot,
@@ -1287,29 +1164,17 @@ class _StatusStep extends StatelessWidget {
                 Icon(icon, size: AppSizing.iconXs, color: color),
                 const SizedBox(width: AppSpacing.s1),
                 Text(label,
-                    style: AppTextStyles.caption(context).copyWith(color: color)),
-                if (jobState == GenerationJobState.failed && errorMessage != null) ...[
-                  const SizedBox(width: AppSpacing.s2),
-                  GestureDetector(
-                    onTap: () => _showError(context, errorMessage!),
-                    child: Text(
-                      'View Error',
-                      style: AppTextStyles.caption(context).copyWith(
-                        color: isDark ? AppColors.primaryDark : AppColors.primaryLight,
-                        decoration: TextDecoration.underline,
-                        decorationColor:
-                            isDark ? AppColors.primaryDark : AppColors.primaryLight,
-                      ),
-                    ),
-                  ),
-                ],
+                    style:
+                        AppTextStyles.caption(context).copyWith(color: color)),
               ],
             ),
             if (subLabel != null)
               Text(
                 subLabel!,
                 style: AppTextStyles.caption(context).copyWith(
-                  color: isDark ? AppColors.textTertiaryDark : AppColors.textTertiaryLight,
+                  color: isDark
+                      ? AppColors.textTertiaryDark
+                      : AppColors.textTertiaryLight,
                 ),
               ),
           ],
@@ -1317,89 +1182,128 @@ class _StatusStep extends StatelessWidget {
       ],
     );
   }
-
-  void _showError(BuildContext context, String message) {
-    showDialog<void>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Generation Error'),
-        content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
-  }
 }
 
 // ── Video preview area ────────────────────────────────────────────────────────
 
-class _VideoPreviewArea extends StatelessWidget {
-  const _VideoPreviewArea({required this.sceneDirPath});
+/// Shows a play-button card that navigates to the video player.
+///
+/// Phase 2: Fetches a presigned GCS URL and passes it to the `/player` route
+/// (which accepts a `path` query param that can be either a filesystem path or
+/// a presigned URL — see router.dart).
+class _VideoPreviewArea extends StatefulWidget {
+  const _VideoPreviewArea({required this.gcsVideoPath});
 
-  final String sceneDirPath;
+  final String gcsVideoPath;
+
+  @override
+  State<_VideoPreviewArea> createState() => _VideoPreviewAreaState();
+}
+
+class _VideoPreviewAreaState extends State<_VideoPreviewArea> {
+  // Initialised in didChangeDependencies to avoid calling
+  // ArkMaskServices.of(context) before the widget is in the tree.
+  Future<String>? _urlFuture;
+  String? _lastGcsVideoPath;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_lastGcsVideoPath != widget.gcsVideoPath) {
+      _lastGcsVideoPath = widget.gcsVideoPath;
+      _urlFuture = _fetchUrl();
+    }
+  }
+
+  @override
+  void didUpdateWidget(_VideoPreviewArea old) {
+    super.didUpdateWidget(old);
+    if (old.gcsVideoPath != widget.gcsVideoPath) {
+      _lastGcsVideoPath = widget.gcsVideoPath;
+      _urlFuture = _fetchUrl();
+    }
+  }
+
+  Future<String> _fetchUrl() {
+    final apiClient = ArkMaskServices.of(context).apiClient;
+    return apiClient.getPresignedUrl(gcsPath: widget.gcsVideoPath);
+  }
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final primaryColor = isDark ? AppColors.primaryDark : AppColors.primaryLight;
-    final videoFile = File(p.join(sceneDirPath, 'video.mp4'));
-    // Use the first frame as thumbnail — show video file's icon since we can't
-    // decode video frames without a video player package. Use a placeholder card
-    // with a play icon overlay.
-    return GestureDetector(
-      onTap: () => context.push(
-        Uri(
-          path: '/player',
-          queryParameters: {
-            'path': Uri.encodeComponent(videoFile.path),
-            'title': 'Scene ${p.basename(sceneDirPath)}',
-          },
-        ).toString(),
-      ),
-      child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: AppSpacing.s4),
-        width: double.infinity,
-        height: 180,
-        decoration: BoxDecoration(
-          color: isDark ? AppColors.surfaceSunkenDark : AppColors.surfaceSunkenLight,
-          borderRadius: BorderRadius.circular(AppSizing.radiusMd),
-        ),
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            // Try to show a file thumbnail (placeholder since video thumbnails
-            // need a plugin). Show the video path label.
-            Positioned(
-              bottom: AppSpacing.s2,
-              left: AppSpacing.s3,
-              child: Text(
-                'video.mp4',
-                style: AppTextStyles.caption(context).copyWith(
-                  color: isDark ? AppColors.textTertiaryDark : AppColors.textTertiaryLight,
-                ),
-              ),
+    final primaryColor =
+        isDark ? AppColors.primaryDark : AppColors.primaryLight;
+
+    return FutureBuilder<String>(
+      future: _urlFuture,
+      builder: (context, snap) {
+        return GestureDetector(
+          onTap: snap.hasData
+              ? () => context.push(
+                    Uri(
+                      path: '/player',
+                      queryParameters: {
+                        'path': Uri.encodeComponent(snap.data!),
+                        'title': 'Scene ${widget.gcsVideoPath.split('/').last}',
+                      },
+                    ).toString(),
+                  )
+              : null,
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: AppSpacing.s4),
+            width: double.infinity,
+            height: 180,
+            decoration: BoxDecoration(
+              color: isDark
+                  ? AppColors.surfaceSunkenDark
+                  : AppColors.surfaceSunkenLight,
+              borderRadius: BorderRadius.circular(AppSizing.radiusMd),
             ),
-            // Play button overlay.
-            Container(
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                color: primaryColor,
-                shape: BoxShape.circle,
-              ),
-              child: Icon(
-                LucideIcons.play,
-                color: isDark ? AppColors.primaryOnDark : AppColors.primaryOnLight,
-                size: AppSizing.iconMd,
-              ),
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                if (snap.connectionState == ConnectionState.waiting)
+                  SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: primaryColor),
+                  )
+                else ...[
+                  Positioned(
+                    bottom: AppSpacing.s2,
+                    left: AppSpacing.s3,
+                    child: Text(
+                      'video.mp4',
+                      style: AppTextStyles.caption(context).copyWith(
+                        color: isDark
+                            ? AppColors.textTertiaryDark
+                            : AppColors.textTertiaryLight,
+                      ),
+                    ),
+                  ),
+                  Container(
+                    width: 48,
+                    height: 48,
+                    decoration: BoxDecoration(
+                      color: primaryColor,
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      LucideIcons.play,
+                      color: isDark
+                          ? AppColors.primaryOnDark
+                          : AppColors.primaryOnLight,
+                      size: AppSizing.iconMd,
+                    ),
+                  ),
+                ],
+              ],
             ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 }
@@ -1414,10 +1318,10 @@ class _GenerateVideoButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final primaryColor = isDark ? AppColors.primaryDark : AppColors.primaryLight;
+    final primaryColor =
+        isDark ? AppColors.primaryDark : AppColors.primaryLight;
     final isGenerating = state.isGeneratingVideo;
-    final hasStoryboard = state.storyboard.storyboardBody.isNotEmpty;
-    final isDisabled = !hasStoryboard || isGenerating;
+    final isDisabled = !state.hasStoryboard || isGenerating;
 
     return SafeArea(
       child: Padding(
@@ -1455,14 +1359,16 @@ class _GenerateVideoButton extends StatelessWidget {
                         ),
                         const SizedBox(width: AppSpacing.s2),
                         Text(
-                          'Generating...',
+                          'Generating…',
                           style: AppTextStyles.body(context)
                               .copyWith(color: primaryColor),
                         ),
                       ],
                     )
                   : Text(
-                      state.hasVideo ? 'Regenerate Video' : 'Generate Video',
+                      state.hasVideo
+                          ? 'Regenerate Video'
+                          : 'Generate Video',
                       style: AppTextStyles.body(context).copyWith(
                         color: isDisabled
                             ? (isDark
@@ -1485,14 +1391,14 @@ class _GenerateVideoButton extends StatelessWidget {
   }
 
   Future<void> _onTap(BuildContext context) async {
-    // Confirm overwrite if video already exists.
+    // Confirm overwrite when a video already exists.
     if (state.hasVideo) {
       final confirmed = await showDialog<bool>(
         context: context,
         builder: (_) => AlertDialog(
           title: const Text('Regenerate Video?'),
           content: const Text(
-            'This will replace the existing video.mp4 and use '
+            'This will replace the existing video and use '
             '${CreditCost.videoGeneration} credits.',
           ),
           actions: [
@@ -1510,11 +1416,12 @@ class _GenerateVideoButton extends StatelessWidget {
       if (confirmed != true || !context.mounted) return;
     }
 
-    // Warn if many character assets.
+    // Warn when many character assets are present.
     final charAssets = state.assets
-        .where((a) => !a.isPassThrough &&
+        .where((a) =>
+            !a.isPassThrough &&
             a.type == AssetType.character &&
-            a.hasImage)
+            a.gcsImagePath != null)
         .toList();
     if (charAssets.length > 4) {
       final confirmed = await showDialog<bool>(
@@ -1522,8 +1429,8 @@ class _GenerateVideoButton extends StatelessWidget {
         builder: (_) => AlertDialog(
           title: const Text('Many Character Assets'),
           content: Text(
-            'This scene has ${charAssets.length} character assets with reference images. '
-            'Continue?',
+            'This scene has ${charAssets.length} character assets with '
+            'reference images. Continue?',
           ),
           actions: [
             TextButton(
@@ -1562,7 +1469,10 @@ class _ErrorBody extends StatelessWidget {
           children: [
             Text(message, style: AppTextStyles.body(context)),
             const SizedBox(height: AppSpacing.s4),
-            ElevatedButton(onPressed: onRetry, child: const Text('Retry')),
+            ElevatedButton(
+              onPressed: onRetry,
+              child: const Text('Retry'),
+            ),
           ],
         ),
       ),

@@ -119,13 +119,58 @@ class GeminiProvider(AIProvider):
         text = self._text_interact(self.ASSET_LIST_PROMPT, story)
         return json.loads(_extract_json(text))
 
-    def generate_image_prompt(self, name: str, type_: str, description: str) -> str:
-        payload = json.dumps({"name": name, "type": type_, "description": description})
+    def generate_image_prompt(
+        self,
+        name: str,
+        type_: str,
+        description: str,
+        art_style: str = "painterly illustration with clean lines and rich color",
+    ) -> str:
+        # Include art_style in the payload so the static system prompt can apply it.
+        payload = json.dumps({
+            "name": name,
+            "type": type_,
+            "description": description,
+            "art_style": art_style,
+        })
         return self._text_interact(self.IMAGE_PROMPT, payload)
 
-    def generate_video_prompt(self, scene_text: str, assets: list[dict]) -> str:
-        payload = json.dumps({"scene": scene_text, "assets": assets})
-        return self._text_interact(self.VIDEO_PROMPT, payload)
+    def generate_video_prompt(
+        self,
+        scene_text: str,
+        ref_images: list[RefImage],
+        art_style: str = "painterly illustration with clean lines and rich color",
+        subtitles: bool = False,
+    ) -> str:
+        # Serialise the input as JSON matching the instruction's Input Format.
+        # art_style and subtitles sit at the root alongside scene and assets.
+        # (assets[] prompts are not available at this layer — ref images are passed
+        # as inline image parts below; the model uses Image N ordering to map them.)
+        payload = json.dumps({
+            "scene": scene_text,
+            "art_style": art_style,
+            "subtitles": "enabled" if subtitles else "disabled",
+        })
+        # Build a multimodal content list: system text + image parts for each ref_image.
+        # Uses generate_content (not Interactions API) because the Interactions API
+        # does not accept image parts.
+        contents: list = [
+            types.Part.from_text(
+                text=f"{self.VIDEO_PROMPT}\n\n---\n\n{payload}"
+            )
+        ]
+        for img in ref_images[:8]:  # cap at 8 ref images for video prompt
+            contents.append(types.Part.from_bytes(data=img.data, mime_type=img.mime_type))
+
+        config = types.GenerateContentConfig(
+            safety_settings=self._SAFETY_SETTINGS,
+        )
+        response = self._client.models.generate_content(
+            model=self.TEXT_MODEL,
+            contents=contents,
+            config=config,
+        )
+        return (response.text or "").strip()
 
     def generate_image(self, prompt: str, ref_images: list[RefImage]) -> tuple[bytes, str]:
         """Generate an image via generate_content (Nano Banana / gemini-3.1-flash-image).

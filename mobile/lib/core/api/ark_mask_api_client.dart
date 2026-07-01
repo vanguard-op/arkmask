@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 
+import '../models/models.dart';
 import '../storage/secure_storage_service.dart';
 import 'api_error.dart';
 import 'credential_interceptor.dart';
@@ -94,113 +95,285 @@ class ArkMaskApiClient {
     return (response.data as Map<String, dynamic>);
   }
 
-  // ── Generation endpoints (Phase 2+, declared for completeness) ─────────────
+  // ── Project endpoints ──────────────────────────────────────────────────────
 
-  /// POST /assets — extract characters, backgrounds, objects from story text.
-  Future<Map<String, dynamic>> extractAssets({required String storyContent}) async {
+  /// POST /projects — create a new project record in Firestore + Cloud SQL.
+  ///
+  /// [displayName] is the user-facing project name (≤ 60 characters, validated
+  /// server-side). [generationSettings] sets the initial art style and subtitle
+  /// preference; defaults are applied by the backend if omitted.
+  ///
+  /// Returns a map with `slug` and `display_name`.
+  Future<Map<String, dynamic>> createProject({
+    required String displayName,
+    GenerationSettings? generationSettings,
+  }) async {
+    final body = <String, dynamic>{'display_name': displayName};
+    if (generationSettings != null) {
+      body['generation_settings'] = generationSettings.toFirestore();
+    }
     final response = await _execute(
-      () => _dio.post('/assets', data: {'story': storyContent}),
+      () => _dio.post('/projects', data: body),
     );
     return (response.data as Map<String, dynamic>);
   }
 
-  /// POST /image-prompt — generate an image prompt for an asset.
-  Future<String> generateImagePrompt({
+  /// PATCH /projects/{slug}/settings — update generation settings for a project.
+  ///
+  /// The backend stores these in the Firestore project document and reads them
+  /// when `/image-prompt` and `/video-prompt` are called. Mobile request bodies
+  /// for generation endpoints are unchanged.
+  Future<void> updateProjectSettings(
+    String slug,
+    GenerationSettings settings,
+  ) async {
+    await _execute(
+      () => _dio.patch(
+        '/projects/$slug/settings',
+        data: settings.toFirestore(),
+      ),
+    );
+  }
+
+  /// DELETE /projects/{slug} — permanently delete a project.
+  ///
+  /// The backend cascades: Firestore subcollections, GCS objects under
+  /// `{uid}/{slug}/`, and Cloud SQL row are all removed.
+  Future<void> deleteProject(String slug) async {
+    await _execute(() => _dio.delete('/projects/$slug'));
+  }
+
+  /// PATCH /projects/{slug} — update the mutable display name.
+  ///
+  /// Writes `display_name` and `updated_at` to the Firestore project root
+  /// document. The immutable slug is unaffected.
+  Future<void> updateProjectDisplayName(String slug, String newDisplayName) async {
+    await _execute(
+      () => _dio.patch('/projects/$slug', data: {'display_name': newDisplayName}),
+    );
+  }
+
+  // ── Generation endpoints ──────────────────────────────────────────────────
+
+  /// POST /assets — extract characters, backgrounds, and objects from a story.
+  ///
+  /// The backend parses [storyContent] and returns a structured list of assets.
+  /// The caller (StoryCubit) is responsible for creating the corresponding
+  /// Firestore asset documents under `users/{uid}/projects/{slug}/assets/` and
+  /// `users/{uid}/projects/{slug}/scenes/{n}/assets/`.
+  ///
+  /// [projectSlug] is included so the backend can log the extraction event for
+  /// credit accounting.
+  Future<Map<String, dynamic>> extractAssets({
+    required String projectSlug,
+    required String storyContent,
+  }) async {
+    final response = await _execute(
+      () => _dio.post('/assets', data: {
+        'project_slug': projectSlug,
+        'story': storyContent,
+      }),
+    );
+    return (response.data as Map<String, dynamic>);
+  }
+
+  /// POST /image-prompt — generate an image prompt for a single asset.
+  ///
+  /// The backend generates the prompt text and writes it directly to the
+  /// `prompt_body` field of the Firestore asset document at
+  /// `users/{uid}/projects/{projectSlug}/{assetFirestorePath}`.
+  ///
+  /// The app's Firestore real-time listener on the asset document fires when
+  /// the write completes — no response parsing is needed on the client.
+  ///
+  /// [assetFirestorePath] is the path segment below the project root:
+  /// - Global asset  → `"assets/{assetId}"`
+  /// - Scene-local   → `"scenes/{sceneId}/assets/{assetId}"`
+  Future<void> generateImagePrompt({
+    required String projectSlug,
+    required String assetFirestorePath,
     required String name,
     required String type,
     required String description,
   }) async {
-    final response = await _execute(
+    await _execute(
       () => _dio.post('/image-prompt', data: {
+        'project_slug': projectSlug,
+        'asset_path': assetFirestorePath,
         'name': name,
         'type': type,
         'description': description,
       }),
     );
-    return (response.data as Map<String, dynamic>)['prompt'] as String;
+    // No return value — backend writes prompt_body to Firestore and the
+    // real-time listener in AssetEditorCubit delivers the update to the UI.
   }
 
-  /// POST /image — generate a reference image for an asset.
+  /// POST /image — enqueue an async image generation job for an asset.
   ///
-  /// [refImageBytes] is an optional list of raw PNG bytes to attach as
-  /// reference images (variant generation). When non-empty they are uploaded
-  /// as multipart files under the `ref_images` field so the backend AI
-  /// provider can use them as visual conditioning inputs.
+  /// The image worker reads the asset's `prompt_body` from Firestore, generates
+  /// the image, saves it to GCS at `{uid}/{projectSlug}/{assetFirestorePath}/image.png`,
+  /// and writes the GCS path to the asset's `gcs_image_path` Firestore field.
   ///
-  /// Returns the GCS presigned URL (2-hour TTL) for downloading the image.
+  /// [conditioningGcsPath] is the GCS path of the referenced asset's image for
+  /// variant assets (name starts with '@' and has a non-empty description). The
+  /// worker uses it as a visual conditioning input.
+  ///
+  /// Returns the `job_id` immediately. The caller writes a [JobRegistryEntry]
+  /// to the local Hive CE box and waits for either the Firestore listener or an
+  /// FCM push notification to resolve the job.
   Future<String> generateImage({
-    required String promptBody,
-    List<List<int>> refImageBytes = const [],
-  }) async {
-    // Build multipart body explicitly — fromMap with List<MultipartFile> is
-    // unreliable in Dio. Using formData.files.add() guarantees each image is
-    // sent as a separate `ref_images` file field that FastAPI can receive as
-    // list[UploadFile].
-    final formData = FormData();
-    formData.fields.add(MapEntry('prompt', promptBody));
-    for (final bytes in refImageBytes) {
-      formData.files.add(MapEntry(
-        'ref_images',
-        MultipartFile.fromBytes(bytes, filename: 'ref.png', contentType: DioMediaType('image', 'png')),
-      ));
-    }
-    final response = await _execute(
-      () => _dio.post('/image', data: formData),
-    );
-    return (response.data as Map<String, dynamic>)['url'] as String;
-  }
-
-  /// POST /video-prompt — generate a scene storyboard prompt.
-  ///
-  /// [scene] is the scene's story text. [assets] is a list of maps with
-  /// `name` and `prompt` keys (the asset's name and its generated image prompt
-  /// body from prompt.mdx). No images are sent — the AI uses the prompt text
-  /// as the visual reference.
-  Future<String> generateVideoPrompt({
-    required String scene,
-    required List<Map<String, String>> assets,
+    required String projectSlug,
+    required String assetFirestorePath,
+    String? conditioningGcsPath,
   }) async {
     final response = await _execute(
-      () => _dio.post('/video-prompt', data: {
-        'scene': scene,
-        'assets': assets,
+      () => _dio.post('/image', data: {
+        'project_slug': projectSlug,
+        'asset_path': assetFirestorePath,
+        'conditioning_gcs_path': conditioningGcsPath,
       }),
-    );
-    return (response.data as Map<String, dynamic>)['storyboard'] as String;
-  }
-
-  /// POST /video — enqueue a scene video generation job.
-  ///
-  /// [prompt] is the storyboard text from `ark.mdx`. [refImageBytes] is a
-  /// list of raw PNG byte arrays — one per scene asset image on disk.
-  /// Images are uploaded as multipart files (same pattern as /image) so no
-  /// base64 encoding overhead is incurred on device.
-  ///
-  /// Returns the `job_id` for polling via [getVideoJobStatus].
-  Future<String> generateVideo({
-    required String prompt,
-    required List<List<int>> refImageBytes,
-  }) async {
-    final formData = FormData();
-    formData.fields.add(MapEntry('prompt', prompt));
-    for (final bytes in refImageBytes) {
-      formData.files.add(MapEntry(
-        'ref_images',
-        MultipartFile.fromBytes(bytes, filename: 'ref.png', contentType: DioMediaType('image', 'png')),
-      ));
-    }
-    final response = await _execute(
-      () => _dio.post('/video', data: formData),
     );
     return (response.data as Map<String, dynamic>)['job_id'] as String;
   }
 
-  /// GET /video/{jobId}/status — poll for video generation job completion.
-  Future<Map<String, dynamic>> getVideoJobStatus({required String jobId}) async {
+  /// POST /video-prompt — generate a storyboard for a scene (synchronous).
+  ///
+  /// Sends the scene's text and resolved asset GCS image paths. The backend
+  /// generates the storyboard and writes it directly to the `storyboard_body`
+  /// field of the Firestore scene document.
+  ///
+  /// The app's Firestore real-time listener on the scene document fires when
+  /// the write completes — no response parsing is needed on the client.
+  ///
+  /// [refImageGcsPaths] is the ordered list of GCS image paths for all scene
+  /// assets (pass-through → referenced global asset's path; variant/local →
+  /// own asset's path). Assets sorted background → character → object.
+  ///
+  /// Per FEAT-014: subtitle suppression instructions and character count
+  /// enforcement (≤ 4 character refs) are applied server-side.
+  Future<void> generateVideoPrompt({
+    required String projectSlug,
+    required int sceneIndex,
+    required String sceneText,
+    required List<String> refImageGcsPaths,
+  }) async {
+    await _execute(
+      () => _dio.post('/video-prompt', data: {
+        'project_slug': projectSlug,
+        'scene_index': sceneIndex,
+        'scene': sceneText,
+        'ref_image_gcs_paths': refImageGcsPaths,
+      }),
+    );
+    // Backend writes storyboard_body to the scene's Firestore document.
+    // The Firestore listener in SceneCubit delivers the update to the UI.
+  }
+
+  /// POST /video — enqueue an async scene video generation job.
+  ///
+  /// The video worker reads the scene's `storyboard_body` and asset images
+  /// directly from Firestore/GCS, generates a video clip with audio, saves it
+  /// to GCS at `{uid}/{projectSlug}/scenes/{sceneIndex}/video.mp4`, and writes
+  /// the GCS path to the scene's `gcs_video_path` Firestore field.
+  ///
+  /// [refImageGcsPaths] contains the GCS paths of all reference images,
+  /// resolved per FEAT-013 rules (pass-through uses referenced asset's path;
+  /// variant uses its own path; local uses its own path). Ordered by asset type
+  /// priority (background → character → object).
+  ///
+  /// Returns the `job_id` immediately. The caller writes a [JobRegistryEntry]
+  /// and waits for the Firestore `gcs_video_path` update or FCM push.
+  Future<String> generateVideo({
+    required String projectSlug,
+    required int sceneIndex,
+    required List<String> refImageGcsPaths,
+  }) async {
     final response = await _execute(
-      () => _dio.get('/video/$jobId/status'),
+      () => _dio.post('/video', data: {
+        'project_slug': projectSlug,
+        'scene_index': sceneIndex,
+        'ref_image_gcs_paths': refImageGcsPaths,
+      }),
+    );
+    return (response.data as Map<String, dynamic>)['job_id'] as String;
+  }
+
+  /// POST /merge — enqueue a cloud video merge job (FEAT-021).
+  ///
+  /// Sends the ordered list of scenes with per-clip trim points and transition
+  /// types. The merge worker reads all scene `video.mp4` files directly from
+  /// GCS, runs FFmpeg server-side (no on-device processing), and saves
+  /// `final.mp4` to GCS at `users/{uid}/{projectSlug}/final.mp4`.
+  ///
+  /// On completion the worker sets `gcs_final_path` on the Firestore project
+  /// root document; the Flutter Firestore listener fires and the editor enables
+  /// the "Download to Camera Roll" button. A FCM push notification also fires.
+  ///
+  /// [scenes] is the ordered list of scene entries — one per scene that should
+  /// be included in the export (scenes without `gcs_video_path` are excluded by
+  /// the caller). Each entry carries:
+  ///   - `scene_index` (int) — the scene number / Firestore doc ID
+  ///   - `trim_in` (double) — start offset in seconds
+  ///   - `trim_out` (double) — end offset in seconds
+  ///   - `transition_to_next` (String) — the gap transition to the next clip
+  ///     (`"hard_cut"` | `"fade_black"` | `"dissolve"`); ignored for the last
+  ///     scene entry.
+  ///
+  /// Returns the `job_id` immediately. The caller writes a [JobRegistryEntry]
+  /// with `type: "merge"` and waits for the Firestore `gcs_final_path` update.
+  Future<String> mergeClips({
+    required String projectSlug,
+    required List<Map<String, dynamic>> scenes,
+  }) async {
+    final response = await _execute(
+      () => _dio.post('/merge', data: {
+        'project_slug': projectSlug,
+        'scenes': scenes,
+      }),
+    );
+    return (response.data as Map<String, dynamic>)['job_id'] as String;
+  }
+
+  /// GET /job/{jobId}/status — poll for any generation job's status.
+  ///
+  /// Used on foreground return to recover job state for any entry in the
+  /// local Hive CE registry that is still marked `pending` or `running`.
+  /// The response fields mirror those of the former `/video/{id}/status`.
+  Future<Map<String, dynamic>> getJobStatus({required String jobId}) async {
+    final response = await _execute(
+      () => _dio.get('/job/$jobId/status'),
     );
     return (response.data as Map<String, dynamic>);
+  }
+
+  /// POST /media/presigned-url — obtain a fresh presigned URL for a GCS object.
+  ///
+  /// GCS presigned URLs expire after 2 hours. Call this before streaming any
+  /// media that was obtained from a Firestore `gcs_*_path` field.
+  ///
+  /// [gcsPath] is the raw GCS object path (e.g. the value of `gcs_image_path`
+  /// or `gcs_video_path` from Firestore). The backend verifies the caller owns
+  /// the object before issuing the URL.
+  Future<String> getPresignedUrl({required String gcsPath}) async {
+    final response = await _execute(
+      () => _dio.post('/media/presigned-url', data: {'gcs_path': gcsPath}),
+    );
+    return (response.data as Map<String, dynamic>)['url'] as String;
+  }
+
+  /// Fetches the GCS storage summary for a project (FEAT-027).
+  ///
+  /// Calls `GET /projects/{slug}/storage`. Returns a map with keys:
+  /// `total_bytes`, `images_bytes`, `videos_bytes`, `export_bytes`.
+  ///
+  /// Throws [ApiError] on failure. The caller should treat failures as
+  /// non-blocking and fall back to a zero summary.
+  Future<Map<String, dynamic>> getProjectStorageSummary(String slug) async {
+    final response = await _dio.get<Map<String, dynamic>>(
+      '/projects/${Uri.encodeComponent(slug)}/storage',
+    );
+    return response.data ?? {};
   }
 
   /// GET /usage — fetch generation event history for the Usage Dashboard.

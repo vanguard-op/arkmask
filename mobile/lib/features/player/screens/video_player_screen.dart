@@ -5,26 +5,39 @@ import 'package:flutter/services.dart';
 import 'package:lucide_flutter/lucide_flutter.dart';
 import 'package:video_player/video_player.dart';
 
+import '../../../app.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
 
 /// Fullscreen in-app video player (FEAT-026).
 ///
-/// Accepts a [videoPath] (absolute filesystem path) and renders standard
-/// playback controls: play/pause, scrub bar, and current/total time display.
-/// Supports both scene `video.mp4` files and the exported `final.mp4`.
+/// Accepts a [videoPath] (absolute filesystem path or GCS presigned URL) and
+/// renders standard playback controls: play/pause, scrub bar, and
+/// current/total time display. Supports both scene `video.mp4` files and the
+/// exported `final.mp4`.
+///
+/// When [gcsPath] is provided and the presigned URL expires (throws during
+/// initialization), the player automatically fetches a fresh URL via
+/// [ArkMaskApiClient.getPresignedUrl] and retries once.
 class VideoPlayerScreen extends StatefulWidget {
   const VideoPlayerScreen({
     super.key,
     required this.videoPath,
     this.title,
+    this.gcsPath,
   });
 
-  /// Absolute path to the video file on device.
+  /// Absolute filesystem path or GCS presigned URL (http/https) for the video.
   final String videoPath;
 
   /// Optional title shown in the AppBar (e.g. "Scene 3" or "final.mp4").
   final String? title;
+
+  /// GCS object path (e.g. `users/uid/projects/slug/scenes/1/video.mp4`).
+  /// When provided and the presigned URL expires (HTTP 403), the player
+  /// automatically fetches a fresh presigned URL via [ArkMaskApiClient.getPresignedUrl].
+  /// Leave null when the path is already a local filesystem path.
+  final String? gcsPath;
 
   @override
   State<VideoPlayerScreen> createState() => _VideoPlayerScreenState();
@@ -35,6 +48,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   bool _isInitialized = false;
   bool _hasError = false;
   bool _controlsVisible = true;
+  bool _hasTriedRefresh = false;
 
   // Auto-hide controls after 3 seconds of inactivity.
   static const _controlsHideDuration = Duration(seconds: 3);
@@ -49,14 +63,56 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   }
 
   Future<void> _initController() async {
-    final file = File(widget.videoPath);
-    if (!await file.exists()) {
-      if (mounted) setState(() => _hasError = true);
-      return;
+    // Determine whether videoPath is a network URL or a local file path.
+    final isUrl = widget.videoPath.startsWith('http://') ||
+        widget.videoPath.startsWith('https://');
+
+    if (isUrl) {
+      _controller = VideoPlayerController.networkUrl(
+        Uri.parse(widget.videoPath),
+      );
+    } else {
+      final file = File(widget.videoPath);
+      if (!await file.exists()) {
+        if (mounted) setState(() => _hasError = true);
+        return;
+      }
+      _controller = VideoPlayerController.file(file);
     }
 
-    _controller = VideoPlayerController.file(file);
     try {
+      await _controller.initialize();
+      _controller.addListener(_onVideoUpdate);
+      if (mounted) {
+        setState(() => _isInitialized = true);
+        _controller.play();
+        _scheduleControlsHide();
+      }
+    } catch (e) {
+      // If a GCS path is available, attempt to refresh the presigned URL once
+      // and retry — handles expired URLs (403) gracefully.
+      if (widget.gcsPath != null && isUrl && !_hasTriedRefresh) {
+        _hasTriedRefresh = true;
+        await _retryWithFreshUrl();
+      } else {
+        if (mounted) setState(() => _hasError = true);
+      }
+    }
+  }
+
+  /// Fetches a fresh presigned URL for [widget.gcsPath] and retries
+  /// controller initialization once. Called when the initial URL returns 403
+  /// or throws a network error (expired presigned URL).
+  Future<void> _retryWithFreshUrl() async {
+    try {
+      // ArkMaskServices provides access to the API client without needing
+      // the apiClient to be injected into the widget constructor.
+      final services = ArkMaskServices.of(context);
+      final freshUrl = await services.apiClient
+          .getPresignedUrl(gcsPath: widget.gcsPath!);
+
+      await _controller.dispose();
+      _controller = VideoPlayerController.networkUrl(Uri.parse(freshUrl));
       await _controller.initialize();
       _controller.addListener(_onVideoUpdate);
       if (mounted) {
@@ -146,7 +202,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
                       child: VideoPlayer(_controller),
                     )
                   : _hasError
-                      ? _ErrorView(videoPath: widget.videoPath)
+                      ? const _ErrorView()
                       : const _LoadingView(),
             ),
           ),
@@ -340,8 +396,7 @@ class _LoadingView extends StatelessWidget {
 }
 
 class _ErrorView extends StatelessWidget {
-  const _ErrorView({required this.videoPath});
-  final String videoPath;
+  const _ErrorView();
 
   @override
   Widget build(BuildContext context) {

@@ -10,6 +10,7 @@ import '../../../core/theme/app_text_styles.dart';
 import '../../billing/widgets/credits_exhausted_dialog.dart';
 import '../cubit/story_cubit.dart';
 import '../cubit/story_state.dart';
+import '../widgets/generation_settings_sheet.dart';
 
 /// Story Editor Screen — FEAT-008, FEAT-009.
 ///
@@ -26,8 +27,7 @@ class StoryEditorScreen extends StatelessWidget {
     final services = ArkMaskServices.of(context);
     return BlocProvider(
       create: (_) => StoryCubit(
-        projectName: projectName,
-        fileService: services.fileService,
+        projectSlug: projectName,
         apiClient: services.apiClient,
       )..load(),
       child: _StoryEditorView(projectName: projectName),
@@ -60,14 +60,11 @@ class _StoryEditorView extends StatelessWidget {
           }
           context.read<StoryCubit>().clearExtractError();
         }
-        // After a successful extraction, navigate back to the file browser
-        // (which refreshes the tree with the new directories).
-        if (state is StoryLoaded &&
-            !state.isExtracting &&
-            state.extractError == null) {
-          // Only pop if we came here from the file browser after an extraction.
-          // We detect this by whether the browser needs refreshing — handled
-          // by NavigatorObserver; for now a simple pop suffices.
+
+        // When existing asset documents are detected, show a confirmation
+        // dialog before proceeding with re-extraction.
+        if (state is StoryLoaded && state.hasExistingAssets) {
+          _showReExtractDialog(context);
         }
       },
       builder: (context, state) {
@@ -137,6 +134,13 @@ class _StoryAppBar extends StatelessWidget implements PreferredSizeWidget {
         // Save indicator
         if (loaded != null) _SaveIndicator(loaded: loaded),
         const SizedBox(width: AppSpacing.s2),
+        // Generation settings button
+        if (loaded != null)
+          IconButton(
+            icon: const Icon(LucideIcons.sliders),
+            tooltip: 'Generation Settings',
+            onPressed: () => showGenerationSettingsSheet(context),
+          ),
         // Extract Assets button (Generate variant)
         if (loaded != null)
           _ExtractButton(
@@ -151,12 +155,40 @@ class _StoryAppBar extends StatelessWidget implements PreferredSizeWidget {
   }
 
   Future<void> _onExtractTapped(BuildContext context, StoryLoaded state) async {
-    // Check if assets already exist by navigating: the project file browser
-    // detects this, but here we just trigger extraction directly per spec.
-    // The cubit itself handles the asset-already-exists case via a dialog in
-    // the screen (see screens.md — confirmed before re-extraction).
+    // The cubit checks Firestore for existing assets. If any are found it emits
+    // hasExistingAssets = true, which triggers _showReExtractDialog via the
+    // BlocConsumer listener. Otherwise it proceeds with extraction.
     context.read<StoryCubit>().extractAssets();
   }
+}
+
+/// Shows a confirmation dialog when the project already has Firestore asset
+/// documents. The user must explicitly confirm before re-extraction overwrites
+/// them. Calls `extractAssets(force: true)` on confirmation.
+void _showReExtractDialog(BuildContext context) {
+  showDialog<bool>(
+    context: context,
+    builder: (_) => AlertDialog(
+      title: const Text('Re-extract assets?'),
+      content: const Text(
+        'Existing asset documents without generated images will be recreated.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('Re-extract'),
+        ),
+      ],
+    ),
+  ).then((confirmed) {
+    if (confirmed == true && context.mounted) {
+      context.read<StoryCubit>().extractAssets(force: true);
+    }
+  });
 }
 
 class _SceneCountBadge extends StatelessWidget {

@@ -1,0 +1,135 @@
+name: Flutter — Test & Build
+
+# Runs on every PR and on merge to main.
+# PRs: lint + test only (fast feedback).
+# Merge to main: lint + test + build APK → upload as artifact.
+#
+# Flutter version is read from mobile/.fvm/fvm_config.json (currently 3.44.4).
+# iOS builds require macOS runners (10x more expensive) — enable when needed.
+
+on:
+  pull_request:
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/flutter.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/flutter.yml'
+
+defaults:
+  run:
+    working-directory: mobile
+
+jobs:
+  test:
+    name: Lint & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read Flutter version from FVM config
+        id: flutter-version
+        run: |
+          VERSION=$(cat .fvm/fvm_config.json | python3 -c "import sys,json; print(json.load(sys.stdin)['flutterSdkVersion'])")
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ steps.flutter-version.outputs.version }}
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      # Fail fast on analysis issues — same rules enforced locally via `dart analyze`.
+      - name: Dart analyze
+        run: flutter analyze --fatal-infos
+
+      - name: Run unit tests
+        run: flutter test --coverage
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: flutter-coverage
+          path: mobile/coverage/lcov.info
+          retention-days: 7
+
+  build-android:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    # Only build on merge to main — skip on PRs to keep CI fast.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read Flutter version
+        id: flutter-version
+        run: |
+          VERSION=$(cat .fvm/fvm_config.json | python3 -c "import sys,json; print(json.load(sys.stdin)['flutterSdkVersion'])")
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Setup Java (required for Android builds)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ steps.flutter-version.outputs.version }}
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      # Write the .env.json config file from GitHub secrets.
+      # The file is gitignored; CI reconstructs it at build time.
+      - name: Write .env.json
+        run: |
+          cat > .env.json <<EOF
+          {
+            "API_BASE_URL": "${{ secrets.STAGING_API_BASE_URL }}",
+            "STRIPE_PUBLISHABLE_KEY": "${{ secrets.STRIPE_PUBLISHABLE_KEY_TEST }}"
+          }
+          EOF
+
+      - name: Build APK (release)
+        run: flutter build apk --release --obfuscate --split-debug-info=build/debug-info
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: arkmask-android-${{ github.sha }}
+          path: mobile/build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 14
+
+  # ── iOS (disabled by default — macOS runners are expensive) ──────────────
+  # Uncomment and configure signing when ready for TestFlight distribution.
+  #
+  # build-ios:
+  #   name: Build iOS IPA
+  #   runs-on: macos-14
+  #   needs: test
+  #   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Setup Flutter
+  #       uses: subosito/flutter-action@v2
+  #       with:
+  #         flutter-version: '3.44.4'
+  #         cache: true
+  #     - run: flutter pub get
+  #       working-directory: mobile
+  #     - name: Build iOS (no codesign)
+  #       run: flutter build ios --release --no-codesign
+  #       working-directory: mobile

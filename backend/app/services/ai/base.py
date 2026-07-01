@@ -46,16 +46,41 @@ class AIProvider(ABC):
         """Return a list of asset dicts matching the AssetsResponse schema."""
 
     @abstractmethod
-    def generate_image_prompt(self, name: str, type_: str, description: str) -> str:
-        """Return a generated image prompt string."""
+    def generate_image_prompt(
+        self,
+        name: str,
+        type_: str,
+        description: str,
+        art_style: str = "painterly illustration with clean lines and rich color",
+    ) -> str:
+        """Return a generated image prompt string.
+
+        Args:
+            name: Asset name.
+            type_: Asset type — ``"character"``, ``"background"``, or ``"object"``.
+            description: Human-written asset description.
+            art_style: Project-level visual style injected into the AI payload so
+                the system prompt can apply it. Defaults to painterly illustration.
+        """
 
     @abstractmethod
     def generate_video_prompt(
         self,
         scene_text: str,
-        assets: list[dict],   # [{"name": str, "type": str, "image": RefImage}]
+        ref_images: list[RefImage],  # fetched from GCS by the router
+        art_style: str = "painterly illustration with clean lines and rich color",
+        subtitles: bool = False,
     ) -> str:
-        """Return a storyboard prompt string (written to ark.mdx body)."""
+        """Return a storyboard prompt string (written to Firestore storyboard_body).
+
+        Args:
+            scene_text: The scene body from story_content.
+            ref_images: Reference images fetched from GCS by the router.
+            art_style: Project-level visual style appended to the scene input so the
+                system prompt applies it in the closing block.
+            subtitles: When ``True``, the subtitle-free constraint is omitted from
+                the closing block so ``【】`` subtitle syntax is respected.
+        """
 
     @abstractmethod
     def generate_image(self, prompt: str, ref_images: list[RefImage]) -> tuple[bytes, str]:

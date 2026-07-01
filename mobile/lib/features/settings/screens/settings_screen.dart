@@ -29,6 +29,7 @@ class SettingsScreen extends StatelessWidget {
         storage: services.storage,
         authService: services.authService,
         apiClient: services.apiClient,
+        jobRegistryService: services.jobRegistryService,
       )..load(),
       child: const _SettingsView(),
     );
@@ -190,27 +191,10 @@ class _SettingsList extends StatelessWidget {
         ),
         const Divider(height: 1),
 
-        // ── Vault ─────────────────────────────────────────────────────────────
-        _SectionHeader(label: 'Vault', isDark: isDark),
-        Builder(builder: (context) {
-          final vaultPath =
-              ArkMaskServices.of(context).vaultService.vaultPath ?? 'Not set';
-          return ListTile(
-            title: const Text('Vault Location'),
-            subtitle: Text(
-              vaultPath,
-              style: AppTextStyles.monoSmall(context),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-            leading:
-                const Icon(LucideIcons.folderOpen, size: AppSizing.iconMd),
-            trailing:
-                const Icon(LucideIcons.chevronRight, size: AppSizing.iconSm),
-            onTap: () =>
-                context.push('${Routes.vaultSetup}?mode=change'),
-          );
-        }),
+        // ── Storage (Phase 5: FEAT-027 — GCS per-project storage summary) ────
+        // Vault Location was removed in the cloud-first architecture. Project
+        // media now lives in GCS under users/{uid}/{project_slug}/. Storage
+        // usage per project will be shown in Phase 5 (FEAT-027).
         const Divider(height: 1),
 
         // ── Credits & Subscription ────────────────────────────────────────────

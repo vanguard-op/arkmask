@@ -5,13 +5,15 @@ import '../../../core/models/models.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
-import '../../../core/utils/formatters.dart';
+import '../../../core/utils/formatters.dart' show formatLastModified, formatBytes;
 
 /// Project card displayed on the Home Screen.
 ///
-/// Shows: project name, scene count, last modified date, storage size, and a
-/// thin generation progress bar at the bottom edge.
-/// Long-press reveals "Rename" and "Delete" options.
+/// Shows: display name, scene count, creation date, and a generation progress
+/// bar. Long-press reveals "Rename" and "Delete" options.
+///
+/// When [generatingCount] > 0, a "N generating" badge is shown in the metadata
+/// row, reflecting in-flight Hive CE jobs for this project (FEAT-006).
 class ProjectCard extends StatelessWidget {
   const ProjectCard({
     super.key,
@@ -20,23 +22,34 @@ class ProjectCard extends StatelessWidget {
     required this.onDeleteConfirmed,
     required this.onRenameConfirmed,
     this.isDeleting = false,
+    this.generatingCount = 0,
+    this.storageSummary,
   });
 
-  final ProjectMeta project;
+  final ProjectDocument project;
   final VoidCallback onTap;
   final VoidCallback onDeleteConfirmed;
 
-  /// Called with the new name after the user confirms a rename.
+  /// Called with the new display name after the user confirms a rename.
   final ValueChanged<String> onRenameConfirmed;
 
-  /// True while the delete operation is in progress for this card.
+  /// True while the delete API call is in flight for this card.
   final bool isDeleting;
+
+  /// Number of active (pending/running) Hive CE jobs for this project.
+  /// When > 0, a "N generating" badge is shown in the metadata row.
+  final int generatingCount;
+
+  /// GCS storage summary for this project (FEAT-027). Null while the fetch is
+  /// in flight — the metadata row shows "—" until it arrives.
+  final ProjectStorageSummary? storageSummary;
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final primaryColor = isDark ? AppColors.primaryDark : AppColors.primaryLight;
-    final textSecondary = isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight;
+    final textSecondary =
+        isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight;
 
     return Card(
       child: InkWell(
@@ -53,12 +66,12 @@ class ProjectCard extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // ── Project name ──────────────────────────────────────────────
+              // ── Project display name ───────────────────────────────────────
               Row(
                 children: [
                   Expanded(
                     child: Text(
-                      project.name,
+                      project.displayName,
                       style: AppTextStyles.h2(context),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -80,21 +93,32 @@ class ProjectCard extends StatelessWidget {
               Row(
                 children: [
                   Text(
-                    '${project.sceneCount} ${project.sceneCount == 1 ? "scene" : "scenes"}',
-                    style: AppTextStyles.bodySmall(context).copyWith(color: textSecondary),
+                    '${project.sceneCount} '
+                    '${project.sceneCount == 1 ? "scene" : "scenes"}',
+                    style: AppTextStyles.bodySmall(context)
+                        .copyWith(color: textSecondary),
                   ),
                   _dot(context, textSecondary),
                   Text(
-                    formatLastModified(project.lastModified),
+                    formatLastModified(project.createdAt),
+                    style: AppTextStyles.bodySmall(context)
+                        .copyWith(color: textSecondary),
+                  ),
+                  // Show "N generating" badge when Hive CE has active jobs for
+                  // this project. Updates in real time via JobRegistryService
+                  // listener in ProjectsCubit (FEAT-006).
+                  if (generatingCount > 0) ...[
+                    _dot(context, textSecondary),
+                    _GeneratingBadge(count: generatingCount),
+                  ],
+                  // Storage size — shown when summary is available; "—" as placeholder.
+                  _dot(context, textSecondary),
+                  Text(
+                    storageSummary != null && storageSummary!.totalBytes > 0
+                        ? formatBytes(storageSummary!.totalBytes)
+                        : '—',
                     style: AppTextStyles.bodySmall(context).copyWith(color: textSecondary),
                   ),
-                  if (project.totalSizeBytes != null) ...[
-                    _dot(context, textSecondary),
-                    Text(
-                      formatFileSize(project.totalSizeBytes!),
-                      style: AppTextStyles.bodySmall(context).copyWith(color: textSecondary),
-                    ),
-                  ],
                 ],
               ),
               // ── Progress bar ──────────────────────────────────────────────
@@ -103,12 +127,16 @@ class ProjectCard extends StatelessWidget {
                 LinearProgressIndicator(
                   value: project.completionFraction,
                   minHeight: 3,
-                  backgroundColor: isDark ? AppColors.surfaceSunkenDark : AppColors.surfaceSunkenLight,
+                  backgroundColor: isDark
+                      ? AppColors.surfaceSunkenDark
+                      : AppColors.surfaceSunkenLight,
                   valueColor: AlwaysStoppedAnimation(primaryColor),
                   borderRadius: BorderRadius.circular(AppSizing.radiusFull),
                 ),
-              if (project.sceneCount > 0) const SizedBox(height: 0)
-              else const SizedBox(height: AppSpacing.s4),
+              if (project.sceneCount > 0)
+                const SizedBox(height: 0)
+              else
+                const SizedBox(height: AppSpacing.s4),
             ],
           ),
         ),
@@ -118,7 +146,10 @@ class ProjectCard extends StatelessWidget {
 
   Widget _dot(BuildContext context, Color color) => Padding(
         padding: const EdgeInsets.symmetric(horizontal: AppSpacing.s2),
-        child: Text('·', style: AppTextStyles.bodySmall(context).copyWith(color: color)),
+        child: Text(
+          '·',
+          style: AppTextStyles.bodySmall(context).copyWith(color: color),
+        ),
       );
 
   Future<void> _showContextMenu(BuildContext context) async {
@@ -134,7 +165,8 @@ class ProjectCard extends StatelessWidget {
               Icon(
                 LucideIcons.pencil,
                 size: AppSizing.iconSm,
-                color: isDark ? AppColors.textPrimaryDark : AppColors.textPrimaryLight,
+                color:
+                    isDark ? AppColors.textPrimaryDark : AppColors.textPrimaryLight,
               ),
               const SizedBox(width: AppSpacing.s3),
               const Text('Rename'),
@@ -163,12 +195,8 @@ class ProjectCard extends StatelessWidget {
     if (result == 'delete') _confirmDelete(context);
   }
 
-  /// Shows an inline dialog to rename the project (FEAT-028).
-  ///
-  /// Pre-fills with the current project name; validates on confirm.
-  /// Calls [onRenameConfirmed] with the trimmed new name on success.
   Future<void> _showRenameDialog(BuildContext context) async {
-    final controller = TextEditingController(text: project.name);
+    final controller = TextEditingController(text: project.displayName);
     String? errorText;
 
     await showDialog<void>(
@@ -209,12 +237,11 @@ class ProjectCard extends StatelessWidget {
     StateSetter setDialogState,
   ) {
     final newName = controller.text.trim();
-    // Basic validation — full validation is enforced in the cubit.
     if (newName.isEmpty) {
-      setDialogState(() {}); // trigger rebuild to show empty-name error
+      setDialogState(() {});
       return;
     }
-    if (newName == project.name) {
+    if (newName == project.displayName) {
       Navigator.pop(ctx);
       return;
     }
@@ -239,10 +266,10 @@ class ProjectCard extends StatelessWidget {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text('Delete "${project.name}"?'),
+        title: Text('Delete "${project.displayName}"?'),
         content: const Text(
-          'All files — images, videos, and story — will be permanently '
-          'removed from your device.',
+          'All media — images, videos, and story — will be permanently '
+          'removed from the cloud.',
         ),
         actions: [
           TextButton(
@@ -252,7 +279,8 @@ class ProjectCard extends StatelessWidget {
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
             style: TextButton.styleFrom(
-              foregroundColor: isDark ? AppColors.errorDark : AppColors.errorLight,
+              foregroundColor:
+                  isDark ? AppColors.errorDark : AppColors.errorLight,
             ),
             child: const Text('Delete'),
           ),
@@ -260,5 +288,56 @@ class ProjectCard extends StatelessWidget {
       ),
     );
     if (confirmed == true) onDeleteConfirmed();
+  }
+}
+
+/// Small pill badge shown in the project card metadata row when one or more
+/// Hive CE generation jobs are active for the project (FEAT-006).
+///
+/// Uses the theme's stateRunning colour so it is visually consistent with
+/// job-status indicators elsewhere in the app.
+class _GeneratingBadge extends StatelessWidget {
+  const _GeneratingBadge({required this.count});
+
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final color =
+        isDark ? AppColors.stateRunningDark : AppColors.stateRunningLight;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.s2,
+        vertical: 2,
+      ),
+      decoration: BoxDecoration(
+        // Semi-transparent fill so the pill feels lightweight against the card.
+        color: color.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(AppSizing.radiusFull),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Pulsing dot replaced by a static dot for simplicity; a parent
+          // AnimationController would be needed for a true pulse and would
+          // require converting this widget to StatefulWidget.
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(
+              color: color,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: AppSpacing.s1),
+          Text(
+            '$count generating',
+            style: AppTextStyles.caption(context).copyWith(color: color),
+          ),
+        ],
+      ),
+    );
   }
 }

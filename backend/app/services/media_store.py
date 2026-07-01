@@ -102,9 +102,99 @@ class MediaStore:
         """Generate a fresh presigned URL for an existing object (e.g. after TTL expiry)."""
         return self._presign(key)
 
+    def get_object_bytes(self, gcs_path: str) -> bytes:
+        """
+        Download raw bytes for a GCS object identified by its object path.
+
+        `gcs_path` is the raw object key within the bucket — NOT a presigned URL.
+        Example: "users/uid/project-abc/assets/hero/image.png"
+
+        Used by generation workers to fetch reference images and scene videos
+        directly from GCS without going through the presigned URL flow.
+        """
+        response = self._upload_client.get_object(
+            Bucket=self._bucket,
+            Key=gcs_path,
+        )
+        return response["Body"].read()
+
+    def put_object(self, gcs_path: str, data: bytes, content_type: str) -> None:
+        """
+        Upload raw bytes to a specific GCS object path (key).
+
+        Used by generation workers to write generated media at deterministic
+        paths (e.g. `{uid}/{slug}/assets/hero/image.png`) rather than the
+        random UUID keys used by the legacy `save()` method.
+        """
+        self._upload_client.put_object(
+            Bucket=self._bucket,
+            Key=gcs_path,
+            Body=data,
+            ContentType=content_type,
+        )
+
+    def presign_path(self, gcs_path: str) -> str:
+        """Generate a fresh presigned URL for an object at a known GCS path."""
+        return self._presign(gcs_path)
+
     def _presign(self, key: str) -> str:
         return self._presign_client.generate_presigned_url(
             "get_object",
             Params={"Bucket": self._bucket, "Key": key},
             ExpiresIn=self._ttl,
         )
+
+    def delete_prefix(self, prefix: str) -> None:
+        """
+        Delete all objects under `prefix` in the bucket (FEAT-007).
+
+        Uses the S3 list-then-delete pattern in batches of 1000 (the S3 API
+        maximum for delete_objects). Safe to call if the prefix has no objects.
+        """
+        paginator = self._upload_client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
+            objects = page.get("Contents", [])
+            if not objects:
+                continue
+            self._upload_client.delete_objects(
+                Bucket=self._bucket,
+                Delete={"Objects": [{"Key": obj["Key"]} for obj in objects]},
+            )
+
+    def get_storage_summary(self, prefix: str) -> dict:
+        """
+        Return GCS storage consumption broken down by media category (FEAT-027).
+
+        Walks all objects under `prefix` and categorises by filename:
+          - `image.png`  → images_bytes
+          - `video.mp4`  → videos_bytes (scene clips)
+          - `final.mp4`  → export_bytes
+          - anything else → counted in total only
+
+        Returns a dict with keys: total_bytes, images_bytes, videos_bytes,
+        export_bytes.
+        """
+        total = 0
+        images = 0
+        videos = 0
+        export = 0
+
+        paginator = self._upload_client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                size = obj.get("Size", 0)
+                key: str = obj["Key"]
+                total += size
+                if key.endswith("image.png"):
+                    images += size
+                elif key.endswith("final.mp4"):
+                    export += size
+                elif key.endswith("video.mp4"):
+                    videos += size
+
+        return {
+            "total_bytes": total,
+            "images_bytes": images,
+            "videos_bytes": videos,
+            "export_bytes": export,
+        }

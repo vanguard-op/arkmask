@@ -4,40 +4,82 @@ import 'package:go_router/go_router.dart';
 import 'package:lucide_flutter/lucide_flutter.dart';
 
 import '../../../app.dart';
+import '../../../core/models/models.dart';
 import '../../../core/router/routes.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
-import '../../../core/utils/formatters.dart';
+import '../../../core/utils/formatters.dart' show formatBytes;
 import '../cubit/file_browser_cubit.dart';
 import '../cubit/file_browser_state.dart';
 import '../widgets/file_browser_row.dart';
 import '../widgets/generation_step_dots.dart';
 
-/// Project File Browser Screen — Obsidian-style collapsible file tree (FEAT-005).
+/// Project File Browser Screen — Obsidian-style collapsible file tree
+/// (FEAT-005).
 ///
 /// Entry point for all project-level navigation: story editor, asset editor,
-/// scene detail, video editor. All tree folders remember their expand state.
-class ProjectFileBrowserScreen extends StatelessWidget {
-  const ProjectFileBrowserScreen({super.key, required this.projectName});
+/// scene detail, video editor. Tree folders remember their expand state.
+///
+/// The [projectSlug] path parameter is the immutable Firestore document ID —
+/// it is passed to [FileBrowserCubit.load] which subscribes to Firestore
+/// real-time listeners. Navigation to child screens also encodes the slug in
+/// the URL so Phase 2 screens can resolve Firestore paths from it.
+class ProjectFileBrowserScreen extends StatefulWidget {
+  const ProjectFileBrowserScreen({super.key, required this.projectSlug});
 
-  final String projectName;
+  /// Immutable project slug (URL-decoded Firestore document ID).
+  final String projectSlug;
+
+  @override
+  State<ProjectFileBrowserScreen> createState() =>
+      _ProjectFileBrowserScreenState();
+}
+
+class _ProjectFileBrowserScreenState extends State<ProjectFileBrowserScreen> {
+  /// Future for the storage summary fetch (FEAT-027). Initiated once in
+  /// [initState] so it is not re-triggered on rebuilds. Failures are caught
+  /// inside [_StorageBanner] and shown as nothing (non-blocking).
+  // Not `final` — reassigned in the postFrameCallback after context is ready.
+  late Future<Map<String, dynamic>> _summaryFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    // Defer until context is fully available (ArkMaskServices.of requires it).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      setState(() {
+        _summaryFuture = ArkMaskServices.of(context)
+            .apiClient
+            .getProjectStorageSummary(widget.projectSlug);
+      });
+    });
+    // Assign a completed future as placeholder so _summaryFuture is always
+    // initialized before the first build.
+    _summaryFuture = Future.value({});
+  }
 
   @override
   Widget build(BuildContext context) {
-    final services = ArkMaskServices.of(context);
     return BlocProvider(
-      create: (_) => FileBrowserCubit(fileService: services.fileService)
-        ..load(projectName),
-      child: _FileBrowserView(projectName: projectName),
+      create: (_) => FileBrowserCubit()..load(widget.projectSlug),
+      child: _FileBrowserView(
+        projectSlug: widget.projectSlug,
+        summaryFuture: _summaryFuture,
+      ),
     );
   }
 }
 
 class _FileBrowserView extends StatelessWidget {
-  const _FileBrowserView({required this.projectName});
+  const _FileBrowserView({
+    required this.projectSlug,
+    required this.summaryFuture,
+  });
 
-  final String projectName;
+  final String projectSlug;
+  final Future<Map<String, dynamic>> summaryFuture;
 
   @override
   Widget build(BuildContext context) {
@@ -45,6 +87,11 @@ class _FileBrowserView extends StatelessWidget {
 
     return BlocBuilder<FileBrowserCubit, FileBrowserState>(
       builder: (context, state) {
+        // Use the display name from Firestore for the AppBar title when loaded.
+        final title = state is FileBrowserLoaded
+            ? state.tree.displayName
+            : projectSlug;
+
         return Scaffold(
           appBar: AppBar(
             leading: IconButton(
@@ -52,28 +99,11 @@ class _FileBrowserView extends StatelessWidget {
               tooltip: 'Back to projects',
               onPressed: () => context.go(Routes.home),
             ),
-            title: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  projectName,
-                  style: AppTextStyles.h2(context),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                // Storage size shown when loaded (FEAT-027).
-                if (state case FileBrowserLoaded(:final totalSizeBytes?)
-                  when totalSizeBytes > 0)
-                  Text(
-                    formatFileSize(totalSizeBytes),
-                    style: AppTextStyles.caption(context).copyWith(
-                      color: Theme.of(context).brightness == Brightness.dark
-                          ? AppColors.textSecondaryDark
-                          : AppColors.textSecondaryLight,
-                    ),
-                  ),
-              ],
+            title: Text(
+              title,
+              style: AppTextStyles.h2(context),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
             actions: [
               IconButton(
@@ -81,7 +111,9 @@ class _FileBrowserView extends StatelessWidget {
                 tooltip: 'Video Editor',
                 onPressed: () => context.push(
                   Routes.videoEditor.replaceFirst(
-                      ':projectName', Uri.encodeComponent(projectName)),
+                    ':projectName',
+                    Uri.encodeComponent(projectSlug),
+                  ),
                 ),
               ),
               IconButton(
@@ -96,12 +128,23 @@ class _FileBrowserView extends StatelessWidget {
             FileBrowserError(:final message) => _ErrorView(
                 message: message,
                 onRetry: () =>
-                    context.read<FileBrowserCubit>().load(projectName),
+                    context.read<FileBrowserCubit>().load(projectSlug),
               ),
-            FileBrowserLoaded() => _TreeView(
-                state: state,
-                projectName: projectName,
-                isDark: isDark,
+            FileBrowserLoaded() => Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _StorageBanner(
+                    slug: projectSlug,
+                    summaryFuture: summaryFuture,
+                  ),
+                  Expanded(
+                    child: _TreeView(
+                      state: state,
+                      projectSlug: projectSlug,
+                      isDark: isDark,
+                    ),
+                  ),
+                ],
               ),
           },
         );
@@ -115,55 +158,74 @@ class _FileBrowserView extends StatelessWidget {
 class _TreeView extends StatelessWidget {
   const _TreeView({
     required this.state,
-    required this.projectName,
+    required this.projectSlug,
     required this.isDark,
   });
 
   final FileBrowserLoaded state;
-  final String projectName;
+  final String projectSlug;
   final bool isDark;
 
-  String _assetEditorPath(String assetDir) =>
-      Routes.assetEditor
-          .replaceFirst(':projectName', Uri.encodeComponent(projectName))
-          .replaceFirst(':assetPath', Uri.encodeComponent(assetDir));
+  // ── Route helpers ─────────────────────────────────────────────────────────
+  //
+  // The :assetPath param carries a qualified Firestore path segment so the
+  // AssetEditorCubit can construct the full document path without extra state:
+  //   Global asset     → "assets/{assetId}"
+  //   Scene-local      → "scenes/{sceneFirestoreId}/assets/{assetId}"
+  //
+  // AssetEditorCubit prepends "users/{uid}/projects/{slug}/" to obtain the
+  // complete Firestore path.
 
-  String _sceneDetailPath(int sceneNumber) =>
-      Routes.sceneDetail
-          .replaceFirst(':projectName', Uri.encodeComponent(projectName))
-          .replaceFirst(':sceneId', sceneNumber.toString());
+  /// Route to a global asset editor (asset in the top-level `assets/` subcollection).
+  String _globalAssetEditorPath(String assetId) => Routes.assetEditor
+      .replaceFirst(':projectName', Uri.encodeComponent(projectSlug))
+      .replaceFirst(':assetPath', Uri.encodeComponent('assets/$assetId'));
+
+  /// Route to a scene-local asset editor.
+  ///
+  /// [sceneFirestoreId] is the Firestore doc ID of the parent scene (not the
+  /// scene number) so the cubit can resolve the exact subcollection path.
+  String _sceneAssetEditorPath(String sceneFirestoreId, String assetId) =>
+      Routes.assetEditor
+          .replaceFirst(':projectName', Uri.encodeComponent(projectSlug))
+          .replaceFirst(
+            ':assetPath',
+            Uri.encodeComponent('scenes/$sceneFirestoreId/assets/$assetId'),
+          );
+
+  String _sceneDetailPath(int sceneNumber) => Routes.sceneDetail
+      .replaceFirst(':projectName', Uri.encodeComponent(projectSlug))
+      .replaceFirst(':sceneId', sceneNumber.toString());
 
   @override
   Widget build(BuildContext context) {
     final tree = state.tree;
-    final expanded = state.expandedPaths;
-    final assetsKey = '${tree.directoryPath}/assets';
-    final scenesKey = '${tree.directoryPath}/scenes';
+    final expanded = state.expandedIds;
+
+    // Logical IDs for the two top-level folders.
+    const assetsKey = '__assets__';
+    const scenesKey = '__scenes__';
 
     final List<Widget> rows = [];
 
-    // ── story.mdx ─────────────────────────────────────────────────────────────
+    // ── story.mdx (Phase 2: opens story editor) ────────────────────────────
     rows.add(FileBrowserRow(
       label: 'story.mdx',
       icon: LucideIcons.fileText,
       depth: 0,
-      isSelected: state.selectedPath == '${tree.directoryPath}/story.mdx',
+      isSelected: state.selectedId == '__story__',
       onTap: () async {
-        context.read<FileBrowserCubit>().select('${tree.directoryPath}/story.mdx');
-        await context.push(Routes.storyEditor.replaceFirst(
-            ':projectName', Uri.encodeComponent(projectName)));
-        // Reload the tree when returning from the story editor so that any
-        // newly extracted asset directories appear immediately without the
-        // user having to re-open the project.
+        context.read<FileBrowserCubit>().select('__story__');
+        await context.push(Routes.storyEditor
+            .replaceFirst(':projectName', Uri.encodeComponent(projectSlug)));
         if (context.mounted) {
-          context.read<FileBrowserCubit>().load(projectName);
+          context.read<FileBrowserCubit>().load(projectSlug);
         }
       },
     ));
 
-    // ── final.mp4 (shown when export has completed) ───────────────────────────
-    if (tree.hasFinalVideo) {
-      final finalVideoPath = '${tree.directoryPath}/final.mp4';
+    // ── final.mp4 (shown once merge worker writes gcs_final_path) ─────────
+    if (tree.gcsFinalPath != null) {
       rows.add(FileBrowserRow(
         label: 'final.mp4',
         icon: LucideIcons.fileVideo,
@@ -172,7 +234,11 @@ class _TreeView extends StatelessWidget {
           Uri(
             path: Routes.videoPlayer,
             queryParameters: {
-              'path': Uri.encodeComponent(finalVideoPath),
+              // Phase 3: resolve presigned URL from gcs_final_path before
+              // navigating. For now, pass the GCS path directly — the video
+              // player will receive it in the `path` param and Phase 3 will
+              // update it to resolve a fresh presigned URL first.
+              'path': Uri.encodeComponent(tree.gcsFinalPath!),
               'title': 'final.mp4',
             },
           ).toString(),
@@ -180,15 +246,19 @@ class _TreeView extends StatelessWidget {
       ));
     }
 
-    // ── assets/ ────────────────────────────────────────────────────────────────
+    // ── assets/ ────────────────────────────────────────────────────────────
     rows.add(FileBrowserRow(
       label: 'assets',
-      icon: expanded.contains(assetsKey) ? LucideIcons.folderOpen : LucideIcons.folder,
+      icon: expanded.contains(assetsKey)
+          ? LucideIcons.folderOpen
+          : LucideIcons.folder,
       depth: 0,
       isFolder: true,
       isExpanded: expanded.contains(assetsKey),
-      onTap: () => context.read<FileBrowserCubit>().toggleExpand(assetsKey),
-      onToggleExpand: () => context.read<FileBrowserCubit>().toggleExpand(assetsKey),
+      onTap: () =>
+          context.read<FileBrowserCubit>().toggleExpand(assetsKey),
+      onToggleExpand: () =>
+          context.read<FileBrowserCubit>().toggleExpand(assetsKey),
     ));
 
     if (expanded.contains(assetsKey)) {
@@ -200,30 +270,40 @@ class _TreeView extends StatelessWidget {
             label: asset.name,
             icon: asset.hasImage ? LucideIcons.image : LucideIcons.image,
             depth: 1,
-            isSelected: state.selectedPath == asset.directoryPath,
+            isSelected: state.selectedId == asset.id,
             steps: [
-              asset.hasPromptBody ? GenerationStepState.done : GenerationStepState.pending,
-              asset.hasImage ? GenerationStepState.done : GenerationStepState.pending,
+              asset.hasPromptBody
+                  ? GenerationStepState.done
+                  : GenerationStepState.pending,
+              asset.hasImage
+                  ? GenerationStepState.done
+                  : GenerationStepState.pending,
             ],
             onTap: () async {
-              context.read<FileBrowserCubit>().select(asset.directoryPath);
-              await context.push(_assetEditorPath(asset.directoryPath));
-              if (context.mounted) context.read<FileBrowserCubit>().load(projectName);
+              context.read<FileBrowserCubit>().select(asset.id);
+              await context.push(_globalAssetEditorPath(asset.id));
+              if (context.mounted) {
+                context.read<FileBrowserCubit>().load(projectSlug);
+              }
             },
           ));
         }
       }
     }
 
-    // ── scenes/ ───────────────────────────────────────────────────────────────
+    // ── scenes/ ───────────────────────────────────────────────────────────
     rows.add(FileBrowserRow(
       label: 'scenes',
-      icon: expanded.contains(scenesKey) ? LucideIcons.folderOpen : LucideIcons.film,
+      icon: expanded.contains(scenesKey)
+          ? LucideIcons.folderOpen
+          : LucideIcons.film,
       depth: 0,
       isFolder: true,
       isExpanded: expanded.contains(scenesKey),
-      onTap: () => context.read<FileBrowserCubit>().toggleExpand(scenesKey),
-      onToggleExpand: () => context.read<FileBrowserCubit>().toggleExpand(scenesKey),
+      onTap: () =>
+          context.read<FileBrowserCubit>().toggleExpand(scenesKey),
+      onToggleExpand: () =>
+          context.read<FileBrowserCubit>().toggleExpand(scenesKey),
     ));
 
     if (expanded.contains(scenesKey)) {
@@ -231,34 +311,39 @@ class _TreeView extends StatelessWidget {
         rows.add(_EmptyFolderRow(depth: 1, isDark: isDark));
       } else {
         for (final scene in tree.scenes) {
-          final sceneKey = scene.directoryPath;
           rows.add(FileBrowserRow(
             label: 'Scene ${scene.sceneNumber}',
             icon: scene.hasVideo ? LucideIcons.video : LucideIcons.film,
             depth: 1,
             isFolder: true,
-            isExpanded: expanded.contains(sceneKey),
+            isExpanded: expanded.contains(scene.id),
             steps: [
-              scene.hasStoryboard ? GenerationStepState.done : GenerationStepState.pending,
-              scene.hasVideo ? GenerationStepState.done : GenerationStepState.pending,
+              scene.hasStoryboard
+                  ? GenerationStepState.done
+                  : GenerationStepState.pending,
+              scene.hasVideo
+                  ? GenerationStepState.done
+                  : GenerationStepState.pending,
             ],
             onTap: () async {
-              context.read<FileBrowserCubit>().toggleExpand(sceneKey);
+              context.read<FileBrowserCubit>().toggleExpand(scene.id);
               await context.push(_sceneDetailPath(scene.sceneNumber));
-              if (context.mounted) context.read<FileBrowserCubit>().load(projectName);
+              if (context.mounted) {
+                context.read<FileBrowserCubit>().load(projectSlug);
+              }
             },
             onToggleExpand: () =>
-                context.read<FileBrowserCubit>().toggleExpand(sceneKey),
+                context.read<FileBrowserCubit>().toggleExpand(scene.id),
           ));
 
-          if (expanded.contains(sceneKey)) {
-            // Scene assets.
+          if (expanded.contains(scene.id)) {
+            // Scene-local assets.
             for (final asset in scene.assets) {
               rows.add(FileBrowserRow(
                 label: asset.name,
                 icon: LucideIcons.image,
                 depth: 2,
-                isSelected: state.selectedPath == asset.directoryPath,
+                isSelected: state.selectedId == asset.id,
                 badge: AssetReferenceBadge(
                   assetName: asset.name,
                   description: asset.description,
@@ -266,29 +351,40 @@ class _TreeView extends StatelessWidget {
                 steps: asset.isPassThrough
                     ? null
                     : [
-                        asset.hasPromptBody ? GenerationStepState.done : GenerationStepState.pending,
-                        asset.hasImage ? GenerationStepState.done : GenerationStepState.pending,
+                        asset.hasPromptBody
+                            ? GenerationStepState.done
+                            : GenerationStepState.pending,
+                        asset.hasImage
+                            ? GenerationStepState.done
+                            : GenerationStepState.pending,
                       ],
                 onTap: () async {
-                  context.read<FileBrowserCubit>().select(asset.directoryPath);
-                  await context.push(_assetEditorPath(asset.directoryPath));
-                  if (context.mounted) context.read<FileBrowserCubit>().load(projectName);
+                  context.read<FileBrowserCubit>().select(asset.id);
+                  await context.push(
+                    _sceneAssetEditorPath(scene.id, asset.id),
+                  );
+                  if (context.mounted) {
+                    context.read<FileBrowserCubit>().load(projectSlug);
+                  }
                 },
               ));
             }
-            // ark.mdx
+
+            // ark.mdx (storyboard) — navigates to scene detail.
             rows.add(FileBrowserRow(
               label: 'ark.mdx',
               icon: LucideIcons.scrollText,
               depth: 2,
               onTap: () async {
                 await context.push(_sceneDetailPath(scene.sceneNumber));
-                if (context.mounted) context.read<FileBrowserCubit>().load(projectName);
+                if (context.mounted) {
+                  context.read<FileBrowserCubit>().load(projectSlug);
+                }
               },
             ));
-            // video.mp4 (only if exists)
-            if (scene.hasVideo) {
-              final videoPath = '${scene.directoryPath}/video.mp4';
+
+            // video.mp4 (only shown once gcs_video_path is set by the worker).
+            if (scene.hasVideo && scene.gcsVideoPath != null) {
               rows.add(FileBrowserRow(
                 label: 'video.mp4',
                 icon: LucideIcons.video,
@@ -297,7 +393,9 @@ class _TreeView extends StatelessWidget {
                   Uri(
                     path: Routes.videoPlayer,
                     queryParameters: {
-                      'path': Uri.encodeComponent(videoPath),
+                      // Phase 3: resolve presigned URL from gcsVideoPath before
+                      // navigating. Passes the GCS path for now.
+                      'path': Uri.encodeComponent(scene.gcsVideoPath!),
                       'title': 'Scene ${scene.sceneNumber}',
                     },
                   ).toString(),
@@ -312,7 +410,7 @@ class _TreeView extends StatelessWidget {
     return Stack(
       children: [
         ListView(children: rows),
-        // ── Extract Assets CTA (shown for blank new projects) ──────────────
+        // ── Extract Assets CTA (blank project with story content) ──────────
         if (tree.isBlank && tree.storyHasContent)
           Positioned(
             left: AppSpacing.s4,
@@ -320,18 +418,18 @@ class _TreeView extends StatelessWidget {
             bottom: AppSpacing.s6,
             child: _ExtractAssetsButton(
               onTap: () async {
-                await context.push(
-                  Routes.storyEditor.replaceFirst(
-                      ':projectName', Uri.encodeComponent(projectName)),
-                );
+                await context.push(Routes.storyEditor.replaceFirst(
+                  ':projectName',
+                  Uri.encodeComponent(projectSlug),
+                ));
                 if (context.mounted) {
-                  context.read<FileBrowserCubit>().load(projectName);
+                  context.read<FileBrowserCubit>().load(projectSlug);
                 }
               },
               isDark: isDark,
             ),
           ),
-        // New project call-to-action
+        // ── New project hint (no story, no assets, no scenes) ──────────────
         if (tree.isBlank && !tree.storyHasContent)
           Positioned(
             bottom: AppSpacing.s8,
@@ -367,7 +465,10 @@ class _EmptyFolderRow extends StatelessWidget {
       height: AppSizing.fileBrowserRow,
       child: Padding(
         padding: EdgeInsets.only(
-          left: AppSpacing.s3 + depth * AppSpacing.s4 + AppSizing.iconMd + AppSpacing.s2,
+          left: AppSpacing.s3 +
+              depth * AppSpacing.s4 +
+              AppSizing.iconMd +
+              AppSpacing.s2,
           right: AppSpacing.s3,
         ),
         child: Align(
@@ -375,7 +476,9 @@ class _EmptyFolderRow extends StatelessWidget {
           child: Text(
             '(empty)',
             style: AppTextStyles.body(context).copyWith(
-              color: isDark ? AppColors.textTertiaryDark : AppColors.textTertiaryLight,
+              color: isDark
+                  ? AppColors.textTertiaryDark
+                  : AppColors.textTertiaryLight,
             ),
           ),
         ),
@@ -385,7 +488,7 @@ class _EmptyFolderRow extends StatelessWidget {
 }
 
 /// "Extract Assets" button pinned above the safe area for blank projects
-/// that have story content.
+/// that already have story content.
 class _ExtractAssetsButton extends StatelessWidget {
   const _ExtractAssetsButton({required this.onTap, required this.isDark});
 
@@ -410,6 +513,114 @@ class _ExtractAssetsButton extends StatelessWidget {
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(AppSizing.radiusSm),
         ),
+      ),
+    );
+  }
+}
+
+// ── Storage banner (FEAT-027) ─────────────────────────────────────────────────
+
+/// Compact per-category storage breakdown shown below the AppBar in the project
+/// file browser. Hidden when the summary is unavailable or all categories are 0.
+///
+/// Uses a [FutureBuilder] against [summaryFuture] — a single fetch started in
+/// [_ProjectFileBrowserScreenState.initState]. Errors are silently swallowed;
+/// the banner simply renders nothing on failure.
+class _StorageBanner extends StatelessWidget {
+  const _StorageBanner({required this.slug, required this.summaryFuture});
+
+  final String slug;
+  final Future<Map<String, dynamic>> summaryFuture;
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<Map<String, dynamic>>(
+      future: summaryFuture,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          return const SizedBox.shrink();
+        }
+        if (snapshot.hasError || !snapshot.hasData) {
+          return const SizedBox.shrink();
+        }
+
+        final summary = ProjectStorageSummary.fromJson(slug, snapshot.data!);
+        if (summary.totalBytes == 0) return const SizedBox.shrink();
+
+        final isDark = Theme.of(context).brightness == Brightness.dark;
+        final chipBg =
+            isDark ? AppColors.surfaceRaisedDark : AppColors.surfaceRaisedLight;
+        final textColor =
+            isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight;
+
+        return Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.s3,
+            vertical: AppSpacing.s2,
+          ),
+          child: Row(
+            children: [
+              _StorageChip(
+                label: 'Images',
+                bytes: summary.imagesBytes,
+                chipBg: chipBg,
+                textColor: textColor,
+                context: context,
+              ),
+              const SizedBox(width: AppSpacing.s2),
+              _StorageChip(
+                label: 'Videos',
+                bytes: summary.videosBytes,
+                chipBg: chipBg,
+                textColor: textColor,
+                context: context,
+              ),
+              const SizedBox(width: AppSpacing.s2),
+              _StorageChip(
+                label: 'Export',
+                bytes: summary.exportBytes,
+                chipBg: chipBg,
+                textColor: textColor,
+                context: context,
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _StorageChip extends StatelessWidget {
+  const _StorageChip({
+    required this.label,
+    required this.bytes,
+    required this.chipBg,
+    required this.textColor,
+    required this.context,
+  });
+
+  final String label;
+  final int bytes;
+  final Color chipBg;
+  final Color textColor;
+  // ignore: avoid_field_initializers_in_const_classes
+  final BuildContext context;
+
+  @override
+  Widget build(BuildContext _) {
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.s2,
+        vertical: AppSpacing.s1,
+      ),
+      decoration: BoxDecoration(
+        color: chipBg,
+        borderRadius: BorderRadius.circular(AppSizing.radiusSm),
+      ),
+      child: Text(
+        '$label · ${formatBytes(bytes)}',
+        style: AppTextStyles.caption(context).copyWith(color: textColor),
       ),
     );
   }

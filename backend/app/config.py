@@ -1,16 +1,40 @@
+"""Application configuration.
+
+In Cloud Run, all sensitive values arrive as a single JSON blob in
+``ARKMASK_SECRET`` (Secret Manager → single secret, mounted as env var).
+We parse that blob once at import time and inject each key into the
+environment so that pydantic-settings can read them the usual way.
+
+Locally, use a ``.env`` file with the same keys (no ``ARKMASK_SECRET``
+needed — pydantic-settings reads individual vars directly).
+"""
+
+import json
+import logging
+import os
 from functools import lru_cache
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_log = logging.getLogger(__name__)
+
+# Parse ARKMASK_SECRET JSON blob and inject each key into the environment
+# before pydantic-settings reads. Individual vars already set in the
+# environment (or via .env) take precedence (setdefault).
+_secret_raw = os.environ.get("ARKMASK_SECRET", "")
+if _secret_raw:
+    try:
+        for _k, _v in json.loads(_secret_raw).items():
+            os.environ.setdefault(_k.upper(), str(_v))
+    except Exception as _exc:
+        _log.warning("Failed to parse ARKMASK_SECRET: %s", _exc)
 
 
 class Settings(BaseSettings):
     """Application configuration loaded from environment variables or .env file."""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
-
-    # Database
-    database_url: str = "postgresql://arkmask:arkmask@localhost:5432/arkmask"
 
     # Object storage (GCS in production; MinIO locally)
     storage_bucket: str = "arkmask-local"
@@ -39,7 +63,6 @@ class Settings(BaseSettings):
     stripe_price_studio_monthly: str = ""
     stripe_price_studio_annual: str = ""
     # URLs Stripe redirects to after hosted checkout completes or is cancelled.
-    # Point these at a hosted landing page or a deep-link URL for the mobile app.
     stripe_billing_success_url: str = "https://arkmask.app/billing/success"
     stripe_billing_cancel_url: str = "https://arkmask.app/billing/cancel"
     # URL shown as the "Return to app" link inside the Customer Portal.

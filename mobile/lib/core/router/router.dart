@@ -14,50 +14,27 @@ import '../../features/provider_setup/screens/provider_setup_screen.dart';
 import '../../features/billing/screens/upgrade_screen.dart';
 import '../../features/settings/screens/settings_screen.dart';
 import '../../features/usage/screens/usage_screen.dart';
-import '../../features/vault_setup/screens/vault_setup_screen.dart';
 import '../../features/scene/screens/scene_detail_screen.dart';
 import '../../features/story/screens/story_editor_screen.dart';
-import '../filesystem/project_file_service.dart';
 import '../storage/secure_storage_service.dart';
-import '../vault/vault_service.dart';
 import 'routes.dart';
-
-/// Placeholder screen for Phase 2+ routes that are declared in the skeleton
-/// but not yet implemented.
-class _PlaceholderScreen extends StatelessWidget {
-  const _PlaceholderScreen({required this.title});
-  final String title;
-
-  @override
-  Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(title: Text(title)),
-        body: Center(
-          child: Text(
-            '$title — coming in a future phase',
-            style: Theme.of(context).textTheme.bodyMedium,
-          ),
-        ),
-      );
-}
 
 /// Builds the [GoRouter] for ArkMask.
 ///
 /// Guards (evaluated in order on every navigation):
-/// 1. **Vault guard** — redirects to `/vault-setup` until the user has chosen
-///    a vault folder. Also lazily initializes [VaultService] and
-///    [ProjectFileService] on the first navigation so the router can be
-///    constructed synchronously in [initState].
-/// 2. **Auth guard** — unauthenticated users are redirected to `/`.
-/// 3. **Provider guard** — authenticated users without a provider key are
+/// 1. **Auth guard** — unauthenticated users are redirected to `/` (splash).
+/// 2. **Provider guard** — authenticated users without a provider key are
 ///    redirected to `/provider-setup` before accessing `/home` or deeper routes.
 ///
-/// The [FirebaseAuth] stream is used as a listenable so the router re-evaluates
-/// redirect on auth state changes (login, logout, session expiry).
+/// The vault guard that previously redirected to `/vault-setup` has been
+/// removed in the cloud-first architecture — there is no local filesystem
+/// vault to configure.
+///
+/// The [FirebaseAuth] stream is used as a listenable so the router
+/// re-evaluates the redirect on auth state changes (login, logout, expiry).
 GoRouter buildRouter({
   required SecureStorageService storage,
   required FirebaseAuth firebaseAuth,
-  required VaultService vaultService,
-  required ProjectFileService fileService,
 }) {
   return GoRouter(
     initialLocation: Routes.splash,
@@ -65,24 +42,7 @@ GoRouter buildRouter({
     redirect: (context, state) async {
       final loc = state.matchedLocation;
 
-      // ── 1. Vault guard ────────────────────────────────────────────────────
-      // Initialize the vault service once (idempotent) and, if a vault path
-      // is known, initialize the file service with it.
-      if (!vaultService.isInitialized) {
-        await vaultService.initialize();
-        if (vaultService.isConfigured) {
-          await fileService.initialize(vaultService.vaultPath!);
-        }
-      }
-
-      final isVaultScreen = loc == Routes.vaultSetup;
-      if (!vaultService.isConfigured && !isVaultScreen) {
-        return Routes.vaultSetup;
-      }
-      // Allow vault setup screen to be reached freely.
-      if (isVaultScreen) return null;
-
-      // ── 2. Auth guard ─────────────────────────────────────────────────────
+      // ── 1. Auth guard ─────────────────────────────────────────────────────
       final isSignedIn = firebaseAuth.currentUser != null;
 
       final isAuthScreen = loc == Routes.splash ||
@@ -94,7 +54,10 @@ GoRouter buildRouter({
         return Routes.splash;
       }
 
-      // ── 3. Provider guard ─────────────────────────────────────────────────
+      // ── 2. Provider guard ─────────────────────────────────────────────────
+      // Authenticated users who have not configured a provider key are
+      // redirected to the provider setup screen. Settings is exempt so the
+      // user can update credentials from there.
       if (isSignedIn && !isAuthScreen) {
         final hasProvider = await storage.hasProviderCredentials();
         if (!hasProvider && loc != Routes.settings) {
@@ -105,13 +68,6 @@ GoRouter buildRouter({
       return null; // no redirect
     },
     routes: [
-      GoRoute(
-        path: Routes.vaultSetup,
-        builder: (context, state) {
-          final isChange = state.uri.queryParameters['mode'] == 'change';
-          return VaultSetupScreen(isChange: isChange);
-        },
-      ),
       GoRoute(
         path: Routes.splash,
         builder: (context, state) => const SplashScreen(),
@@ -127,7 +83,7 @@ GoRouter buildRouter({
       GoRoute(
         path: Routes.providerSetup,
         builder: (context, state) {
-          // When accessed from Settings, show "Save Changes" instead of
+          // When accessed from Settings show "Save Changes" instead of
           // "Save & Continue" and hide the "Skip for now" link.
           final fromSettings = state.uri.queryParameters['from'] == 'settings';
           return ProviderSetupScreen(fromSettings: fromSettings);
@@ -140,10 +96,12 @@ GoRouter buildRouter({
       GoRoute(
         path: Routes.projectBrowser,
         builder: (context, state) {
-          final projectName = Uri.decodeComponent(
+          // The path parameter carries the immutable project slug
+          // (URL-encoded). See Routes.projectBrowser.
+          final projectSlug = Uri.decodeComponent(
             state.pathParameters['projectName'] ?? '',
           );
-          return ProjectFileBrowserScreen(projectName: projectName);
+          return ProjectFileBrowserScreen(projectSlug: projectSlug);
         },
       ),
       GoRoute(
@@ -164,25 +122,18 @@ GoRouter buildRouter({
       GoRoute(
         path: Routes.assetEditor,
         builder: (context, state) {
-          final projectName = Uri.decodeComponent(
+          // :projectName holds the project slug; :assetPath holds the qualified
+          // Firestore path segment (e.g. "assets/abc123" or
+          // "scenes/xyz/assets/def456"), URL-encoded by the file browser.
+          final projectSlug = Uri.decodeComponent(
             state.pathParameters['projectName'] ?? '',
           );
-          // assetPath is the full directory path, URL-encoded to handle slashes.
-          final assetDirPath = Uri.decodeComponent(
+          final assetPath = Uri.decodeComponent(
             state.pathParameters['assetPath'] ?? '',
           );
-          // conditioningPath is passed as a query parameter when navigating to
-          // a variant asset — it is the directory of the referenced asset whose
-          // image.png is attached as a visual conditioning input.
-          final rawConditioning = state.uri.queryParameters['conditioningPath'];
-          final conditioningDirPath =
-              rawConditioning != null && rawConditioning.isNotEmpty
-                  ? Uri.decodeComponent(rawConditioning)
-                  : null;
           return AssetEditorScreen(
-            projectName: projectName,
-            assetDirPath: assetDirPath,
-            conditioningDirPath: conditioningDirPath,
+            projectSlug: projectSlug,
+            assetPath: assetPath,
           );
         },
       ),
@@ -192,10 +143,8 @@ GoRouter buildRouter({
           final projectName = Uri.decodeComponent(
             state.pathParameters['projectName'] ?? '',
           );
-          final sceneId = int.tryParse(
-                state.pathParameters['sceneId'] ?? '',
-              ) ??
-              1;
+          final sceneId =
+              int.tryParse(state.pathParameters['sceneId'] ?? '') ?? 1;
           return SceneDetailScreen(
             projectName: projectName,
             sceneId: sceneId,
@@ -214,7 +163,9 @@ GoRouter buildRouter({
       GoRoute(
         path: Routes.videoPlayer,
         builder: (context, state) {
-          // `path` query param carries the absolute filesystem path (URL-encoded).
+          // `path` query param carries either an absolute filesystem path
+          // (Phase 2, legacy) or a GCS presigned URL (Phase 3+).
+          // Both are URL-encoded strings and decoded here identically.
           final videoPath = state.uri.queryParameters['path'] ?? '';
           final title = state.uri.queryParameters['title'];
           return VideoPlayerScreen(
@@ -239,8 +190,8 @@ GoRouter buildRouter({
 }
 
 /// [ChangeNotifier] that fires whenever Firebase auth state changes.
-/// Used as [GoRouter.refreshListenable] so the router re-evaluates redirect
-/// on sign-in and sign-out.
+/// Used as [GoRouter.refreshListenable] so the router re-evaluates the
+/// redirect on sign-in and sign-out.
 class _AuthNotifier extends ChangeNotifier {
   _AuthNotifier(FirebaseAuth auth) {
     _sub = auth.authStateChanges().listen((_) => notifyListeners());
