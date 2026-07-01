@@ -52,6 +52,11 @@ jobs:
           username: _json_key
           password: ${{ secrets.GCP_CREDENTIALS }}
 
+      - name: Debug — verify SA and image path
+        run: |
+          echo "Image: ${{ env.IMAGE_BASE }}"
+          echo "SA email: $(echo '${{ secrets.GCP_CREDENTIALS }}' | python3 -c "import sys,json; print(json.load(sys.stdin).get('client_email','?'))")"
+
       - name: Build and push Docker image
         id: meta
         run: |
