@@ -207,7 +207,12 @@ persists independently of any local terminal session, unlike the CLI method belo
 3. Endpoint URL: `https://<your-cloud-run-url>/billing/webhook`.
 4. Select events to listen for: `customer.subscription.created`,
    `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`,
-   `invoice.payment_failed` (see the handler list at the top of `billing.py`).
+   `invoice_payment.paid`, `invoice.payment_failed` (see the handler list at the top of
+   `billing.py`). **Include both `invoice.paid` and `invoice_payment.paid`** — which one
+   your Stripe account actually sends depends on its API version (newer accounts, on API
+   versions supporting multiple payment attempts per invoice, send `invoice_payment.paid`
+   instead of/alongside the classic `invoice.paid`); the backend handles both and they
+   converge on the same crediting logic, so subscribing to both is always safe.
 5. Click **Add endpoint**, then open it and click **Reveal** under "Signing secret" — this is
    your `whsec_...` value.
 6. Put that value in `stripe_webhook_secret` in the JSON secret for the matching environment

@@ -21,6 +21,10 @@ Webhook events handled:
   customer.subscription.updated  — tier change or renewal; sync tier + period_end
   customer.subscription.deleted  — cancellation took effect; revert to free tier
   invoice.paid                   — credit reset on each billing cycle anniversary
+  invoice_payment.paid           — newer Stripe accounts (multi-payment-per-invoice
+                                    API versions) send this instead of/alongside
+                                    invoice.paid; fetches the Invoice and delegates
+                                    to the same handler
   invoice.payment_failed         — mark subscription past_due (grace period begins)
 
 Firestore reverse-index:
@@ -254,6 +258,8 @@ async def stripe_webhook(
                 _handle_subscription_deleted(event["data"]["object"])
             case "invoice.paid":
                 _handle_invoice_paid(event["data"]["object"])
+            case "invoice_payment.paid":
+                _handle_invoice_payment_paid(event["data"]["object"])
             case "invoice.payment_failed":
                 _handle_invoice_payment_failed(event["data"]["object"])
             case _:
@@ -284,7 +290,6 @@ def _handle_subscription_upsert(subscription: dict) -> None:
     """
     customer_id: str = subscription["customer"]
     sub_status: str = subscription["status"]
-    period_end_ts: int = subscription["current_period_end"]
 
     # Resolve tier from the first line item's price ID.
     items = subscription.get("items", {}).get("data", [])
@@ -292,6 +297,22 @@ def _handle_subscription_upsert(subscription: dict) -> None:
         logger.warning("Subscription has no line items: sub_id=%s", subscription["id"])
         return
     price_id: str = items[0]["price"]["id"]
+
+    # current_period_end moved off the top-level Subscription object onto
+    # each SubscriptionItem on newer Stripe API versions — present even for
+    # accounts on "classic" billing_mode. `subscription["current_period_end"]`
+    # raised a bare KeyError on any such account, which the outer handler in
+    # stripe_webhook() turned into an HTTP 500 on *every* delivery attempt
+    # (Stripe retries a 500 with the same payload, so it failed identically
+    # every time) — meaning `tier` was never written for affected accounts,
+    # not just delayed. Fall back to the item-level field.
+    period_end_ts = subscription.get("current_period_end") or items[0].get("current_period_end")
+    if period_end_ts is None:
+        logger.warning(
+            "Subscription has no current_period_end at top level or item "
+            "level: sub_id=%s", subscription["id"],
+        )
+        return
     tier = _price_to_tier(price_id)
     if tier is None:
         # Price IDs are not secret (unlike the API key) — safe to log in
@@ -434,6 +455,39 @@ def _handle_invoice_paid(invoice: dict) -> None:
         "Credits reset on invoice.paid: uid=%s tier=%s new_balance=%d",
         uid, tier, new_balance,
     )
+
+
+def _handle_invoice_payment_paid(invoice_payment: dict) -> None:
+    """Handle invoice_payment.paid.
+
+    Newer Stripe accounts (API versions supporting multiple payment attempts
+    per invoice — see Stripe's "Invoice Payments" docs) send this
+    `invoice_payment` object instead of, or alongside, the classic
+    `invoice.paid` event. Its payload is much thinner than a full Invoice —
+    just `{id, invoice, payment, amount_paid, status, ...}`, no `customer`
+    or `lines` — so it can't be routed through `_resolve_uid_by_customer` /
+    `_resolve_tier_from_invoice` directly.
+
+    Fetch the referenced Invoice object (which does have `customer` and
+    `lines`) and delegate to `_handle_invoice_paid` so both event shapes
+    converge on one crediting implementation. Safe to run even if
+    `invoice.paid` also fires for the same invoice — `_handle_invoice_paid`
+    always sets an absolute credit balance, not an increment, so handling
+    both is idempotent rather than double-crediting.
+    """
+    invoice_id = invoice_payment.get("invoice")
+    if not invoice_id:
+        logger.warning(
+            "invoice_payment.paid missing invoice reference: id=%s",
+            invoice_payment.get("id"),
+        )
+        return
+
+    invoice = _stripe_client().invoices.retrieve(invoice_id)
+    # The Stripe SDK returns a StripeObject; _handle_invoice_paid only reads
+    # dict-style keys (invoice["customer"], invoice.get("lines"), etc.),
+    # which StripeObject supports directly — no dict() conversion needed.
+    _handle_invoice_paid(invoice)
 
 
 def _handle_invoice_payment_failed(invoice: dict) -> None:

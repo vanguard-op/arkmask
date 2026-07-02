@@ -33,6 +33,13 @@ infra/firebase/*.json
 infra/*.json
 infra/*.env
 
+# Local scratch copies of the {env}-arkmask-config Secret Manager JSON
+# payload (see infra/SETUP.md Step 6) — these contain the live Stripe
+# secret key, webhook secret, and Firebase service account private key in
+# plaintext and must never be committed, wherever they happen to be created.
+config.json
+*.config.json
+
 # Claude Code workspace metadata
 .claude/
 
