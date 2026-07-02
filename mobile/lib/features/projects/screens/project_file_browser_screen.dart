@@ -63,7 +63,9 @@ class _ProjectFileBrowserScreenState extends State<ProjectFileBrowserScreen> {
   @override
   Widget build(BuildContext context) {
     return BlocProvider(
-      create: (_) => FileBrowserCubit()..load(widget.projectSlug),
+      create: (_) => FileBrowserCubit(
+        jobsCubit: ArkMaskServices.of(context).jobsCubit,
+      )..load(widget.projectSlug),
       child: _FileBrowserView(
         projectSlug: widget.projectSlug,
         summaryFuture: _summaryFuture,
@@ -272,12 +274,16 @@ class _TreeView extends StatelessWidget {
             depth: 1,
             isSelected: state.selectedId == asset.id,
             steps: [
-              asset.hasPromptBody
-                  ? GenerationStepState.done
-                  : GenerationStepState.pending,
-              asset.hasImage
-                  ? GenerationStepState.done
-                  : GenerationStepState.pending,
+              asset.isGeneratingPrompt
+                  ? GenerationStepState.running
+                  : (asset.hasPromptBody
+                      ? GenerationStepState.done
+                      : GenerationStepState.pending),
+              asset.isGeneratingImage
+                  ? GenerationStepState.running
+                  : (asset.hasImage
+                      ? GenerationStepState.done
+                      : GenerationStepState.pending),
             ],
             onTap: () async {
               context.read<FileBrowserCubit>().select(asset.id);
@@ -318,12 +324,16 @@ class _TreeView extends StatelessWidget {
             isFolder: true,
             isExpanded: expanded.contains(scene.id),
             steps: [
-              scene.hasStoryboard
-                  ? GenerationStepState.done
-                  : GenerationStepState.pending,
-              scene.hasVideo
-                  ? GenerationStepState.done
-                  : GenerationStepState.pending,
+              scene.isGeneratingStoryboard
+                  ? GenerationStepState.running
+                  : (scene.hasStoryboard
+                      ? GenerationStepState.done
+                      : GenerationStepState.pending),
+              scene.isGeneratingVideo
+                  ? GenerationStepState.running
+                  : (scene.hasVideo
+                      ? GenerationStepState.done
+                      : GenerationStepState.pending),
             ],
             onTap: () async {
               context.read<FileBrowserCubit>().toggleExpand(scene.id);
@@ -351,12 +361,16 @@ class _TreeView extends StatelessWidget {
                 steps: asset.isPassThrough
                     ? null
                     : [
-                        asset.hasPromptBody
-                            ? GenerationStepState.done
-                            : GenerationStepState.pending,
-                        asset.hasImage
-                            ? GenerationStepState.done
-                            : GenerationStepState.pending,
+                        asset.isGeneratingPrompt
+                            ? GenerationStepState.running
+                            : (asset.hasPromptBody
+                                ? GenerationStepState.done
+                                : GenerationStepState.pending),
+                        asset.isGeneratingImage
+                            ? GenerationStepState.running
+                            : (asset.hasImage
+                                ? GenerationStepState.done
+                                : GenerationStepState.pending),
                       ],
                 onTap: () async {
                   context.read<FileBrowserCubit>().select(asset.id);

@@ -65,7 +65,8 @@ class AssetNode {
     required this.isGlobal,
     this.sceneNumber,
     this.gcsImagePath,
-    this.isGenerating = false,
+    this.isGeneratingPrompt = false,
+    this.isGeneratingImage = false,
   });
 
   /// Firestore document ID for this asset.
@@ -96,9 +97,13 @@ class AssetNode {
   /// GCS object path for the generated image. Non-null when [hasImage] is true.
   final String? gcsImagePath;
 
-  /// True while a generation job for this asset is in progress (from
-  /// [JobRegistryService]). Drives the [GenerationStepState.running] dot.
-  final bool isGenerating;
+  /// True while an `/image-prompt` job for this asset is in progress (from
+  /// [JobsCubit]). Drives the prompt dot's [GenerationStepState.running] state.
+  final bool isGeneratingPrompt;
+
+  /// True while an `/image` job for this asset is in progress (from
+  /// [JobsCubit]). Drives the image dot's [GenerationStepState.running] state.
+  final bool isGeneratingImage;
 
   /// True for a scene-local pass-through reference (name starts with @,
   /// description is empty). Pass-through assets reuse the referenced global
@@ -115,7 +120,8 @@ class SceneNode {
     required this.hasVideo,
     required this.assets,
     this.gcsVideoPath,
-    this.isGenerating = false,
+    this.isGeneratingStoryboard = false,
+    this.isGeneratingVideo = false,
   });
 
   /// Firestore document ID for this scene (typically the scene number as a string).
@@ -136,6 +142,11 @@ class SceneNode {
   /// GCS object path for the generated scene video. Non-null when [hasVideo] is true.
   final String? gcsVideoPath;
 
-  /// True while a video generation job for this scene is in progress.
-  final bool isGenerating;
+  /// True while a `/video-prompt` job for this scene is in progress (from
+  /// [JobsCubit]). Drives the storyboard dot's running state.
+  final bool isGeneratingStoryboard;
+
+  /// True while a `/video` job for this scene is in progress (from
+  /// [JobsCubit]). Drives the video dot's running state.
+  final bool isGeneratingVideo;
 }
