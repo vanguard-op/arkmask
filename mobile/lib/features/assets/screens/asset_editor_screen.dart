@@ -43,7 +43,7 @@ class AssetEditorScreen extends StatelessWidget {
         projectSlug: projectSlug,
         assetFirestorePath: assetPath,
         apiClient: services.apiClient,
-        jobRegistryService: services.jobRegistryService,
+        jobsCubit: services.jobsCubit,
       )..load(),
       child: _AssetEditorView(projectSlug: projectSlug, assetPath: assetPath),
     );

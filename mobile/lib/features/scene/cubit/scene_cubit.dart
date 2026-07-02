@@ -6,7 +6,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../core/api/api_error.dart';
 import '../../../core/api/ark_mask_api_client.dart';
-import '../../../core/jobs/job_registry_service.dart';
+import '../../../core/jobs/jobs_cubit.dart';
 import '../../../core/models/models.dart';
 import 'scene_state.dart';
 
@@ -17,23 +17,28 @@ import 'scene_state.dart';
 ///   2. Scene assets subcollection — per-scene asset documents
 ///   3. Global assets collection — used to resolve pass-through GCS image paths
 ///
-/// On every listener update the cubit rebuilds [SceneLoaded] by merging all
-/// three snapshots plus the local generation flags.
+/// [isGeneratingStoryboard] / [isGeneratingVideo] are derived live from
+/// [JobsCubit] (the app-lifetime job orchestrator) rather than owned as local
+/// mutable flags — see [_syncGeneratingFlags]. This means returning to this
+/// screen mid-generation correctly restores the spinner, and the flag clears
+/// as soon as the job resolves even if that happens while a different screen
+/// is on top (via FCM or [JobsCubit.pollPendingJobs]).
 ///
-/// Completion of video generation is detected when the Firestore listener
-/// delivers a non-null gcs_video_path — no Timer.periodic polling.
+/// Completion is additionally detected as a fast path when the Firestore
+/// listener delivers a non-null `storyboard_body` / `gcs_video_path` — it now
+/// calls [JobsCubit.resolve] instead of writing to the registry directly.
 class SceneCubit extends Cubit<SceneState> {
   SceneCubit({
     required this.projectSlug,
     required this.sceneNumber,
     required this.apiClient,
-    required this.jobRegistryService,
+    required this.jobsCubit,
   }) : super(SceneLoading());
 
   final String projectSlug;
   final int sceneNumber;
   final ArkMaskApiClient apiClient;
-  final JobRegistryService jobRegistryService;
+  final JobsCubit jobsCubit;
 
   // ── Firestore subscriptions ────────────────────────────────────────────────
 
@@ -41,6 +46,7 @@ class SceneCubit extends Cubit<SceneState> {
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _sceneDocSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _sceneAssetsSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _globalAssetsSub;
+  StreamSubscription<JobsState>? _jobsSub;
 
   // ── Snapshot caches ────────────────────────────────────────────────────────
 
@@ -58,15 +64,25 @@ class SceneCubit extends Cubit<SceneState> {
   List<AssetDocument> _sceneAssets = [];
   List<AssetDocument> _globalAssets = [];
 
-  // ── Generation flags (mutable, not from Firestore) ─────────────────────────
+  // ── Local UI-only fields (not derived from JobsCubit) ───────────────────────
 
-  bool _isGeneratingStoryboard = false;
-  bool _isGeneratingVideo = false;
-  String? _currentStoryboardJobId;
-  String? _currentVideoJobId;
   String? _storyboardError;
   String? _videoError;
   int _selectedTabIndex = 0;
+
+  bool get _isGeneratingStoryboard => jobsCubit.activeJob(
+        type: 'video_prompt',
+        projectId: projectSlug,
+        sceneIndex: sceneNumber,
+        assetName: null,
+      ) != null;
+
+  bool get _isGeneratingVideo => jobsCubit.activeJob(
+        type: 'video',
+        projectId: projectSlug,
+        sceneIndex: sceneNumber,
+        assetName: null,
+      ) != null;
 
   // ── Load ──────────────────────────────────────────────────────────────────
 
@@ -82,6 +98,13 @@ class SceneCubit extends Cubit<SceneState> {
     final db = FirebaseFirestore.instance;
     final projectPath = 'users/$uid/projects/$projectSlug';
     final sceneId = sceneNumber.toString();
+
+    // Re-derive isGenerating* and rebuild on every job-state change — this is
+    // what keeps the spinner correct across navigation, independent of
+    // whether the completing Firestore write happens to arrive while this
+    // screen is open.
+    _jobsSub?.cancel();
+    _jobsSub = jobsCubit.stream.listen((_) => _rebuildState());
 
     // ── 0. Project document — parse story_content for this scene's text ────
     //
@@ -113,39 +136,31 @@ class SceneCubit extends Cubit<SceneState> {
           _sceneDoc = SceneDocument.fromFirestore(snap.id, data);
 
           // Detect storyboard completion: storyboard_body transitioned from
-          // null to non-null (async /video-prompt job). Clear the generating
-          // flag and update job registry — same pattern as video below.
-          if (_isGeneratingStoryboard &&
-              prevStoryboard == null &&
-              _sceneDoc!.storyboardBody != null) {
-            _isGeneratingStoryboard = false;
-            if (_currentStoryboardJobId != null) {
-              jobRegistryService.updateStatus(
-                _currentStoryboardJobId!,
-                'success',
-                resolvedAt: DateTime.now(),
-              );
-              _currentStoryboardJobId = null;
-            }
+          // null to non-null (async /video-prompt job). Resolve the matching
+          // job via jobsCubit — same pattern as video below.
+          if (prevStoryboard == null && _sceneDoc!.storyboardBody != null) {
+            final job = jobsCubit.activeJob(
+              type: 'video_prompt',
+              projectId: projectSlug,
+              sceneIndex: sceneNumber,
+              assetName: null,
+            );
+            if (job != null) jobsCubit.resolve(job.jobId, 'success');
             // Auto-switch to the Storyboard tab so the user sees the result
             // (previously done inline after the synchronous HTTP response).
             _selectedTabIndex = 1;
           }
 
           // Detect video completion: gcs_video_path transitioned from null
-          // to non-null. Clear the generating flag and update job registry.
-          if (_isGeneratingVideo &&
-              prevVideoPath == null &&
-              _sceneDoc!.gcsVideoPath != null) {
-            _isGeneratingVideo = false;
-            if (_currentVideoJobId != null) {
-              jobRegistryService.updateStatus(
-                _currentVideoJobId!,
-                'success',
-                resolvedAt: DateTime.now(),
-              );
-              _currentVideoJobId = null;
-            }
+          // to non-null. Resolve the matching job via jobsCubit.
+          if (prevVideoPath == null && _sceneDoc!.gcsVideoPath != null) {
+            final job = jobsCubit.activeJob(
+              type: 'video',
+              projectId: projectSlug,
+              sceneIndex: sceneNumber,
+              assetName: null,
+            );
+            if (job != null) jobsCubit.resolve(job.jobId, 'success');
           }
         }
         _rebuildState();
@@ -187,8 +202,8 @@ class SceneCubit extends Cubit<SceneState> {
 
   // ── State builder ─────────────────────────────────────────────────────────
 
-  /// Merges the three Firestore snapshots with the local generation flags into
-  /// a [SceneLoaded] state.
+  /// Merges the three Firestore snapshots with the live [jobsCubit]-derived
+  /// generation flags into a [SceneLoaded] state.
   void _rebuildState() {
     if (isClosed) return;
 
@@ -267,7 +282,6 @@ class SceneCubit extends Cubit<SceneState> {
         if (asset.gcsImagePath != null) asset.gcsImagePath!,
     ];
 
-    _isGeneratingStoryboard = true;
     _storyboardError = null;
     emit(s.copyWith(
       isGeneratingStoryboard: true,
@@ -282,9 +296,10 @@ class SceneCubit extends Cubit<SceneState> {
         refImageGcsPaths: refImageGcsPaths,
       );
 
-      // Register the job in the local Hive CE registry so it survives
-      // app restarts and can be polled on foreground return (FEAT-017).
-      await jobRegistryService.register(JobRegistryEntry(
+      // Register the job so it survives app restarts and can be polled on
+      // foreground return (FEAT-017), and so isGeneratingStoryboard reflects
+      // it immediately via jobsCubit regardless of navigation.
+      await jobsCubit.enqueue(JobRegistryEntry(
         jobId: jobId,
         type: 'video_prompt',
         projectId: projectSlug,
@@ -293,14 +308,9 @@ class SceneCubit extends Cubit<SceneState> {
         sceneIndex: sceneNumber,
       ));
 
-      // Store for the Firestore listener to mark success on completion.
-      _currentStoryboardJobId = jobId;
-
-      // isGeneratingStoryboard stays true — the Firestore listener clears it
-      // (and auto-switches to the Storyboard tab) when storyboard_body is
-      // set on the scene document.
+      // isGeneratingStoryboard stays true — cleared via jobsCubit (and the
+      // tab auto-switches) when storyboard_body is set on the scene document.
     } on ApiInsufficientCredits {
-      _isGeneratingStoryboard = false;
       _storyboardError = '__credits__';
       if (!isClosed && state is SceneLoaded) {
         emit((state as SceneLoaded).copyWith(
@@ -310,7 +320,6 @@ class SceneCubit extends Cubit<SceneState> {
       }
     } on ApiError catch (e) {
       final msg = _apiErrorMessage(e);
-      _isGeneratingStoryboard = false;
       _storyboardError = msg;
       if (!isClosed && state is SceneLoaded) {
         emit((state as SceneLoaded).copyWith(
@@ -320,7 +329,6 @@ class SceneCubit extends Cubit<SceneState> {
       }
     } catch (e) {
       final msg = e.toString();
-      _isGeneratingStoryboard = false;
       _storyboardError = msg;
       if (!isClosed && state is SceneLoaded) {
         emit((state as SceneLoaded).copyWith(
@@ -344,7 +352,6 @@ class SceneCubit extends Cubit<SceneState> {
         if (asset.gcsImagePath != null) asset.gcsImagePath!,
     ];
 
-    _isGeneratingVideo = true;
     _videoError = null;
     emit(s.copyWith(
       isGeneratingVideo: true,
@@ -358,9 +365,9 @@ class SceneCubit extends Cubit<SceneState> {
         refImageGcsPaths: refImageGcsPaths,
       );
 
-      // Register the job in the local Hive CE registry so it survives
-      // app restarts and can be polled on foreground return (FEAT-017).
-      await jobRegistryService.register(JobRegistryEntry(
+      // Register the job so it survives app restarts and can be polled on
+      // foreground return (FEAT-017).
+      await jobsCubit.enqueue(JobRegistryEntry(
         jobId: jobId,
         type: 'video',
         projectId: projectSlug,
@@ -369,13 +376,9 @@ class SceneCubit extends Cubit<SceneState> {
         sceneIndex: sceneNumber,
       ));
 
-      // Store for the Firestore listener to mark success on completion.
-      _currentVideoJobId = jobId;
-
-      // isGeneratingVideo stays true — the Firestore listener clears it
-      // when gcs_video_path is set on the scene document.
+      // isGeneratingVideo stays true — cleared via jobsCubit when
+      // gcs_video_path is set on the scene document.
     } on ApiInsufficientCredits {
-      _isGeneratingVideo = false;
       _videoError = '__credits__';
       if (!isClosed && state is SceneLoaded) {
         emit((state as SceneLoaded).copyWith(
@@ -385,7 +388,6 @@ class SceneCubit extends Cubit<SceneState> {
       }
     } on ApiError catch (e) {
       final msg = _apiErrorMessage(e);
-      _isGeneratingVideo = false;
       _videoError = msg;
       if (!isClosed && state is SceneLoaded) {
         emit((state as SceneLoaded).copyWith(
@@ -395,7 +397,6 @@ class SceneCubit extends Cubit<SceneState> {
       }
     } catch (e) {
       final msg = e.toString();
-      _isGeneratingVideo = false;
       _videoError = msg;
       if (!isClosed && state is SceneLoaded) {
         emit((state as SceneLoaded).copyWith(
@@ -497,6 +498,7 @@ class SceneCubit extends Cubit<SceneState> {
     _sceneDocSub?.cancel();
     _sceneAssetsSub?.cancel();
     _globalAssetsSub?.cancel();
+    _jobsSub?.cancel();
     return super.close();
   }
 }

@@ -37,7 +37,7 @@ class SceneDetailScreen extends StatelessWidget {
         projectSlug: projectName,
         sceneNumber: sceneId,
         apiClient: services.apiClient,
-        jobRegistryService: services.jobRegistryService,
+        jobsCubit: services.jobsCubit,
       )..load(),
       child: _SceneDetailView(
         projectName: projectName,
@@ -172,7 +172,7 @@ class _SceneAppBar extends StatelessWidget implements PreferredSizeWidget {
     final loaded = state is SceneLoaded ? state as SceneLoaded : null;
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
-    // Derive status dot color from cubit state flags (no jobManager needed).
+    // Derive status dot color from cubit state flags (derived live from JobsCubit — no per-widget dependency needed).
     final Color dotColor;
     if (loaded != null) {
       if (loaded.isGeneratingStoryboard || loaded.isGeneratingVideo) {
@@ -906,7 +906,7 @@ class _StoryboardTab extends StatelessWidget {
               : _EmptyStoryboardState(),
         ),
 
-        // Generation status strip — driven by cubit state, no jobManager.
+        // Generation status strip — driven by cubit state, derived live from JobsCubit.
         _GenerationStatusStrip(state: state),
 
         // Video preview: shows a card with a play button when video is ready.
@@ -1027,7 +1027,7 @@ class _StoryboardDisplayState extends State<_StoryboardDisplay> {
 // ── Generation status strip ───────────────────────────────────────────────────
 
 /// Shows the storyboard and video generation status driven by [SceneLoaded]
-/// state — no [GenerationJobManager] dependency.
+/// state — no direct JobsCubit dependency — the flags are already resolved by SceneCubit.
 class _GenerationStatusStrip extends StatefulWidget {
   const _GenerationStatusStrip({required this.state});
 

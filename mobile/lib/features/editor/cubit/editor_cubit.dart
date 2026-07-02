@@ -14,7 +14,7 @@ import 'package:video_player/video_player.dart';
 
 import '../../../core/api/api_error.dart';
 import '../../../core/api/ark_mask_api_client.dart';
-import '../../../core/jobs/job_registry_service.dart';
+import '../../../core/jobs/jobs_cubit.dart';
 import '../../../core/models/models.dart';
 import 'editor_state.dart';
 
@@ -33,12 +33,12 @@ class EditorCubit extends Cubit<EditorState> {
   EditorCubit({
     required this.projectSlug,
     required this.apiClient,
-    required this.jobRegistryService,
+    required this.jobsCubit,
   }) : super(EditorLoading());
 
   final String projectSlug;
   final ArkMaskApiClient apiClient;
-  final JobRegistryService jobRegistryService;
+  final JobsCubit jobsCubit;
 
   /// [VideoPlayerController]s keyed by scene number. Created lazily when the
   /// clip is selected or played; disposed on [close].
@@ -47,6 +47,13 @@ class EditorCubit extends Cubit<EditorState> {
   /// Active Firestore subscriptions — cancelled in [close].
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _projectSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _scenesSub;
+
+  /// Re-syncs per-clip `isGenerating` and `isMerging` on every job-state
+  /// change — see [_syncGeneratingFromJobs]. This is what keeps the editor's
+  /// spinners correct even when a video/merge job resolves via FCM/poll
+  /// while this screen isn't mounted, or when returning to this screen
+  /// mid-generation.
+  StreamSubscription<JobsState>? _jobsSub;
 
   /// Returns the [VideoPlayerController] for [sceneNumber], or null if the
   /// scene has no presigned URL yet or the controller failed to initialise.
@@ -66,6 +73,9 @@ class EditorCubit extends Cubit<EditorState> {
       emit(EditorError(message: 'Not signed in.'));
       return;
     }
+
+    _jobsSub?.cancel();
+    _jobsSub = jobsCubit.stream.listen((_) => _syncGeneratingFromJobs());
 
     final firestore = FirebaseFirestore.instance;
     final projectRef = firestore
@@ -116,9 +126,12 @@ class EditorCubit extends Cubit<EditorState> {
       final currentExportPath = state is EditorLoaded
           ? (state as EditorLoaded).gcsExportPath
           : null;
+      // Fall back to jobsCubit (not just the previous in-memory state) so a
+      // merge started before this screen was (re)created is still reflected
+      // — e.g. the user started an export, left, and came back.
       final currentIsMerging = state is EditorLoaded
           ? (state as EditorLoaded).isMerging
-          : false;
+          : _isMerging;
 
       // Build the clip list. Presigned URL and duration may not yet be known;
       // emit immediately with nulls and patch each clip asynchronously.
@@ -134,18 +147,13 @@ class EditorCubit extends Cubit<EditorState> {
           totalDuration: placeholder,
         );
 
-        // Determine if a video generation job is active for this scene.
-        final isGenerating = jobRegistryService
-            .activeForProject(projectSlug)
-            .any((j) => j.sceneIndex == scene.sceneNumber && j.type == 'video');
-
         clips.add(ClipEntry(
           sceneNumber: scene.sceneNumber,
           gcsVideoPath: scene.gcsVideoPath,
           presignedUrl: null, // filled in below asynchronously
           totalDuration: placeholder,
           trimState: trimState,
-          isGenerating: isGenerating,
+          isGenerating: _isGeneratingScene(scene.sceneNumber),
         ));
       }
 
@@ -267,22 +275,42 @@ class EditorCubit extends Cubit<EditorState> {
     }
   }
 
-  /// Marks the active merge job as succeeded in the job registry.
+  /// Marks the active merge job as succeeded via [jobsCubit].
   void _resolveActiveMergeJob() {
-    final mergeJob = jobRegistryService
-        .all
-        .where((e) =>
-            e.projectId == projectSlug &&
-            e.type == 'merge' &&
-            e.isPending)
+    final mergeJob = jobsCubit.state.entries.values
+        .where((e) => e.projectId == projectSlug && e.type == 'merge' && e.isPending)
         .firstOrNull;
     if (mergeJob != null) {
-      jobRegistryService.updateStatus(
-        mergeJob.jobId,
-        'success',
-        resolvedAt: DateTime.now(),
-      );
+      jobsCubit.resolve(mergeJob.jobId, 'success');
     }
+  }
+
+  /// True when a `/video` job is active for [sceneNumber].
+  bool _isGeneratingScene(int sceneNumber) => jobsCubit.activeJob(
+        type: 'video',
+        projectId: projectSlug,
+        sceneIndex: sceneNumber,
+        assetName: null,
+      ) != null;
+
+  /// True when a `/merge` job is active for this project.
+  bool get _isMerging => jobsCubit.activeJob(
+        type: 'merge',
+        projectId: projectSlug,
+      ) != null;
+
+  /// Re-derives per-clip `isGenerating` and `isMerging` from [jobsCubit] and
+  /// re-emits without redoing the presigned-URL/duration fetch — called on
+  /// every job-state change so the editor's spinners stay live regardless of
+  /// which screen is on top when a video/merge job actually resolves.
+  void _syncGeneratingFromJobs() {
+    final s = state;
+    if (s is! EditorLoaded) return;
+    final updatedClips = [
+      for (final clip in s.clips)
+        clip.copyWith(isGenerating: _isGeneratingScene(clip.sceneNumber)),
+    ];
+    emit(s.copyWith(clips: updatedClips, isMerging: _isMerging));
   }
 
   // ── Selection ──────────────────────────────────────────────────────────────
@@ -498,8 +526,9 @@ class EditorCubit extends Cubit<EditorState> {
         scenes: scenes,
       );
 
-      // Write a Hive CE entry so the job survives app restarts.
-      await jobRegistryService.register(JobRegistryEntry(
+      // Write a Hive CE entry (via jobsCubit) so the job survives app
+      // restarts and isMerging reflects it live regardless of navigation.
+      await jobsCubit.enqueue(JobRegistryEntry(
         jobId: jobId,
         type: 'merge',
         projectId: projectSlug,
@@ -680,6 +709,7 @@ class EditorCubit extends Cubit<EditorState> {
   Future<void> close() async {
     await _projectSub?.cancel();
     await _scenesSub?.cancel();
+    await _jobsSub?.cancel();
     for (final ctrl in _controllers.values) {
       await ctrl.dispose();
     }
