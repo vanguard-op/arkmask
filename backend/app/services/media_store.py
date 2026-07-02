@@ -53,7 +53,20 @@ def _make_client(endpoint_url: str, access_key: str, secret_key: str):
     kwargs: dict = dict(
         aws_access_key_id=access_key,
         aws_secret_access_key=secret_key,
-        config=Config(signature_version="s3v4"),
+        # botocore >= 1.36 defaults to computing request checksums
+        # (x-amz-checksum-crc32 via aws-chunked/trailer encoding) on
+        # PutObject. GCS's S3 XML compatibility layer doesn't support that
+        # chunked-checksum scheme, so the extra header/trailer botocore signs
+        # doesn't match what GCS validates, and every upload fails with
+        # "SignatureDoesNotMatch". Forcing checksums to only be added when
+        # the API truly requires them (and skipping response checksum
+        # validation) restores the pre-1.36 signing behaviour that GCS
+        # actually supports.
+        config=Config(
+            signature_version="s3v4",
+            request_checksum_calculation="when_required",
+            response_checksum_validation="when_required",
+        ),
         endpoint_url=endpoint_url or _GCS_S3_ENDPOINT,
     )
     return boto3.client("s3", **kwargs)
