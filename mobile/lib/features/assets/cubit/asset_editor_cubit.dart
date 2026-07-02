@@ -6,7 +6,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../core/api/api_error.dart';
 import '../../../core/api/ark_mask_api_client.dart';
-import '../../../core/jobs/job_registry_service.dart';
+import '../../../core/jobs/jobs_cubit.dart';
 import '../../../core/models/models.dart';
 import 'asset_editor_state.dart';
 
@@ -14,15 +14,25 @@ import 'asset_editor_state.dart';
 ///
 /// Manages real-time Firestore state for a single asset document. Field edits
 /// are written directly to Firestore; the real-time listener delivers updates
-/// back to the UI. Image generation is async — the cubit emits
-/// [isGeneratingImage] = true immediately and clears it when the Firestore
-/// listener fires with a non-null [gcs_image_path].
+/// back to the UI.
+///
+/// Generation is async — [isGeneratingPrompt] / [isGeneratingImage] are no
+/// longer local booleans owned by this Cubit's lifetime. They are derived
+/// live from [JobsCubit], the app-lifetime job orchestrator, via
+/// [_syncGeneratingFlags]. This means:
+///  - Re-opening this screen mid-generation correctly shows the spinner
+///    again (checked on [load] once the asset name is known).
+///  - The flag clears the instant the job resolves, even if it resolves via
+///    FCM / poll while a *different* screen is on top.
+/// The Firestore listener is still used as a fast, low-latency completion
+/// signal while this screen happens to be open — it now calls
+/// [JobsCubit.resolve] instead of writing to the registry directly.
 class AssetEditorCubit extends Cubit<AssetEditorState> {
   AssetEditorCubit({
     required this.projectSlug,
     required this.assetFirestorePath,
     required this.apiClient,
-    required this.jobRegistryService,
+    required this.jobsCubit,
   }) : super(const AssetEditorLoading());
 
   /// Immutable project slug — Firestore document ID and GCS folder prefix.
@@ -34,19 +44,15 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
   final String assetFirestorePath;
 
   final ArkMaskApiClient apiClient;
-  final JobRegistryService jobRegistryService;
+  final JobsCubit jobsCubit;
 
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _docSub;
+  StreamSubscription<JobsState>? _jobsSub;
 
-  /// Tracks the job_id of the most recent in-flight image generation job so
-  /// the registry can be updated to 'success' when the Firestore listener
-  /// delivers [gcs_image_path].
-  String? _currentImageJobId;
-
-  /// Tracks the job_id of the most recent in-flight prompt generation job so
-  /// the registry can be updated to 'success' when the Firestore listener
-  /// delivers [prompt_body].
-  String? _currentPromptJobId;
+  /// Scene index this asset belongs to, or null for a global asset. Derived
+  /// once from [assetFirestorePath] — used to match this screen's jobs in
+  /// the registry (mirrors the FCM payload's routing fields).
+  late final int? _sceneIndex = _deriveSceneIndex(assetFirestorePath);
 
   // ── Firestore helpers ──────────────────────────────────────────────────────
 
@@ -60,7 +66,9 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
 
   // ── Load ──────────────────────────────────────────────────────────────────
 
-  /// Opens a real-time listener on the Firestore asset document.
+  /// Opens a real-time listener on the Firestore asset document and
+  /// subscribes to [jobsCubit] so the generation flags stay live regardless
+  /// of navigation.
   ///
   /// Emits [AssetEditorLoading] immediately, then [AssetEditorLoaded] on each
   /// snapshot update, or [AssetEditorError] if the stream errors.
@@ -77,6 +85,13 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
           (snap) => _onSnapshot(snap, isGlobal),
           onError: (Object e) => emit(AssetEditorError(message: e.toString())),
         );
+
+    // Re-sync the generating flags on every job-state change — this is what
+    // makes the spinner clear even when a job resolves while this screen
+    // isn't the one that receives the Firestore update (or resolves purely
+    // via FCM/poll before Firestore's own listener fires).
+    _jobsSub?.cancel();
+    _jobsSub = jobsCubit.stream.listen((_) => _syncGeneratingFlags());
   }
 
   void _onSnapshot(
@@ -91,43 +106,38 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
     final data = snap.data()!;
     final newGcsImagePath = data['gcs_image_path'] as String?;
     final newPromptBody = data['prompt_body'] as String?;
+    final name = data['name'] as String? ?? snap.id;
     final current = state;
 
-    // When an image job is in-flight and the worker has now written
-    // gcs_image_path, clear the generating flag and update the job registry.
-    bool clearGeneratingImage = false;
+    // When the worker has written gcs_image_path / prompt_body, resolve the
+    // matching job immediately (fast path — FCM/poll would eventually catch
+    // this too, but Firestore is typically faster while this screen is open).
     if (current is AssetEditorLoaded &&
-        current.isGeneratingImage &&
         newGcsImagePath != null &&
         newGcsImagePath != current.gcsImagePath) {
-      clearGeneratingImage = true;
-      // Update the registry entry to 'success' now that the image is ready.
-      if (_currentImageJobId != null) {
-        jobRegistryService.updateStatus(_currentImageJobId!, 'success',
-            resolvedAt: DateTime.now());
-        _currentImageJobId = null;
-      }
+      final job = jobsCubit.activeJob(
+        type: 'image',
+        projectId: projectSlug,
+        sceneIndex: _sceneIndex,
+        assetName: name,
+      );
+      if (job != null) jobsCubit.resolve(job.jobId, 'success');
     }
-
-    // Same pattern for prompt generation — clear isGeneratingPrompt when the
-    // worker writes prompt_body (async /image-prompt job, see
-    // AssetEditorCubit.generatePrompt).
-    bool clearGeneratingPrompt = false;
     if (current is AssetEditorLoaded &&
-        current.isGeneratingPrompt &&
         newPromptBody != null &&
         newPromptBody != current.promptBody) {
-      clearGeneratingPrompt = true;
-      if (_currentPromptJobId != null) {
-        jobRegistryService.updateStatus(_currentPromptJobId!, 'success',
-            resolvedAt: DateTime.now());
-        _currentPromptJobId = null;
-      }
+      final job = jobsCubit.activeJob(
+        type: 'image_prompt',
+        projectId: projectSlug,
+        sceneIndex: _sceneIndex,
+        assetName: name,
+      );
+      if (job != null) jobsCubit.resolve(job.jobId, 'success');
     }
 
     emit(AssetEditorLoaded(
       assetId: snap.id,
-      name: data['name'] as String? ?? snap.id,
+      name: name,
       type: AssetType.fromString(data['type'] as String? ?? 'character'),
       description: data['description'] as String? ?? '',
       promptBody: newPromptBody,
@@ -135,17 +145,50 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
       isGlobal: isGlobal,
       // Preserve transient UI flags from the current state where relevant.
       isSaving: current is AssetEditorLoaded ? current.isSaving : false,
-      isGeneratingPrompt: clearGeneratingPrompt
-          ? false
-          : (current is AssetEditorLoaded ? current.isGeneratingPrompt : false),
-      isGeneratingImage: clearGeneratingImage
-          ? false
-          : (current is AssetEditorLoaded ? current.isGeneratingImage : false),
+      isGeneratingPrompt: _isPromptGenerating(name),
+      isGeneratingImage: _isImageGenerating(name),
       // Preserve errors until the user dismisses them.
       promptError:
           current is AssetEditorLoaded ? current.promptError : null,
       imageError: current is AssetEditorLoaded ? current.imageError : null,
     ));
+  }
+
+  /// Recomputes [AssetEditorLoaded.isGeneratingPrompt] /
+  /// [AssetEditorLoaded.isGeneratingImage] from [jobsCubit] and re-emits if
+  /// the current state is loaded. No-ops before the first snapshot arrives.
+  void _syncGeneratingFlags() {
+    final current = state;
+    if (current is! AssetEditorLoaded) return;
+    emit(current.copyWith(
+      isGeneratingPrompt: _isPromptGenerating(current.name),
+      isGeneratingImage: _isImageGenerating(current.name),
+    ));
+  }
+
+  bool _isPromptGenerating(String name) => jobsCubit.activeJob(
+        type: 'image_prompt',
+        projectId: projectSlug,
+        sceneIndex: _sceneIndex,
+        assetName: name,
+      ) != null;
+
+  bool _isImageGenerating(String name) => jobsCubit.activeJob(
+        type: 'image',
+        projectId: projectSlug,
+        sceneIndex: _sceneIndex,
+        assetName: name,
+      ) != null;
+
+  /// Parses the scene index out of [assetFirestorePath].
+  ///
+  /// `"assets/{id}"` → null (global). `"scenes/{n}/assets/{id}"` → `n`.
+  static int? _deriveSceneIndex(String path) {
+    final parts = path.split('/');
+    if (parts.length >= 2 && parts[0] == 'scenes') {
+      return int.tryParse(parts[1]);
+    }
+    return null;
   }
 
   // ── Field saves ────────────────────────────────────────────────────────────
@@ -194,10 +237,9 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
 
   /// Calls POST /image-prompt to enqueue an async prompt generation job.
   ///
-  /// Registers the job so the app can recover state after a restart. Emits
-  /// [isGeneratingPrompt] = true; the flag is cleared when the Firestore
-  /// listener fires with a non-null (changed) [prompt_body] — see
-  /// [_onSnapshot]. This mirrors [generateImage] below.
+  /// Registers the job with [jobsCubit] so it survives navigation and app
+  /// restarts. [isGeneratingPrompt] is derived from [jobsCubit] (see
+  /// [_syncGeneratingFlags]) — no local flag to lose track of.
   Future<void> generatePrompt() async {
     final s = state;
     if (s is! AssetEditorLoaded || s.description.isEmpty) return;
@@ -213,21 +255,18 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
         description: s.description,
       );
 
-      await jobRegistryService.register(JobRegistryEntry(
+      await jobsCubit.enqueue(JobRegistryEntry(
         jobId: jobId,
         type: 'image_prompt',
         projectId: projectSlug,
         status: 'pending',
         createdAt: DateTime.now(),
+        sceneIndex: _sceneIndex,
         assetName: s.name,
       ));
 
-      // Store the job_id so the Firestore listener can mark it 'success' when
-      // prompt_body appears.
-      _currentPromptJobId = jobId;
-
-      // Leave isGeneratingPrompt = true — the Firestore listener clears it
-      // when prompt_body is set by the worker.
+      // isGeneratingPrompt stays true — cleared via jobsCubit once the
+      // worker resolves the job (Firestore fast path or FCM/poll fallback).
     } on ApiInsufficientCredits {
       final current = state;
       if (current is AssetEditorLoaded) {
@@ -262,8 +301,8 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
   ///
   /// Resolves a conditioning GCS path for variant assets (name starts with
   /// `@`): reads the referenced asset document once from Firestore to get its
-  /// `gcs_image_path`. Emits [isGeneratingImage] = true; the flag is cleared
-  /// when the Firestore listener fires with a non-null [gcs_image_path].
+  /// `gcs_image_path`. [isGeneratingImage] is derived from [jobsCubit] (see
+  /// [_syncGeneratingFlags]).
   Future<void> generateImage() async {
     final s = state;
     if (s is! AssetEditorLoaded || !s.hasPromptBody) return;
@@ -288,21 +327,18 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
 
       // Register the job so the app can recover state after a restart and
       // show status in the project browser.
-      await jobRegistryService.register(JobRegistryEntry(
+      await jobsCubit.enqueue(JobRegistryEntry(
         jobId: jobId,
         type: 'image',
         projectId: projectSlug,
         status: 'pending',
         createdAt: DateTime.now(),
+        sceneIndex: _sceneIndex,
         assetName: s.name,
       ));
 
-      // Store the job_id so the Firestore listener can mark it 'success' when
-      // gcs_image_path appears.
-      _currentImageJobId = jobId;
-
-      // Leave isGeneratingImage = true — the Firestore listener clears it
-      // when gcs_image_path is set by the worker.
+      // isGeneratingImage stays true — cleared via jobsCubit once the
+      // worker resolves the job.
     } on ApiInsufficientCredits {
       final current = state;
       if (current is AssetEditorLoaded) {
@@ -369,6 +405,7 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
   @override
   Future<void> close() async {
     await _docSub?.cancel();
+    await _jobsSub?.cancel();
     return super.close();
   }
 

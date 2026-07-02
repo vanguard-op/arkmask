@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../../../core/jobs/jobs_cubit.dart';
 import '../../../core/models/models.dart';
 import '../../../core/models/project_tree.dart';
 import 'file_browser_state.dart';
@@ -23,10 +24,21 @@ import 'file_browser_state.dart';
 ///    One subscription per scene, added/removed dynamically as scenes are
 ///    created or deleted.
 ///
-/// The cubit merges all four into a single [ProjectTree] via [_rebuild] and
-/// emits [FileBrowserLoaded]. All subscriptions are cancelled in [close].
+/// A fifth source — [jobsCubit] — is not a Firestore listener but is merged
+/// in the same way: every [JobsCubit] state change also triggers [_rebuild],
+/// which is what populates each [AssetNode.isGeneratingPrompt] /
+/// [AssetNode.isGeneratingImage] / [SceneNode.isGeneratingStoryboard] /
+/// [SceneNode.isGeneratingVideo] flag driving the blue "running" dot in the
+/// file browser tree. Previously these flags always defaulted to `false` —
+/// this cubit never read job state at all, so the dots could only ever show
+/// pending (grey) or done (green), never running (blue).
+///
+/// The cubit merges all sources into a single [ProjectTree] via [_rebuild]
+/// and emits [FileBrowserLoaded]. All subscriptions are cancelled in [close].
 class FileBrowserCubit extends Cubit<FileBrowserState> {
-  FileBrowserCubit() : super(const FileBrowserLoading());
+  FileBrowserCubit({required this.jobsCubit}) : super(const FileBrowserLoading());
+
+  final JobsCubit jobsCubit;
 
   // ── Subscriptions ───────────────────────────────────────────────────────────
 
@@ -37,6 +49,8 @@ class FileBrowserCubit extends Cubit<FileBrowserState> {
   /// Per-scene asset subscriptions keyed by scene Firestore doc ID.
   final Map<String, StreamSubscription<QuerySnapshot<Map<String, dynamic>>>>
       _sceneAssetSubs = {};
+
+  StreamSubscription<JobsState>? _jobsSub;
 
   // ── Cached Firestore state ───────────────────────────────────────────────────
 
@@ -51,6 +65,19 @@ class FileBrowserCubit extends Cubit<FileBrowserState> {
   // ── Stored so _syncSceneAssetSubs can re-subscribe ─────────────────────────
   String? _projectSlug;
   String? _uid;
+
+  // ── Tree UI state ────────────────────────────────────────────────────────
+  //
+  // Deliberately NOT derived from `state` (i.e. not "carried over from the
+  // previous FileBrowserLoaded"): `load()` is re-called every time a child
+  // screen is popped back to (see project_file_browser_screen.dart onTap
+  // handlers), and it immediately emits FileBrowserLoading before the first
+  // Firestore snapshot arrives. If expand/select state lived only on the
+  // FileBrowserLoaded state, that emit wipes it — every "back" navigation
+  // collapsed the whole tree. Keeping these as cubit-lifetime fields means
+  // they survive `load()` being called any number of times.
+  final Set<String> _expandedIds = {};
+  String? _selectedId;
 
   // ── Public API ─────────────────────────────────────────────────────────────
 
@@ -69,6 +96,12 @@ class FileBrowserCubit extends Cubit<FileBrowserState> {
     _projectSlug = projectSlug;
     _uid = uid;
     emit(const FileBrowserLoading());
+
+    // Re-run _rebuild on every job-state change so the running (blue) dot
+    // appears the instant a job is enqueued and clears the instant it
+    // resolves — independent of which Firestore listener (if any) happens
+    // to fire around the same time.
+    _jobsSub = jobsCubit.stream.listen((_) => _rebuild());
 
     final fs = FirebaseFirestore.instance;
     final projectPath = 'users/$uid/projects/$projectSlug';
@@ -116,17 +149,16 @@ class FileBrowserCubit extends Cubit<FileBrowserState> {
   /// Toggles expand/collapse for a folder node identified by its logical ID.
   void toggleExpand(String nodeId) {
     if (state is! FileBrowserLoaded) return;
-    final s = state as FileBrowserLoaded;
-    final updated = Set<String>.from(s.expandedIds);
-    if (!updated.remove(nodeId)) {
-      updated.add(nodeId);
+    if (!_expandedIds.remove(nodeId)) {
+      _expandedIds.add(nodeId);
     }
-    emit(s.copyWith(expandedIds: updated));
+    emit((state as FileBrowserLoaded).copyWith(expandedIds: Set.of(_expandedIds)));
   }
 
   /// Marks a node as selected (highlighted in the file browser).
   void select(String nodeId) {
     if (state is! FileBrowserLoaded) return;
+    _selectedId = nodeId;
     emit((state as FileBrowserLoaded).copyWith(selectedId: nodeId));
   }
 
@@ -185,6 +217,16 @@ class FileBrowserCubit extends Cubit<FileBrowserState> {
         hasImage: d['gcs_image_path'] != null,
         isGlobal: true,
         gcsImagePath: d['gcs_image_path'] as String?,
+        isGeneratingPrompt: _isAssetJobActive(
+          type: 'image_prompt',
+          sceneIndex: null,
+          assetName: d['name'] as String? ?? doc.id,
+        ),
+        isGeneratingImage: _isAssetJobActive(
+          type: 'image',
+          sceneIndex: null,
+          assetName: d['name'] as String? ?? doc.id,
+        ),
       );
     }).toList()
       ..sort((a, b) => _assetTypeSortOrder(a.type) - _assetTypeSortOrder(b.type));
@@ -194,29 +236,53 @@ class FileBrowserCubit extends Cubit<FileBrowserState> {
       final sd = sceneDoc.data();
       final sceneAssetDocs = _sceneAssets[sceneDoc.id] ?? [];
 
+      final sceneNumber = sd['scene_number'] as int?;
+
       final sceneAssetNodes = sceneAssetDocs.map((assetDoc) {
         final ad = assetDoc.data();
+        final assetName = ad['name'] as String? ?? assetDoc.id;
         return AssetNode(
           id: assetDoc.id,
-          name: ad['name'] as String? ?? assetDoc.id,
+          name: assetName,
           type: AssetType.fromString(ad['type'] as String? ?? 'character'),
           description: ad['description'] as String? ?? '',
           hasPromptBody: (ad['prompt_body'] as String?)?.isNotEmpty ?? false,
           hasImage: ad['gcs_image_path'] != null,
           isGlobal: false,
-          sceneNumber: sd['scene_number'] as int?,
+          sceneNumber: sceneNumber,
           gcsImagePath: ad['gcs_image_path'] as String?,
+          isGeneratingPrompt: _isAssetJobActive(
+            type: 'image_prompt',
+            sceneIndex: sceneNumber,
+            assetName: assetName,
+          ),
+          isGeneratingImage: _isAssetJobActive(
+            type: 'image',
+            sceneIndex: sceneNumber,
+            assetName: assetName,
+          ),
         );
       }).toList()
         ..sort((a, b) => _assetTypeSortOrder(a.type) - _assetTypeSortOrder(b.type));
 
+      final resolvedSceneNumber =
+          sceneNumber ?? int.tryParse(sceneDoc.id) ?? 1;
+
       return SceneNode(
         id: sceneDoc.id,
-        sceneNumber: sd['scene_number'] as int? ?? int.tryParse(sceneDoc.id) ?? 1,
+        sceneNumber: resolvedSceneNumber,
         hasStoryboard: (sd['storyboard_body'] as String?)?.isNotEmpty ?? false,
         hasVideo: sd['gcs_video_path'] != null,
         gcsVideoPath: sd['gcs_video_path'] as String?,
         assets: sceneAssetNodes,
+        isGeneratingStoryboard: _isSceneJobActive(
+          type: 'video_prompt',
+          sceneIndex: resolvedSceneNumber,
+        ),
+        isGeneratingVideo: _isSceneJobActive(
+          type: 'video',
+          sceneIndex: resolvedSceneNumber,
+        ),
       );
     }).toList();
 
@@ -230,13 +296,45 @@ class FileBrowserCubit extends Cubit<FileBrowserState> {
       gcsFinalPath: data['gcs_final_path'] as String?,
     );
 
-    final current = state;
+    // Read from the cubit-lifetime fields (not `state`) so expand/select
+    // survives `load()` being re-invoked — see the field doc comments above.
     emit(FileBrowserLoaded(
       tree: tree,
-      expandedIds:
-          current is FileBrowserLoaded ? current.expandedIds : const {},
-      selectedId: current is FileBrowserLoaded ? current.selectedId : null,
+      expandedIds: Set.of(_expandedIds),
+      selectedId: _selectedId,
     ));
+  }
+
+  /// True when a job of [type] is pending/running for the given routing
+  /// context — mirrors the matching scheme used by AssetEditorCubit /
+  /// SceneCubit so the file browser's dots agree with the editor screens'
+  /// spinners for the same asset/scene.
+  bool _isAssetJobActive({
+    required String type,
+    required int? sceneIndex,
+    required String assetName,
+  }) {
+    final slug = _projectSlug;
+    if (slug == null) return false;
+    return jobsCubit.activeJob(
+          type: type,
+          projectId: slug,
+          sceneIndex: sceneIndex,
+          assetName: assetName,
+        ) !=
+        null;
+  }
+
+  bool _isSceneJobActive({required String type, required int sceneIndex}) {
+    final slug = _projectSlug;
+    if (slug == null) return false;
+    return jobsCubit.activeJob(
+          type: type,
+          projectId: slug,
+          sceneIndex: sceneIndex,
+          assetName: null,
+        ) !=
+        null;
   }
 
   /// Sort priority for asset types in the file browser.
@@ -252,6 +350,7 @@ class FileBrowserCubit extends Cubit<FileBrowserState> {
     _projectSub?.cancel();
     _globalAssetsSub?.cancel();
     _scenesSub?.cancel();
+    _jobsSub?.cancel();
     for (final sub in _sceneAssetSubs.values) {
       sub.cancel();
     }

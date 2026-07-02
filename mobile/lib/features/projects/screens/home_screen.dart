@@ -29,7 +29,7 @@ class HomeScreen extends StatelessWidget {
     return BlocProvider(
       create: (_) => ProjectsCubit(
         apiClient: services.apiClient,
-        jobRegistryService: services.jobRegistryService,
+        jobsCubit: services.jobsCubit,
       )..load(),
       child: const _HomeView(),
     );

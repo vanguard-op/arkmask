@@ -28,7 +28,7 @@ class VideoEditorScreen extends StatelessWidget {
       create: (_) => EditorCubit(
         projectSlug: projectName,
         apiClient: services.apiClient,
-        jobRegistryService: services.jobRegistryService,
+        jobsCubit: services.jobsCubit,
       )..load(),
       child: _VideoEditorView(projectName: projectName),
     );

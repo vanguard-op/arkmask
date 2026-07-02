@@ -29,7 +29,7 @@ class StoryEditorScreen extends StatelessWidget {
       create: (_) => StoryCubit(
         projectSlug: projectName,
         apiClient: services.apiClient,
-        jobRegistryService: services.jobRegistryService,
+        jobsCubit: services.jobsCubit,
       )..load(),
       child: _StoryEditorView(projectName: projectName),
     );

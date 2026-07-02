@@ -6,7 +6,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../core/api/api_error.dart';
 import '../../../core/api/ark_mask_api_client.dart';
-import '../../../core/jobs/job_registry_service.dart';
+import '../../../core/jobs/jobs_cubit.dart';
 import '../../../core/models/models.dart';
 import 'story_state.dart';
 
@@ -20,20 +20,41 @@ import 'story_state.dart';
 ///   job document's status field — the worker writes the extracted asset
 ///   documents directly to Firestore (see app.services.asset_writer on the
 ///   backend), so this cubit no longer parses or writes them itself.
+///
+/// [isExtracting] is derived live from [JobsCubit] (see
+/// [_syncExtractingFlag]) rather than a plain local flag, so returning to
+/// this screen mid-extraction correctly restores the indicator, and it
+/// clears even if the job resolves via FCM/poll while another screen is on
+/// top. The direct job-document listener below remains as a fast path while
+/// this screen happens to be open.
 class StoryCubit extends Cubit<StoryState> {
   StoryCubit({
     required this.projectSlug,
     required this.apiClient,
-    required this.jobRegistryService,
+    required this.jobsCubit,
   }) : super(const StoryLoading());
 
   final String projectSlug;
   final ArkMaskApiClient apiClient;
-  final JobRegistryService jobRegistryService;
+  final JobsCubit jobsCubit;
 
   Timer? _saveTimer;
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _docSub;
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _assetsJobSub;
+  StreamSubscription<JobsState>? _jobsSub;
+
+  /// True while a project-level `/assets` extraction job is pending/running.
+  bool get _isExtracting => jobsCubit.activeJob(
+        type: 'assets',
+        projectId: projectSlug,
+      ) != null;
+
+  /// Recomputes [StoryLoaded.isExtracting] from [jobsCubit] and re-emits.
+  void _syncExtractingFlag() {
+    final current = state;
+    if (current is! StoryLoaded) return;
+    emit(current.copyWith(isExtracting: _isExtracting));
+  }
 
   /// True while the user has uncommitted edits that should not be clobbered
   /// by incoming Firestore snapshots.
@@ -65,6 +86,13 @@ class StoryCubit extends Cubit<StoryState> {
     _docSub?.cancel();
     emit(const StoryLoading());
 
+    // Re-sync isExtracting on every job-state change — keeps the indicator
+    // correct even if extraction resolves via FCM/poll while this screen
+    // isn't mounted, and restores it correctly if the screen is re-created
+    // mid-extraction.
+    _jobsSub?.cancel();
+    _jobsSub = jobsCubit.stream.listen((_) => _syncExtractingFlag());
+
     _docSub = _projectDoc.snapshots().listen(
       (snap) {
         final data = snap.data() ?? {};
@@ -79,8 +107,14 @@ class StoryCubit extends Cubit<StoryState> {
             : const GenerationSettings();
 
         if (state is StoryLoading) {
-          // First snapshot — always emit loaded state.
-          emit(StoryLoaded(scenes: scenes, generationSettings: settings));
+          // First snapshot — always emit loaded state, checking whether an
+          // extraction job is already in flight (e.g. the user navigated
+          // away and back while it was running).
+          emit(StoryLoaded(
+            scenes: scenes,
+            generationSettings: settings,
+            isExtracting: _isExtracting,
+          ));
         } else if (!_isEditing) {
           // Subsequent remote update while the user is not typing.
           final current = state;
@@ -273,7 +307,7 @@ class StoryCubit extends Cubit<StoryState> {
         storyContent: storyContent,
       );
 
-      await jobRegistryService.register(JobRegistryEntry(
+      await jobsCubit.enqueue(JobRegistryEntry(
         jobId: jobId,
         type: 'assets',
         projectId: projectSlug,
@@ -282,8 +316,9 @@ class StoryCubit extends Cubit<StoryState> {
       ));
 
       _listenForAssetsJobCompletion(jobId);
-      // isExtracting stays true — cleared by the job listener below once the
-      // worker finishes (success or failed).
+      // isExtracting stays true — cleared via jobsCubit once the worker
+      // finishes (success or failed), either through the fast-path listener
+      // below or through FCM/poll if this screen is no longer mounted.
     } on ApiInsufficientCredits {
       emit((state as StoryLoaded)
           .copyWith(isExtracting: false, extractError: '__credits__'));
@@ -311,7 +346,7 @@ class StoryCubit extends Cubit<StoryState> {
       _assetsJobSub?.cancel();
       _assetsJobSub = null;
 
-      jobRegistryService.updateStatus(jobId, jobStatus!, resolvedAt: DateTime.now());
+      jobsCubit.resolve(jobId, jobStatus!);
 
       final current = state;
       if (current is! StoryLoaded) return;
@@ -411,6 +446,7 @@ class StoryCubit extends Cubit<StoryState> {
     _saveTimer?.cancel();
     _docSub?.cancel();
     _assetsJobSub?.cancel();
+    _jobsSub?.cancel();
     return super.close();
   }
 }
