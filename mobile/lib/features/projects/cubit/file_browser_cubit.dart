@@ -66,6 +66,19 @@ class FileBrowserCubit extends Cubit<FileBrowserState> {
   String? _projectSlug;
   String? _uid;
 
+  // ── Tree UI state ────────────────────────────────────────────────────────
+  //
+  // Deliberately NOT derived from `state` (i.e. not "carried over from the
+  // previous FileBrowserLoaded"): `load()` is re-called every time a child
+  // screen is popped back to (see project_file_browser_screen.dart onTap
+  // handlers), and it immediately emits FileBrowserLoading before the first
+  // Firestore snapshot arrives. If expand/select state lived only on the
+  // FileBrowserLoaded state, that emit wipes it — every "back" navigation
+  // collapsed the whole tree. Keeping these as cubit-lifetime fields means
+  // they survive `load()` being called any number of times.
+  final Set<String> _expandedIds = {};
+  String? _selectedId;
+
   // ── Public API ─────────────────────────────────────────────────────────────
 
   /// Starts all Firestore listeners for [projectSlug].
@@ -136,17 +149,16 @@ class FileBrowserCubit extends Cubit<FileBrowserState> {
   /// Toggles expand/collapse for a folder node identified by its logical ID.
   void toggleExpand(String nodeId) {
     if (state is! FileBrowserLoaded) return;
-    final s = state as FileBrowserLoaded;
-    final updated = Set<String>.from(s.expandedIds);
-    if (!updated.remove(nodeId)) {
-      updated.add(nodeId);
+    if (!_expandedIds.remove(nodeId)) {
+      _expandedIds.add(nodeId);
     }
-    emit(s.copyWith(expandedIds: updated));
+    emit((state as FileBrowserLoaded).copyWith(expandedIds: Set.of(_expandedIds)));
   }
 
   /// Marks a node as selected (highlighted in the file browser).
   void select(String nodeId) {
     if (state is! FileBrowserLoaded) return;
+    _selectedId = nodeId;
     emit((state as FileBrowserLoaded).copyWith(selectedId: nodeId));
   }
 
@@ -284,12 +296,12 @@ class FileBrowserCubit extends Cubit<FileBrowserState> {
       gcsFinalPath: data['gcs_final_path'] as String?,
     );
 
-    final current = state;
+    // Read from the cubit-lifetime fields (not `state`) so expand/select
+    // survives `load()` being re-invoked — see the field doc comments above.
     emit(FileBrowserLoaded(
       tree: tree,
-      expandedIds:
-          current is FileBrowserLoaded ? current.expandedIds : const {},
-      selectedId: current is FileBrowserLoaded ? current.selectedId : null,
+      expandedIds: Set.of(_expandedIds),
+      selectedId: _selectedId,
     ));
   }
 
