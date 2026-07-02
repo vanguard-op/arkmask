@@ -37,27 +37,38 @@ class ProjectFileBrowserScreen extends StatefulWidget {
 }
 
 class _ProjectFileBrowserScreenState extends State<ProjectFileBrowserScreen> {
-  /// Future for the storage summary fetch (FEAT-027). Initiated once in
-  /// [initState] so it is not re-triggered on rebuilds. Failures are caught
+  /// Future for the storage summary fetch (FEAT-027). Failures are caught
   /// inside [_StorageBanner] and shown as nothing (non-blocking).
-  // Not `final` — reassigned in the postFrameCallback after context is ready.
+  // Not `final` — reassigned by [_refreshSummary].
   late Future<Map<String, dynamic>> _summaryFuture;
 
   @override
   void initState() {
     super.initState();
-    // Defer until context is fully available (ArkMaskServices.of requires it).
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      setState(() {
-        _summaryFuture = ArkMaskServices.of(context)
-            .apiClient
-            .getProjectStorageSummary(widget.projectSlug);
-      });
-    });
     // Assign a completed future as placeholder so _summaryFuture is always
     // initialized before the first build.
     _summaryFuture = Future.value({});
+    // Defer until context is fully available (ArkMaskServices.of requires it).
+    WidgetsBinding.instance.addPostFrameCallback((_) => _refreshSummary());
+  }
+
+  /// Re-fetches the storage summary (byte usage may have changed after
+  /// generating a new image/video). This is a one-shot API call, not a
+  /// Firestore listener, so it needs an explicit trigger.
+  ///
+  /// Called once on entry and again whenever the user returns from a child
+  /// screen (asset editor, scene detail, story editor). The rest of the tree
+  /// — [FileBrowserCubit]'s Firestore + [JobsCubit] listeners — is already
+  /// live and does NOT need re-fetching on return; a full `load()` used to
+  /// be called here too, which reset scroll/expand state on every back
+  /// navigation for no benefit (see FileBrowserCubit doc comments).
+  void _refreshSummary() {
+    if (!mounted) return;
+    setState(() {
+      _summaryFuture = ArkMaskServices.of(context)
+          .apiClient
+          .getProjectStorageSummary(widget.projectSlug);
+    });
   }
 
   @override
@@ -69,6 +80,7 @@ class _ProjectFileBrowserScreenState extends State<ProjectFileBrowserScreen> {
       child: _FileBrowserView(
         projectSlug: widget.projectSlug,
         summaryFuture: _summaryFuture,
+        onReturnFromChild: _refreshSummary,
       ),
     );
   }
@@ -78,10 +90,17 @@ class _FileBrowserView extends StatelessWidget {
   const _FileBrowserView({
     required this.projectSlug,
     required this.summaryFuture,
+    required this.onReturnFromChild,
   });
 
   final String projectSlug;
   final Future<Map<String, dynamic>> summaryFuture;
+
+  /// Called when the user pops back from a pushed child screen. Only
+  /// refreshes the storage summary (FEAT-027) — the tree itself stays live
+  /// via [FileBrowserCubit]'s own Firestore/JobsCubit subscriptions and does
+  /// not need to be reloaded.
+  final VoidCallback onReturnFromChild;
 
   @override
   Widget build(BuildContext context) {
@@ -144,6 +163,7 @@ class _FileBrowserView extends StatelessWidget {
                       state: state,
                       projectSlug: projectSlug,
                       isDark: isDark,
+                      onReturnFromChild: onReturnFromChild,
                     ),
                   ),
                 ],
@@ -162,11 +182,13 @@ class _TreeView extends StatelessWidget {
     required this.state,
     required this.projectSlug,
     required this.isDark,
+    required this.onReturnFromChild,
   });
 
   final FileBrowserLoaded state;
   final String projectSlug;
   final bool isDark;
+  final VoidCallback onReturnFromChild;
 
   // ── Route helpers ─────────────────────────────────────────────────────────
   //
@@ -221,7 +243,7 @@ class _TreeView extends StatelessWidget {
         await context.push(Routes.storyEditor
             .replaceFirst(':projectName', Uri.encodeComponent(projectSlug)));
         if (context.mounted) {
-          context.read<FileBrowserCubit>().load(projectSlug);
+          onReturnFromChild();
         }
       },
     ));
@@ -289,7 +311,7 @@ class _TreeView extends StatelessWidget {
               context.read<FileBrowserCubit>().select(asset.id);
               await context.push(_globalAssetEditorPath(asset.id));
               if (context.mounted) {
-                context.read<FileBrowserCubit>().load(projectSlug);
+                onReturnFromChild();
               }
             },
           ));
@@ -339,7 +361,7 @@ class _TreeView extends StatelessWidget {
               context.read<FileBrowserCubit>().toggleExpand(scene.id);
               await context.push(_sceneDetailPath(scene.sceneNumber));
               if (context.mounted) {
-                context.read<FileBrowserCubit>().load(projectSlug);
+                onReturnFromChild();
               }
             },
             onToggleExpand: () =>
@@ -378,7 +400,7 @@ class _TreeView extends StatelessWidget {
                     _sceneAssetEditorPath(scene.id, asset.id),
                   );
                   if (context.mounted) {
-                    context.read<FileBrowserCubit>().load(projectSlug);
+                    onReturnFromChild();
                   }
                 },
               ));
@@ -392,7 +414,7 @@ class _TreeView extends StatelessWidget {
               onTap: () async {
                 await context.push(_sceneDetailPath(scene.sceneNumber));
                 if (context.mounted) {
-                  context.read<FileBrowserCubit>().load(projectSlug);
+                  onReturnFromChild();
                 }
               },
             ));
@@ -437,7 +459,7 @@ class _TreeView extends StatelessWidget {
                   Uri.encodeComponent(projectSlug),
                 ));
                 if (context.mounted) {
-                  context.read<FileBrowserCubit>().load(projectSlug);
+                  onReturnFromChild();
                 }
               },
               isDark: isDark,
