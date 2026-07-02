@@ -60,6 +60,7 @@ from app.schemas.generation import (
 from app.services import cloud_tasks
 from app.services.ai.base import AIProvider, RefImage
 from app.services.asset_writer import write_extracted_assets
+from app.services.ffmpeg_merge import build_merge_filter_cmd
 from app.services.firebase import send_fcm_notification
 from app.services.media_store import MediaStore
 from app.services.scene_assets import (
@@ -822,7 +823,9 @@ async def enqueue_merge(
 
             with tempfile.TemporaryDirectory() as tmp:
                 tmp_path = Path(tmp)
-                clip_files: list[tuple[Path, SceneMergeEntry]] = []
+                # dict, not SceneMergeEntry, to match app.services.ffmpeg_merge's
+                # interface — the same one workers/app/tasks/merge.py uses.
+                clip_files: list[tuple[Path, dict]] = []
 
                 # 1. Download each scene video from GCS to temp dir.
                 for entry in body.scenes:
@@ -836,7 +839,7 @@ async def enqueue_merge(
                         raise ValueError(f"Could not fetch video for scene {entry.scene_index}: {e}")
                     clip_path = tmp_path / f"scene_{entry.scene_index:04d}.mp4"
                     clip_path.write_bytes(data)
-                    clip_files.append((clip_path, entry))
+                    clip_files.append((clip_path, entry.model_dump()))
 
                 # 2. Run FFmpeg to apply trims + transitions.
                 final_path = tmp_path / "final.mp4"
@@ -882,7 +885,7 @@ async def enqueue_merge(
 
 
 def _run_ffmpeg_merge(
-    clip_files: list[tuple[Path, SceneMergeEntry]],
+    clip_files: list[tuple[Path, dict]],
     output: Path,
 ) -> None:
     """
@@ -890,7 +893,11 @@ def _run_ffmpeg_merge(
 
     Strategy:
     - For hard_cut-only timelines: use the concat demuxer (fast, no full re-encode).
-    - For fade_black / dissolve transitions: use filter_complex with xfade.
+    - For fade_black / dissolve transitions: use app.services.ffmpeg_merge's
+      filter_complex builder — see that module's docstring for why this does
+      NOT use the `xfade` filter (it did briefly; that regressed exactly the
+      "current rate of 1/0 is invalid" xfade/VFR bug the original on-device
+      implementation was written to avoid in the first place).
 
     Requires ffmpeg binary in PATH on the server.
     """
@@ -898,7 +905,7 @@ def _run_ffmpeg_merge(
         raise ValueError("No clips to merge.")
 
     all_hard_cut = all(
-        entry.transition_to_next == "hard_cut"
+        entry["transition_to_next"] == "hard_cut"
         for _, entry in clip_files[:-1]
     )
 
@@ -908,8 +915,8 @@ def _run_ffmpeg_merge(
         lines = []
         for clip_path, entry in clip_files:
             lines.append(f"file '{clip_path}'")
-            lines.append(f"inpoint {entry.trim_in}")
-            lines.append(f"outpoint {entry.trim_out}")
+            lines.append(f"inpoint {entry['trim_in']}")
+            lines.append(f"outpoint {entry['trim_out']}")
         concat_list.write_text("\n".join(lines))
         cmd = [
             "ffmpeg", "-y",
@@ -918,48 +925,7 @@ def _run_ffmpeg_merge(
             str(output),
         ]
     else:
-        # Slow path: filter_complex with xfade for non-hard-cut transitions.
-        inputs: list[str] = []
-        for clip_path, _ in clip_files:
-            inputs += ["-i", str(clip_path)]
-
-        filter_parts: list[str] = []
-        for i, (_, entry) in enumerate(clip_files):
-            filter_parts.append(
-                f"[{i}:v]trim=start={entry.trim_in}:end={entry.trim_out},"
-                f"setpts=PTS-STARTPTS[v{i}];"
-                f"[{i}:a]atrim=start={entry.trim_in}:end={entry.trim_out},"
-                f"asetpts=PTS-STARTPTS[a{i}]"
-            )
-
-        prev_v, prev_a = "v0", "a0"
-        for i in range(1, len(clip_files)):
-            _, prev_entry = clip_files[i - 1]
-            trans = prev_entry.transition_to_next
-            xfade_type = {
-                "fade_black": "fadeblack",
-                "dissolve": "dissolve",
-            }.get(trans, "fade")
-            duration = 0.5
-            offset = (prev_entry.trim_out - prev_entry.trim_in) - duration
-            out_v = f"xfv{i}" if i < len(clip_files) - 1 else "vout"
-            out_a = f"xfa{i}" if i < len(clip_files) - 1 else "aout"
-            filter_parts.append(
-                f"[{prev_v}][v{i}]xfade=transition={xfade_type}"
-                f":duration={duration}:offset={offset}[{out_v}];"
-                f"[{prev_a}][a{i}]acrossfade=d={duration}[{out_a}]"
-            )
-            prev_v, prev_a = out_v, out_a
-
-        filter_complex = ";".join(filter_parts)
-        cmd = [
-            "ffmpeg", "-y",
-            *inputs,
-            "-filter_complex", filter_complex,
-            "-map", f"[{prev_v}]", "-map", f"[{prev_a}]",
-            "-c:v", "libx264", "-preset", "fast", "-c:a", "aac",
-            str(output),
-        ]
+        cmd = build_merge_filter_cmd(clip_files, output)
 
     logger.info("FFmpeg command: %s ...", " ".join(cmd[:8]))
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
