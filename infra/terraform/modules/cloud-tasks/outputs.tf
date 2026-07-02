@@ -9,3 +9,7 @@ output "video_queue_name" {
 output "merge_queue_name" {
   value = google_cloud_tasks_queue.merge.name
 }
+
+output "text_queue_name" {
+  value = google_cloud_tasks_queue.text.name
+}

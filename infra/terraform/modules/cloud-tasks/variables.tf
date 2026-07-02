@@ -28,3 +28,9 @@ variable "merge_queue_concurrency" {
   type        = number
   default     = 5
 }
+
+variable "text_queue_concurrency" {
+  description = "Max concurrent text generation jobs (assets/image-prompt/video-prompt — fast AI calls, high concurrency is safe)."
+  type        = number
+  default     = 30
+}

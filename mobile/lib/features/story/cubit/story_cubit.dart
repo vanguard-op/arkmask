@@ -6,6 +6,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../core/api/api_error.dart';
 import '../../../core/api/ark_mask_api_client.dart';
+import '../../../core/jobs/job_registry_service.dart';
 import '../../../core/models/models.dart';
 import 'story_state.dart';
 
@@ -15,18 +16,24 @@ import 'story_state.dart';
 /// - Subscribe to the Firestore project document and parse `story_content`
 ///   (a `# N` headed MDX string) into [StoryScene] blocks.
 /// - Track per-scene body edits and auto-save on a debounce timer.
-/// - Trigger `/assets` extraction and write asset documents to Firestore.
+/// - Trigger `/assets` extraction (async job) and track completion via the
+///   job document's status field — the worker writes the extracted asset
+///   documents directly to Firestore (see app.services.asset_writer on the
+///   backend), so this cubit no longer parses or writes them itself.
 class StoryCubit extends Cubit<StoryState> {
   StoryCubit({
     required this.projectSlug,
     required this.apiClient,
+    required this.jobRegistryService,
   }) : super(const StoryLoading());
 
   final String projectSlug;
   final ArkMaskApiClient apiClient;
+  final JobRegistryService jobRegistryService;
 
   Timer? _saveTimer;
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _docSub;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _assetsJobSub;
 
   /// True while the user has uncommitted edits that should not be clobbered
   /// by incoming Firestore snapshots.
@@ -45,6 +52,9 @@ class StoryCubit extends Cubit<StoryState> {
 
   CollectionReference<Map<String, dynamic>> get _globalAssetsCol =>
       _projectDoc.collection('assets');
+
+  DocumentReference<Map<String, dynamic>> _jobDoc(String jobId) =>
+      FirebaseFirestore.instance.collection('users').doc(_uid).collection('jobs').doc(jobId);
 
   // ── Load ──────────────────────────────────────────────────────────────────
 
@@ -216,8 +226,14 @@ class StoryCubit extends Cubit<StoryState> {
 
   // ── Asset extraction ──────────────────────────────────────────────────────
 
-  /// Sends the story content to `/assets` and writes asset documents to
-  /// Firestore.
+  /// Enqueues `/assets` extraction (async job) and tracks completion via the
+  /// job document's status field.
+  ///
+  /// The worker writes the extracted asset documents directly to Firestore
+  /// (see backend/app/services/asset_writer.py) — this cubit no longer
+  /// parses the AI response or writes any documents itself. The existing
+  /// Firestore listeners elsewhere in the app (file browser, asset editor)
+  /// pick up the new documents automatically once they appear.
   ///
   /// Pass [force] = true to skip the existing-assets guard (the screen shows
   /// a confirmation dialog when `state.hasExistingAssets == true` and calls
@@ -252,17 +268,22 @@ class StoryCubit extends Cubit<StoryState> {
 
     try {
       final storyContent = _serializeScenes(s.scenes);
-      final response = await apiClient.extractAssets(
+      final jobId = await apiClient.extractAssets(
         projectSlug: projectSlug,
         storyContent: storyContent,
       );
-      final extractedList = (response['assets'] as List<dynamic>)
-          .map((e) => ExtractedAsset.fromJson(e as Map<String, dynamic>))
-          .toList();
 
-      await _writeAssetDocuments(extractedList, s.scenes);
+      await jobRegistryService.register(JobRegistryEntry(
+        jobId: jobId,
+        type: 'assets',
+        projectId: projectSlug,
+        status: 'pending',
+        createdAt: DateTime.now(),
+      ));
 
-      emit((state as StoryLoaded).copyWith(isExtracting: false));
+      _listenForAssetsJobCompletion(jobId);
+      // isExtracting stays true — cleared by the job listener below once the
+      // worker finishes (success or failed).
     } on ApiInsufficientCredits {
       emit((state as StoryLoaded)
           .copyWith(isExtracting: false, extractError: '__credits__'));
@@ -275,59 +296,35 @@ class StoryCubit extends Cubit<StoryState> {
     }
   }
 
-  /// Writes [assets] to Firestore.
-  ///
-  /// Global assets (sceneNumber == 0) go to the project-level `assets`
-  /// subcollection. Scene-local assets go under
-  /// `scenes/{sceneNumber}/assets/{slug}`. Scene documents are created with
-  /// merge semantics so existing scene data (storyboard, video path) is not
-  /// overwritten.
-  Future<void> _writeAssetDocuments(
-    List<ExtractedAsset> assets,
-    List<StoryScene> scenes,
-  ) async {
-    final batch = FirebaseFirestore.instance.batch();
-    final now = FieldValue.serverTimestamp();
+  /// Listens to the job document for [jobId] until it reaches a terminal
+  /// state (success/failed), then clears [isExtracting] and updates the job
+  /// registry. There's no single Firestore field to watch for this job type
+  /// (extraction creates multiple new documents), unlike image/video/merge
+  /// which each have one field to watch — so this cubit watches the job
+  /// document directly instead.
+  void _listenForAssetsJobCompletion(String jobId) {
+    _assetsJobSub?.cancel();
+    _assetsJobSub = _jobDoc(jobId).snapshots().listen((snap) {
+      final jobStatus = snap.data()?['status'] as String?;
+      if (jobStatus != 'success' && jobStatus != 'failed') return;
 
-    // Track which scene numbers need a parent scene document.
-    final sceneNumbers = <int>{};
+      _assetsJobSub?.cancel();
+      _assetsJobSub = null;
 
-    for (final asset in assets) {
-      final slug = _slugify(asset.name);
-      final data = <String, dynamic>{
-        'name': asset.name,
-        'type': asset.type.value,
-        'description': asset.description,
-        'prompt_body': null,
-        'gcs_image_path': null,
-        'created_at': now,
-        'scene_number': asset.sceneNumber,
-      };
+      jobRegistryService.updateStatus(jobId, jobStatus!, resolvedAt: DateTime.now());
 
-      if (asset.isGlobal) {
-        batch.set(_globalAssetsCol.doc(slug), data);
+      final current = state;
+      if (current is! StoryLoaded) return;
+      if (jobStatus == 'failed') {
+        final errorMessage = snap.data()?['error_message'] as String?;
+        emit(current.copyWith(
+          isExtracting: false,
+          extractError: errorMessage ?? 'Asset extraction failed.',
+        ));
       } else {
-        sceneNumbers.add(asset.sceneNumber);
-        final assetRef = _projectDoc
-            .collection('scenes')
-            .doc('${asset.sceneNumber}')
-            .collection('assets')
-            .doc(slug);
-        batch.set(assetRef, data);
+        emit(current.copyWith(isExtracting: false));
       }
-    }
-
-    // Ensure parent scene documents exist without overwriting existing content.
-    for (final n in sceneNumbers) {
-      final sceneRef = _projectDoc.collection('scenes').doc('$n');
-      batch.set(
-        sceneRef,
-        {'scene_number': n, 'created_at': now},
-        SetOptions(merge: true),
-      );
-    }
-
-    await batch.commit();
+    });
   }
 
   void clearExtractError() {
@@ -361,17 +358,6 @@ class StoryCubit extends Cubit<StoryState> {
   }
 
   // ── Utilities ─────────────────────────────────────────────────────────────
-
-  /// Converts an asset name to a URL-safe lowercase slug.
-  ///
-  /// E.g. "Forest Background" → "forest-background".
-  static String _slugify(String name) {
-    return name
-        .toLowerCase()
-        .replaceAll(RegExp(r'[^a-z0-9\s-]'), '')
-        .trim()
-        .replaceAll(RegExp(r'\s+'), '-');
-  }
 
   static String _apiErrorMessage(ApiError e) => switch (e) {
         ApiConflict(:final message) => message,
@@ -424,6 +410,7 @@ class StoryCubit extends Cubit<StoryState> {
   Future<void> close() {
     _saveTimer?.cancel();
     _docSub?.cancel();
+    _assetsJobSub?.cancel();
     return super.close();
   }
 }

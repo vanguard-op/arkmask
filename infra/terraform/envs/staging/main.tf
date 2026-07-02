@@ -88,6 +88,7 @@ module "cloud_tasks" {
   image_queue_concurrency = 5
   video_queue_concurrency = 3
   merge_queue_concurrency = 2
+  text_queue_concurrency  = 10
 }
 
 # ── Cloud Run — API ───────────────────────────────────────────────────────────
@@ -121,6 +122,7 @@ module "api" {
     CLOUD_TASKS_IMAGE_QUEUE  = module.cloud_tasks.image_queue_name
     CLOUD_TASKS_VIDEO_QUEUE  = module.cloud_tasks.video_queue_name
     CLOUD_TASKS_MERGE_QUEUE  = module.cloud_tasks.merge_queue_name
+    CLOUD_TASKS_TEXT_QUEUE   = module.cloud_tasks.text_queue_name
     WORKERS_SERVICE_URL      = module.workers.service_url
     # OIDC identity Cloud Tasks presents when calling the workers service —
     # already granted roles/run.invoker on workers (see invoker_members below).
@@ -201,6 +203,7 @@ module "monitoring" {
     module.cloud_tasks.image_queue_name,
     module.cloud_tasks.video_queue_name,
     module.cloud_tasks.merge_queue_name,
+    module.cloud_tasks.text_queue_name,
   ]
 }
 

@@ -428,7 +428,8 @@ class JobRegistryEntry {
 
   final String jobId;
 
-  /// Job type: `'image'`, `'video'`, or `'merge'`.
+  /// Job type: `'image'`, `'video'`, `'merge'`, `'assets'`, `'image_prompt'`,
+  /// or `'video_prompt'`.
   final String type;
 
   /// Immutable project slug. Used to route FCM notifications to the correct

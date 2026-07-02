@@ -62,6 +62,7 @@ class SceneCubit extends Cubit<SceneState> {
 
   bool _isGeneratingStoryboard = false;
   bool _isGeneratingVideo = false;
+  String? _currentStoryboardJobId;
   String? _currentVideoJobId;
   String? _storyboardError;
   String? _videoError;
@@ -108,7 +109,28 @@ class SceneCubit extends Cubit<SceneState> {
         } else {
           final data = snap.data()!;
           final prevVideoPath = _sceneDoc?.gcsVideoPath;
+          final prevStoryboard = _sceneDoc?.storyboardBody;
           _sceneDoc = SceneDocument.fromFirestore(snap.id, data);
+
+          // Detect storyboard completion: storyboard_body transitioned from
+          // null to non-null (async /video-prompt job). Clear the generating
+          // flag and update job registry — same pattern as video below.
+          if (_isGeneratingStoryboard &&
+              prevStoryboard == null &&
+              _sceneDoc!.storyboardBody != null) {
+            _isGeneratingStoryboard = false;
+            if (_currentStoryboardJobId != null) {
+              jobRegistryService.updateStatus(
+                _currentStoryboardJobId!,
+                'success',
+                resolvedAt: DateTime.now(),
+              );
+              _currentStoryboardJobId = null;
+            }
+            // Auto-switch to the Storyboard tab so the user sees the result
+            // (previously done inline after the synchronous HTTP response).
+            _selectedTabIndex = 1;
+          }
 
           // Detect video completion: gcs_video_path transitioned from null
           // to non-null. Clear the generating flag and update job registry.
@@ -253,23 +275,30 @@ class SceneCubit extends Cubit<SceneState> {
     ));
 
     try {
-      await apiClient.generateVideoPrompt(
+      final jobId = await apiClient.generateVideoPrompt(
         projectSlug: projectSlug,
         sceneIndex: sceneNumber,
         sceneText: sceneText,
         refImageGcsPaths: refImageGcsPaths,
       );
-      // Backend writes storyboard_body to Firestore → listener fires →
-      // _rebuildState() emits the updated storyboardBody. No parsing needed.
-      _isGeneratingStoryboard = false;
-      if (!isClosed && state is SceneLoaded) {
-        emit((state as SceneLoaded).copyWith(
-          isGeneratingStoryboard: false,
-          // Auto-switch to the Storyboard tab so the user sees the result.
-          selectedTabIndex: 1,
-        ));
-        _selectedTabIndex = 1;
-      }
+
+      // Register the job in the local Hive CE registry so it survives
+      // app restarts and can be polled on foreground return (FEAT-017).
+      await jobRegistryService.register(JobRegistryEntry(
+        jobId: jobId,
+        type: 'video_prompt',
+        projectId: projectSlug,
+        status: 'pending',
+        createdAt: DateTime.now(),
+        sceneIndex: sceneNumber,
+      ));
+
+      // Store for the Firestore listener to mark success on completion.
+      _currentStoryboardJobId = jobId;
+
+      // isGeneratingStoryboard stays true — the Firestore listener clears it
+      // (and auto-switches to the Storyboard tab) when storyboard_body is
+      // set on the scene document.
     } on ApiInsufficientCredits {
       _isGeneratingStoryboard = false;
       _storyboardError = '__credits__';

@@ -23,10 +23,11 @@ Response contract for Cloud Tasks retry semantics:
 """
 
 import logging
+from typing import Callable
 
 from fastapi import FastAPI, HTTPException, Request
 
-from app.tasks import image, merge, video
+from app.tasks import assets, image, image_prompt, merge, video, video_prompt
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -42,34 +43,30 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-@app.post("/tasks/image")
-async def handle_image_task(request: Request) -> dict:
-    payload = await request.json()
-    try:
-        image.run(payload)
-    except Exception as e:
-        logger.error("Unhandled error in image task: job_id=%s", payload.get("job_id"), exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    return {"status": "handled"}
+def _make_handler(task_name: str, run: Callable[[dict], None]):
+    """
+    Build a POST /tasks/{task_name} handler with the shared retry contract
+    (see module docstring): business-logic failures inside `run()` are
+    already handled and logged by the task module itself (job marked
+    "failed", FCM sent) and return 200; only an exception escaping `run()`
+    entirely (unexpected bug, Firestore/GCS unreachable) becomes a 500 so
+    Cloud Tasks retries.
+    """
+    async def handler(request: Request) -> dict:
+        payload = await request.json()
+        try:
+            run(payload)
+        except Exception as e:
+            logger.error("Unhandled error in %s task: job_id=%s", task_name, payload.get("job_id"), exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return {"status": "handled"}
+
+    return handler
 
 
-@app.post("/tasks/video")
-async def handle_video_task(request: Request) -> dict:
-    payload = await request.json()
-    try:
-        video.run(payload)
-    except Exception as e:
-        logger.error("Unhandled error in video task: job_id=%s", payload.get("job_id"), exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    return {"status": "handled"}
-
-
-@app.post("/tasks/merge")
-async def handle_merge_task(request: Request) -> dict:
-    payload = await request.json()
-    try:
-        merge.run(payload)
-    except Exception as e:
-        logger.error("Unhandled error in merge task: job_id=%s", payload.get("job_id"), exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    return {"status": "handled"}
+app.add_api_route("/tasks/image", _make_handler("image", image.run), methods=["POST"])
+app.add_api_route("/tasks/video", _make_handler("video", video.run), methods=["POST"])
+app.add_api_route("/tasks/merge", _make_handler("merge", merge.run), methods=["POST"])
+app.add_api_route("/tasks/assets", _make_handler("assets", assets.run), methods=["POST"])
+app.add_api_route("/tasks/image_prompt", _make_handler("image_prompt", image_prompt.run), methods=["POST"])
+app.add_api_route("/tasks/video_prompt", _make_handler("video_prompt", video_prompt.run), methods=["POST"])

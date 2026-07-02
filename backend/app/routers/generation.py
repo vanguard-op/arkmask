@@ -1,13 +1,22 @@
 """Generation endpoints — Phase 2+ cloud architecture.
 
-Contract:
-  POST /assets          — synchronous; returns extracted asset list
-  POST /image-prompt    — synchronous; writes prompt_body to Firestore; returns 204
-  POST /image           — async; returns {job_id}; worker writes gcs_image_path to Firestore
-  POST /video-prompt    — synchronous; fetches ref images from GCS; writes storyboard_body to Firestore; returns 204
-  POST /video           — async; returns {job_id}; worker writes gcs_video_path to Firestore
-  POST /merge           — async; returns {job_id}; worker writes gcs_final_path to Firestore
-  GET  /job/{id}/status — returns job status + presigned URL on success
+Contract — every generation endpoint is now async (returns {job_id} immediately;
+a worker does the actual work and writes results to Firestore, which the app's
+existing real-time listeners pick up). This was a deliberate architecture
+change: /assets, /image-prompt, and /video-prompt used to run their AI
+provider call inline on this API service, subject to Cloud Run's 60s request
+timeout — a slow provider response produced a hard 504 with no clean error
+path (see the incident that prompted this change). Workers have an 1800s
+timeout instead, so slow provider responses just take as long as they take.
+
+  POST /assets          — async; returns {job_id}; worker writes new asset
+                           documents directly (see app.services.asset_writer)
+  POST /image-prompt     — async; returns {job_id}; worker writes prompt_body to Firestore
+  POST /image            — async; returns {job_id}; worker writes gcs_image_path to Firestore
+  POST /video-prompt     — async; returns {job_id}; worker writes storyboard_body to Firestore
+  POST /video            — async; returns {job_id}; worker writes gcs_video_path to Firestore
+  POST /merge            — async; returns {job_id}; worker writes gcs_final_path to Firestore
+  GET  /job/{id}/status  — returns job status + presigned URL on success
   POST /media/presigned-url — returns fresh presigned URL for any GCS path
 
 All endpoints:
@@ -32,7 +41,7 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException
 from google.cloud.firestore_v1 import SERVER_TIMESTAMP
 from google.cloud.firestore_v1.transaction import transactional
 from pydantic import BaseModel, Field
@@ -44,14 +53,13 @@ from app.models.user import UserProfile
 from app.routers.projects import _firestore_client
 from app.schemas.generation import (
     AssetsRequest,
-    AssetsResponse,
-    AssetItem,
     VideoEnqueueResponse,
     VideoStatusEnum,
     VideoStatusResponse,
 )
 from app.services import cloud_tasks
 from app.services.ai.base import AIProvider, RefImage
+from app.services.asset_writer import write_extracted_assets
 from app.services.firebase import send_fcm_notification
 from app.services.media_store import MediaStore
 
@@ -270,72 +278,170 @@ def _get_fcm_token(firebase_uid: str) -> str | None:
 
 # ── POST /assets ──────────────────────────────────────────────────────────────
 
-@router.post("/assets", response_model=AssetsResponse)
-def extract_assets(
+@router.post("/assets", response_model=VideoEnqueueResponse)
+async def extract_assets(
     body: AssetsRequest,
     user: UserProfile = Depends(get_current_user),
     provider: AIProvider = Depends(get_ai_provider),
-) -> AssetsResponse:
+    x_provider_type: str = Header(..., alias="X-Provider-Type"),
+    x_provider_key: str = Header(..., alias="X-Provider-Key"),
+) -> VideoEnqueueResponse:
     """
-    Extract visual assets from a story — returns structured asset list.
-    Credits deducted: 1 (on success only).
+    Enqueue asset extraction from a story.  Returns job_id immediately.
+
+    On Cloud Run, dispatches to the workers service via Cloud Tasks — the
+    worker calls the AI provider, then writes the extracted asset documents
+    directly to Firestore (see app.services.asset_writer), mirroring what the
+    Flutter app used to do client-side after a synchronous response. The
+    app's existing real-time listeners on the assets/scenes subcollections
+    pick up the new documents automatically. Locally (no Cloud Tasks
+    configured), runs inline via asyncio as a dev-only fallback.
+
+    This endpoint previously ran the AI provider call inline on the API's own
+    Cloud Run service, subject to its 60s request timeout — a slow provider
+    response produced a hard 504 with no clean error path. Moving it onto the
+    same async worker pattern already used for /image, /video, /merge removes
+    that ceiling; workers have an 1800s timeout instead.
+    Credits deducted: 1 (on terminal success only).
     """
-    cost = _check_credits(user, "/assets")
+    firebase_uid = user.firebase_uid
+    _check_credits(user, "/assets")
+    job_id = _create_job(firebase_uid, "assets", body.project_slug)
     pname = _provider_name(provider)
-    try:
-        raw = provider.generate_asset_list(body.story)
-    except Exception:
-        logger.error("Asset extraction failed: uid=%s", user.firebase_uid, exc_info=True)
-        _deduct_credits(user.firebase_uid, "/assets", pname, 0, "refunded")
-        raise HTTPException(502, "AI provider error during asset extraction.")
-    _deduct_credits(user.firebase_uid, "/assets", pname, cost)
-    return AssetsResponse(assets=[AssetItem(**a) for a in raw])
+
+    if get_settings().cloud_tasks_configured:
+        cloud_tasks.enqueue_job("assets", {
+            "firebase_uid": firebase_uid,
+            "job_id": job_id,
+            "project_slug": body.project_slug,
+            "story": body.story,
+            "provider_type": x_provider_type,
+            "provider_key": x_provider_key,
+        })
+        return VideoEnqueueResponse(job_id=job_id)
+
+    # ── Local dev fallback: run inline instead of dispatching to Cloud Tasks ──
+    async def _run():
+        try:
+            _update_job(firebase_uid, job_id, "running")
+            raw = await asyncio.to_thread(provider.generate_asset_list, body.story)
+            write_extracted_assets(_firestore_client(), firebase_uid, body.project_slug, raw)
+            _deduct_credits(firebase_uid, "/assets", pname, CREDIT_COSTS["/assets"])
+            _update_job(firebase_uid, job_id, "success")
+            send_fcm_notification(_get_fcm_token(firebase_uid), {
+                "job_id": job_id,
+                "type": "assets",
+                "project_id": body.project_slug,
+                "status": "completed",
+            })
+            logger.info("Assets job complete: job_id=%s", job_id)
+        except Exception as e:
+            logger.error("Assets job failed: job_id=%s error=%s", job_id, e, exc_info=True)
+            _update_job(firebase_uid, job_id, "failed", error_message=str(e)[:1024])
+            _deduct_credits(firebase_uid, "/assets", pname, 0, "refunded")
+            send_fcm_notification(_get_fcm_token(firebase_uid), {
+                "job_id": job_id,
+                "type": "assets",
+                "project_id": body.project_slug,
+                "status": "failed",
+            })
+
+    asyncio.create_task(_run())
+    return VideoEnqueueResponse(job_id=job_id)
 
 
 # ── POST /image-prompt ────────────────────────────────────────────────────────
 
-@router.post("/image-prompt", status_code=status.HTTP_204_NO_CONTENT)
-def generate_image_prompt(
+@router.post("/image-prompt", response_model=VideoEnqueueResponse)
+async def generate_image_prompt(
     body: ImagePromptCloudRequest,
     user: UserProfile = Depends(get_current_user),
     provider: AIProvider = Depends(get_ai_provider),
-) -> None:
+    x_provider_type: str = Header(..., alias="X-Provider-Type"),
+    x_provider_key: str = Header(..., alias="X-Provider-Key"),
+) -> VideoEnqueueResponse:
     """
-    Generate an image prompt and write it to Firestore as prompt_body.
-    Credits deducted: 1 (on success only). Returns 204.
+    Enqueue image prompt generation.  Returns job_id immediately.
+
+    On Cloud Run, dispatches to the workers service via Cloud Tasks — the
+    worker generates the prompt and writes it to the asset's Firestore
+    document (prompt_body). The app's existing real-time listener on the
+    asset document already fires on this field, so no mobile-side change is
+    needed to *display* the result — only to stop awaiting the HTTP response
+    for the loading spinner (see AssetEditorCubit.generatePrompt).
+
+    Previously ran inline on this API service, subject to Cloud Run's 60s
+    timeout. Locally (no Cloud Tasks configured), runs inline via asyncio as
+    a dev-only fallback. Credits deducted: 1 (on terminal success only).
     """
-    cost = _check_credits(user, "/image-prompt")
+    firebase_uid = user.firebase_uid
+    _check_credits(user, "/image-prompt")
+    job_id = _create_job(firebase_uid, "image_prompt", body.project_slug, asset_path=body.asset_path)
     pname = _provider_name(provider)
 
-    _default_art_style = "painterly illustration with clean lines and rich color"
-    try:
-        proj_doc = _firestore_client().document(
-            f"users/{user.firebase_uid}/projects/{body.project_slug}"
-        ).get()
-        gen_settings: dict = (proj_doc.get("generation_settings") or {}) if proj_doc.exists else {}
-    except Exception:
-        logger.warning("image-prompt: could not fetch generation_settings for %s", body.project_slug)
-        gen_settings = {}
-    art_style: str = gen_settings.get("art_style") or _default_art_style
+    if get_settings().cloud_tasks_configured:
+        cloud_tasks.enqueue_job("image_prompt", {
+            "firebase_uid": firebase_uid,
+            "job_id": job_id,
+            "project_slug": body.project_slug,
+            "asset_path": body.asset_path,
+            "name": body.name,
+            "type": body.type,
+            "description": body.description,
+            "provider_type": x_provider_type,
+            "provider_key": x_provider_key,
+        })
+        return VideoEnqueueResponse(job_id=job_id)
 
-    try:
-        prompt = provider.generate_image_prompt(body.name, body.type, body.description, art_style=art_style)
-    except Exception:
-        logger.error("image-prompt failed: uid=%s", user.firebase_uid, exc_info=True)
-        _deduct_credits(user.firebase_uid, "/image-prompt", pname, 0, "refunded")
-        raise HTTPException(502, "AI provider error during prompt generation.")
+    # ── Local dev fallback: run inline instead of dispatching to Cloud Tasks ──
+    async def _run():
+        try:
+            _update_job(firebase_uid, job_id, "running")
 
-    fs_path = f"users/{user.firebase_uid}/projects/{body.project_slug}/{body.asset_path}"
-    try:
-        _firestore_client().document(fs_path).set(
-            {"prompt_body": prompt, "updated_at": SERVER_TIMESTAMP},
-            merge=True,
-        )
-    except Exception as e:
-        logger.error("Firestore write failed for image-prompt: path=%s error=%s", fs_path, e)
-        raise HTTPException(502, "Failed to save prompt to project.")
+            _default_art_style = "painterly illustration with clean lines and rich color"
+            try:
+                proj_doc = _firestore_client().document(
+                    f"users/{firebase_uid}/projects/{body.project_slug}"
+                ).get()
+                gen_settings: dict = (proj_doc.get("generation_settings") or {}) if proj_doc.exists else {}
+            except Exception:
+                logger.warning("image-prompt: could not fetch generation_settings for %s", body.project_slug)
+                gen_settings = {}
+            art_style: str = gen_settings.get("art_style") or _default_art_style
 
-    _deduct_credits(user.firebase_uid, "/image-prompt", pname, cost)
+            prompt = await asyncio.to_thread(
+                provider.generate_image_prompt, body.name, body.type, body.description, art_style=art_style
+            )
+
+            fs_path = f"users/{firebase_uid}/projects/{body.project_slug}/{body.asset_path}"
+            _firestore_client().document(fs_path).set(
+                {"prompt_body": prompt, "updated_at": SERVER_TIMESTAMP},
+                merge=True,
+            )
+
+            _deduct_credits(firebase_uid, "/image-prompt", pname, CREDIT_COSTS["/image-prompt"])
+            _update_job(firebase_uid, job_id, "success")
+            send_fcm_notification(_get_fcm_token(firebase_uid), {
+                "job_id": job_id,
+                "type": "image_prompt",
+                "project_id": body.project_slug,
+                "status": "completed",
+                "asset_path": body.asset_path or "",
+            })
+            logger.info("Image-prompt job complete: job_id=%s", job_id)
+        except Exception as e:
+            logger.error("Image-prompt job failed: job_id=%s error=%s", job_id, e, exc_info=True)
+            _update_job(firebase_uid, job_id, "failed", error_message=str(e)[:1024])
+            _deduct_credits(firebase_uid, "/image-prompt", pname, 0, "refunded")
+            send_fcm_notification(_get_fcm_token(firebase_uid), {
+                "job_id": job_id,
+                "type": "image_prompt",
+                "project_id": body.project_slug,
+                "status": "failed",
+            })
+
+    asyncio.create_task(_run())
+    return VideoEnqueueResponse(job_id=job_id)
 
 
 # ── POST /image ───────────────────────────────────────────────────────────────
@@ -443,57 +549,100 @@ async def enqueue_image(
 
 # ── POST /video-prompt ────────────────────────────────────────────────────────
 
-@router.post("/video-prompt", status_code=status.HTTP_204_NO_CONTENT)
-def generate_video_prompt(
+@router.post("/video-prompt", response_model=VideoEnqueueResponse)
+async def generate_video_prompt(
     body: VideoPromptCloudRequest,
     user: UserProfile = Depends(get_current_user),
     provider: AIProvider = Depends(get_ai_provider),
-) -> None:
+    x_provider_type: str = Header(..., alias="X-Provider-Type"),
+    x_provider_key: str = Header(..., alias="X-Provider-Key"),
+) -> VideoEnqueueResponse:
     """
-    Generate a scene storyboard and write it to Firestore as storyboard_body.
-    Fetches reference images from GCS synchronously before calling the AI provider.
-    Credits deducted: 3 (on success only). Returns 204.
+    Enqueue scene storyboard generation.  Returns job_id immediately.
+
+    On Cloud Run, dispatches to the workers service via Cloud Tasks — the
+    worker fetches reference images from GCS, generates the storyboard, and
+    writes it to the scene's Firestore document (storyboard_body). The app's
+    existing real-time listener on the scene document already fires on this
+    field. Previously ran inline on this API service, subject to Cloud Run's
+    60s timeout. Locally (no Cloud Tasks configured), runs inline via asyncio
+    as a dev-only fallback.
+    Credits deducted: 3 (on terminal success only).
     """
-    _verify_gcs_ownership(user.firebase_uid, body.ref_image_gcs_paths)
-    cost = _check_credits(user, "/video-prompt")
+    firebase_uid = user.firebase_uid
+    _verify_gcs_ownership(firebase_uid, body.ref_image_gcs_paths)
+    _check_credits(user, "/video-prompt")
+    job_id = _create_job(firebase_uid, "video_prompt", body.project_slug, scene_index=body.scene_index)
     pname = _provider_name(provider)
 
-    _default_art_style = "painterly illustration with clean lines and rich color"
-    try:
-        proj_doc = _firestore_client().document(
-            f"users/{user.firebase_uid}/projects/{body.project_slug}"
-        ).get()
-        gen_settings: dict = (proj_doc.get("generation_settings") or {}) if proj_doc.exists else {}
-    except Exception:
-        logger.warning("video-prompt: could not fetch generation_settings for %s", body.project_slug)
-        gen_settings = {}
-    art_style: str = gen_settings.get("art_style") or _default_art_style
-    subtitles: bool = bool(gen_settings.get("video_subtitles", False))
+    if get_settings().cloud_tasks_configured:
+        cloud_tasks.enqueue_job("video_prompt", {
+            "firebase_uid": firebase_uid,
+            "job_id": job_id,
+            "project_slug": body.project_slug,
+            "scene_index": body.scene_index,
+            "scene": body.scene,
+            "ref_image_gcs_paths": body.ref_image_gcs_paths,
+            "provider_type": x_provider_type,
+            "provider_key": x_provider_key,
+        })
+        return VideoEnqueueResponse(job_id=job_id)
 
-    ref_images = _fetch_gcs_images(body.ref_image_gcs_paths)
+    # ── Local dev fallback: run inline instead of dispatching to Cloud Tasks ──
+    async def _run():
+        try:
+            _update_job(firebase_uid, job_id, "running")
 
-    try:
-        storyboard = provider.generate_video_prompt(body.scene, ref_images, art_style=art_style, subtitles=subtitles)
-    except Exception:
-        logger.error("video-prompt failed: uid=%s", user.firebase_uid, exc_info=True)
-        _deduct_credits(user.firebase_uid, "/video-prompt", pname, 0, "refunded")
-        raise HTTPException(502, "AI provider error during storyboard generation.")
+            _default_art_style = "painterly illustration with clean lines and rich color"
+            try:
+                proj_doc = _firestore_client().document(
+                    f"users/{firebase_uid}/projects/{body.project_slug}"
+                ).get()
+                gen_settings: dict = (proj_doc.get("generation_settings") or {}) if proj_doc.exists else {}
+            except Exception:
+                logger.warning("video-prompt: could not fetch generation_settings for %s", body.project_slug)
+                gen_settings = {}
+            art_style: str = gen_settings.get("art_style") or _default_art_style
+            subtitles: bool = bool(gen_settings.get("video_subtitles", False))
 
-    fs_path = f"users/{user.firebase_uid}/projects/{body.project_slug}/scenes/{body.scene_index}"
-    try:
-        _firestore_client().document(fs_path).set(
-            {
-                "storyboard_body": storyboard,
-                "scene_number": body.scene_index,
-                "updated_at": SERVER_TIMESTAMP,
-            },
-            merge=True,
-        )
-    except Exception as e:
-        logger.error("Firestore write failed for video-prompt: path=%s", fs_path, exc_info=True)
-        raise HTTPException(502, "Failed to save storyboard to project.")
+            ref_images = _fetch_gcs_images(body.ref_image_gcs_paths)
+            storyboard = await asyncio.to_thread(
+                provider.generate_video_prompt, body.scene, ref_images, art_style=art_style, subtitles=subtitles
+            )
 
-    _deduct_credits(user.firebase_uid, "/video-prompt", pname, cost)
+            fs_path = f"users/{firebase_uid}/projects/{body.project_slug}/scenes/{body.scene_index}"
+            _firestore_client().document(fs_path).set(
+                {
+                    "storyboard_body": storyboard,
+                    "scene_number": body.scene_index,
+                    "updated_at": SERVER_TIMESTAMP,
+                },
+                merge=True,
+            )
+
+            _deduct_credits(firebase_uid, "/video-prompt", pname, CREDIT_COSTS["/video-prompt"])
+            _update_job(firebase_uid, job_id, "success")
+            send_fcm_notification(_get_fcm_token(firebase_uid), {
+                "job_id": job_id,
+                "type": "video_prompt",
+                "project_id": body.project_slug,
+                "status": "completed",
+                "scene_index": str(body.scene_index),
+            })
+            logger.info("Video-prompt job complete: job_id=%s", job_id)
+        except Exception as e:
+            logger.error("Video-prompt job failed: job_id=%s error=%s", job_id, e, exc_info=True)
+            _update_job(firebase_uid, job_id, "failed", error_message=str(e)[:1024])
+            _deduct_credits(firebase_uid, "/video-prompt", pname, 0, "refunded")
+            send_fcm_notification(_get_fcm_token(firebase_uid), {
+                "job_id": job_id,
+                "type": "video_prompt",
+                "project_id": body.project_slug,
+                "status": "failed",
+            })
+
+    asyncio.create_task(_run())
+    return VideoEnqueueResponse(job_id=job_id)
 
 
 # ── POST /video ───────────────────────────────────────────────────────────────

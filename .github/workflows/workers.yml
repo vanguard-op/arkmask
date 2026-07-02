@@ -28,6 +28,7 @@ on:
       - 'workers/**'
       - 'backend/app/services/**'
       - 'backend/app/config.py'
+      - 'backend/app/firestore_paths.py'
       - 'backend/instructions/**'
       - 'backend/pyproject.toml'
   workflow_dispatch:

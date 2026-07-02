@@ -25,6 +25,9 @@ CREDIT_COSTS: dict[str, int] = {
     "image": 5,
     "video": 20,
     "merge": 5,
+    "assets": 1,
+    "image_prompt": 1,
+    "video_prompt": 3,
 }
 
 

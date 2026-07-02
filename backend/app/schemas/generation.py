@@ -14,6 +14,7 @@ class AssetTypeEnum(str, Enum):
 # ── POST /assets ──────────────────────────────────────────────────────────────
 
 class AssetsRequest(BaseModel):
+    project_slug: str
     story: str
 
 

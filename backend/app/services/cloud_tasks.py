@@ -1,9 +1,10 @@
 """Cloud Tasks dispatch — enqueues async generation jobs to the workers service.
 
-The API never runs image/video/merge generation itself. Instead it writes a
-job document to Firestore (see app.routers.generation._create_job) and
-enqueues an HTTP task that Cloud Tasks delivers to the workers Cloud Run
-service (`POST {WORKERS_SERVICE_URL}/tasks/{image,video,merge}`).
+The API never runs generation (image/video/merge, nor the text-generation
+calls assets/image_prompt/video_prompt) itself. Instead it writes a job
+document to Firestore (see app.routers.generation._create_job) and enqueues
+an HTTP task that Cloud Tasks delivers to the workers Cloud Run service
+(`POST {WORKERS_SERVICE_URL}/tasks/{job_type}`).
 
 Cloud Tasks authenticates to the workers service using an OIDC identity token
 minted for `API_SERVICE_ACCOUNT_EMAIL` — that service account is already
@@ -31,6 +32,9 @@ _QUEUE_BY_JOB_TYPE = {
     "image": "cloud_tasks_image_queue",
     "video": "cloud_tasks_video_queue",
     "merge": "cloud_tasks_merge_queue",
+    "assets": "cloud_tasks_text_queue",
+    "image_prompt": "cloud_tasks_text_queue",
+    "video_prompt": "cloud_tasks_text_queue",
 }
 
 
@@ -39,8 +43,9 @@ def enqueue_job(job_type: str, payload: dict) -> None:
     Enqueue a Cloud Tasks HTTP task that invokes the workers service.
 
     Args:
-        job_type: One of "image", "video", "merge" — selects both the queue
-            and the workers endpoint (`/tasks/{job_type}`).
+        job_type: One of "image", "video", "merge", "assets", "image_prompt",
+            "video_prompt" — selects both the queue and the workers endpoint
+            (`/tasks/{job_type}`).
         payload: JSON-serializable dict forwarded as the task's HTTP body.
             Must include everything the worker needs to run the job
             (firebase_uid, job_id, provider credentials, GCS paths, etc.) —

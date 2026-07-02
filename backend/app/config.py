@@ -77,6 +77,7 @@ class Settings(BaseSettings):
     cloud_tasks_image_queue: str = ""
     cloud_tasks_video_queue: str = ""
     cloud_tasks_merge_queue: str = ""
+    cloud_tasks_text_queue: str = ""
     workers_service_url: str = ""
     # Service account whose OIDC identity Cloud Tasks presents to the workers
     # Cloud Run service. Must already be granted roles/run.invoker on workers
@@ -103,6 +104,7 @@ class Settings(BaseSettings):
             and self.cloud_tasks_image_queue
             and self.cloud_tasks_video_queue
             and self.cloud_tasks_merge_queue
+            and self.cloud_tasks_text_queue
             and self.api_service_account_email
         )
 

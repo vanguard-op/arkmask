@@ -155,16 +155,24 @@ class ArkMaskApiClient {
 
   // ── Generation endpoints ──────────────────────────────────────────────────
 
-  /// POST /assets — extract characters, backgrounds, and objects from a story.
+  /// POST /assets — enqueue asset extraction from a story (async job).
   ///
-  /// The backend parses [storyContent] and returns a structured list of assets.
-  /// The caller (StoryCubit) is responsible for creating the corresponding
-  /// Firestore asset documents under `users/{uid}/projects/{slug}/assets/` and
-  /// `users/{uid}/projects/{slug}/scenes/{n}/assets/`.
+  /// The backend parses [storyContent] and, once the job completes, writes
+  /// the extracted asset documents directly to Firestore under
+  /// `users/{uid}/projects/{slug}/assets/` and
+  /// `users/{uid}/projects/{slug}/scenes/{n}/assets/` — the caller no longer
+  /// creates these documents itself (that used to happen client-side after a
+  /// synchronous response; moved server-side so a slow AI provider response
+  /// can't hit the app's HTTP timeout or Cloud Run's own request timeout).
+  ///
+  /// Returns the `job_id` immediately. The caller should register it with
+  /// [JobRegistryService] and track completion via the job document's status
+  /// field (`users/{uid}/jobs/{job_id}`) — there's no single Firestore field
+  /// to watch since extraction creates multiple new documents.
   ///
   /// [projectSlug] is included so the backend can log the extraction event for
   /// credit accounting.
-  Future<Map<String, dynamic>> extractAssets({
+  Future<String> extractAssets({
     required String projectSlug,
     required String storyContent,
   }) async {
@@ -174,29 +182,35 @@ class ArkMaskApiClient {
         'story': storyContent,
       }),
     );
-    return (response.data as Map<String, dynamic>);
+    return (response.data as Map<String, dynamic>)['job_id'] as String;
   }
 
-  /// POST /image-prompt — generate an image prompt for a single asset.
+  /// POST /image-prompt — enqueue image prompt generation for a single asset
+  /// (async job).
   ///
-  /// The backend generates the prompt text and writes it directly to the
+  /// The worker generates the prompt text and writes it directly to the
   /// `prompt_body` field of the Firestore asset document at
   /// `users/{uid}/projects/{projectSlug}/{assetFirestorePath}`.
   ///
   /// The app's Firestore real-time listener on the asset document fires when
   /// the write completes — no response parsing is needed on the client.
   ///
+  /// Returns the `job_id` immediately. The caller should register it with
+  /// [JobRegistryService]; the loading spinner is cleared when the Firestore
+  /// listener detects the `prompt_body` update (see AssetEditorCubit), not
+  /// when this call returns.
+  ///
   /// [assetFirestorePath] is the path segment below the project root:
   /// - Global asset  → `"assets/{assetId}"`
   /// - Scene-local   → `"scenes/{sceneId}/assets/{assetId}"`
-  Future<void> generateImagePrompt({
+  Future<String> generateImagePrompt({
     required String projectSlug,
     required String assetFirestorePath,
     required String name,
     required String type,
     required String description,
   }) async {
-    await _execute(
+    final response = await _execute(
       () => _dio.post('/image-prompt', data: {
         'project_slug': projectSlug,
         'asset_path': assetFirestorePath,
@@ -205,8 +219,7 @@ class ArkMaskApiClient {
         'description': description,
       }),
     );
-    // No return value — backend writes prompt_body to Firestore and the
-    // real-time listener in AssetEditorCubit delivers the update to the UI.
+    return (response.data as Map<String, dynamic>)['job_id'] as String;
   }
 
   /// POST /image — enqueue an async image generation job for an asset.
@@ -237,14 +250,19 @@ class ArkMaskApiClient {
     return (response.data as Map<String, dynamic>)['job_id'] as String;
   }
 
-  /// POST /video-prompt — generate a storyboard for a scene (synchronous).
+  /// POST /video-prompt — enqueue storyboard generation for a scene (async job).
   ///
-  /// Sends the scene's text and resolved asset GCS image paths. The backend
+  /// Sends the scene's text and resolved asset GCS image paths. The worker
   /// generates the storyboard and writes it directly to the `storyboard_body`
   /// field of the Firestore scene document.
   ///
   /// The app's Firestore real-time listener on the scene document fires when
   /// the write completes — no response parsing is needed on the client.
+  ///
+  /// Returns the `job_id` immediately. The caller should register it with
+  /// [JobRegistryService]; the loading spinner is cleared when the Firestore
+  /// listener detects the `storyboard_body` update (see SceneCubit), not
+  /// when this call returns.
   ///
   /// [refImageGcsPaths] is the ordered list of GCS image paths for all scene
   /// assets (pass-through → referenced global asset's path; variant/local →
@@ -252,13 +270,13 @@ class ArkMaskApiClient {
   ///
   /// Per FEAT-014: subtitle suppression instructions and character count
   /// enforcement (≤ 4 character refs) are applied server-side.
-  Future<void> generateVideoPrompt({
+  Future<String> generateVideoPrompt({
     required String projectSlug,
     required int sceneIndex,
     required String sceneText,
     required List<String> refImageGcsPaths,
   }) async {
-    await _execute(
+    final response = await _execute(
       () => _dio.post('/video-prompt', data: {
         'project_slug': projectSlug,
         'scene_index': sceneIndex,
@@ -266,8 +284,7 @@ class ArkMaskApiClient {
         'ref_image_gcs_paths': refImageGcsPaths,
       }),
     );
-    // Backend writes storyboard_body to the scene's Firestore document.
-    // The Firestore listener in SceneCubit delivers the update to the UI.
+    return (response.data as Map<String, dynamic>)['job_id'] as String;
   }
 
   /// POST /video — enqueue an async scene video generation job.
