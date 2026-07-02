@@ -167,10 +167,23 @@ GoRouter buildRouter({
           // `path` query param carries either an absolute filesystem path
           // (Phase 2, legacy) or a GCS presigned URL (Phase 3+).
           // Both are URL-encoded strings and decoded here identically.
+          //
+          // `gcsPath` (optional) is the underlying GCS object path — passed
+          // whenever `path` is a presigned URL so VideoPlayerScreen can fetch
+          // a fresh one if this URL has since expired. Every caller must
+          // resolve a real presigned URL via
+          // ArkMaskApiClient.getPresignedUrl BEFORE navigating here — this
+          // route does not resolve one itself (GoRoute builders are
+          // synchronous). Passing a bare GCS object key (e.g.
+          // "uid/slug/scenes/2/video.mp4") as `path` is not a playable URL;
+          // VideoPlayerScreen will treat it as a local file path, fail the
+          // existence check, and show "Unable to play video".
           final videoPath = state.uri.queryParameters['path'] ?? '';
+          final gcsPath = state.uri.queryParameters['gcsPath'];
           final title = state.uri.queryParameters['title'];
           return VideoPlayerScreen(
             videoPath: Uri.decodeComponent(videoPath),
+            gcsPath: gcsPath != null ? Uri.decodeComponent(gcsPath) : null,
             title: title,
           );
         },

@@ -10,6 +10,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../core/utils/formatters.dart' show formatBytes;
+import '../../../core/utils/video_player_nav.dart';
 import '../cubit/file_browser_cubit.dart';
 import '../cubit/file_browser_state.dart';
 import '../widgets/file_browser_row.dart';
@@ -254,18 +255,10 @@ class _TreeView extends StatelessWidget {
         label: 'final.mp4',
         icon: LucideIcons.fileVideo,
         depth: 0,
-        onTap: () => context.push(
-          Uri(
-            path: Routes.videoPlayer,
-            queryParameters: {
-              // Phase 3: resolve presigned URL from gcs_final_path before
-              // navigating. For now, pass the GCS path directly — the video
-              // player will receive it in the `path` param and Phase 3 will
-              // update it to resolve a fresh presigned URL first.
-              'path': Uri.encodeComponent(tree.gcsFinalPath!),
-              'title': 'final.mp4',
-            },
-          ).toString(),
+        onTap: () => openVideoPlayer(
+          context,
+          gcsPath: tree.gcsFinalPath!,
+          title: 'final.mp4',
         ),
       ));
     }
@@ -425,16 +418,10 @@ class _TreeView extends StatelessWidget {
                 label: 'video.mp4',
                 icon: LucideIcons.video,
                 depth: 2,
-                onTap: () => context.push(
-                  Uri(
-                    path: Routes.videoPlayer,
-                    queryParameters: {
-                      // Phase 3: resolve presigned URL from gcsVideoPath before
-                      // navigating. Passes the GCS path for now.
-                      'path': Uri.encodeComponent(scene.gcsVideoPath!),
-                      'title': 'Scene ${scene.sceneNumber}',
-                    },
-                  ).toString(),
+                onTap: () => openVideoPlayer(
+                  context,
+                  gcsPath: scene.gcsVideoPath!,
+                  title: 'Scene ${scene.sceneNumber}',
                 ),
               ));
             }

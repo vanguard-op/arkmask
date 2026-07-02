@@ -6,10 +6,10 @@ import 'package:video_player/video_player.dart';
 
 import '../../../app.dart';
 import '../../../core/models/models.dart';
-import '../../../core/router/routes.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../../core/utils/video_player_nav.dart';
 import '../../billing/widgets/credits_exhausted_dialog.dart';
 import '../cubit/editor_cubit.dart';
 import '../cubit/editor_state.dart';
@@ -90,17 +90,17 @@ class _VideoEditorViewState extends State<_VideoEditorView> {
             behavior: SnackBarBehavior.floating,
             action: SnackBarAction(
               label: 'Play',
-              onPressed: () async {
-                // Fetch a presigned URL for the player.
-                final cubit = context.read<EditorCubit>();
-                try {
-                  final url = await cubit.apiClient
-                      .getPresignedUrl(gcsPath: exportPath);
-                  if (context.mounted) {
-                    context.push(Routes.videoPlayer, extra: {'videoPath': url});
-                  }
-                } catch (_) {}
-              },
+              // openVideoPlayer resolves its own fresh presigned URL and
+              // navigates via Routes.videoPlayer's query params — previously
+              // this pushed via `extra: {'videoPath': url}`, but the
+              // GoRoute builder for Routes.videoPlayer only ever reads
+              // `state.uri.queryParameters['path']`, so `extra` was silently
+              // ignored and the player always opened with an empty path.
+              onPressed: () => openVideoPlayer(
+                context,
+                gcsPath: exportPath,
+                title: 'final.mp4',
+              ),
             ),
           ),
         );
