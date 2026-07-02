@@ -65,18 +65,31 @@ def _call_ark(fn, *args, **kwargs):
 def _extract_json(text: str) -> str:
     """Strip markdown code fences so the LLM output can be parsed as JSON.
 
-    Handles three response shapes:
+    Handles four response shapes:
     1. JSON wrapped in ```json ... ``` fences (preferred, instructed by prompt)
     2. Raw JSON starting with [ or { (model ignored the fence instruction)
-    3. Empty/whitespace — returns "" to let the caller raise a clear error
+    3. A bare "json" language tag with no surrounding ``` fence markers at all
+       (observed with seed-2-0-lite-260428: the model emits the tag from what
+       would have been a ```json fence, but the backticks themselves are
+       missing — e.g. "json\n[\n  {...}\n]" with no ``` anywhere in the text).
+       Strip a leading "json" tag line before checking for the array/object
+       start.
+    4. Empty/whitespace — returns "" to let the caller raise a clear error
     """
     if not text:
         return ""
     match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     if match:
         return match.group(1).strip()
-    # No code fence — accept if the text looks like raw JSON.
+
     stripped = text.strip()
+
+    # Case 3: leading bare "json" tag with no fence markers.
+    tag_match = re.match(r"^json\s*\n", stripped, re.IGNORECASE)
+    if tag_match:
+        stripped = stripped[tag_match.end():].strip()
+
+    # No code fence — accept if the text looks like raw JSON.
     if stripped and stripped[0] in ("[", "{"):
         return stripped
     return ""

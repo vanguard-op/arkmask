@@ -63,9 +63,22 @@ class ContentBlockedError(ValueError):
 
 
 def _extract_json(text: str) -> str:
-    """Strip markdown code fences so the LLM output can be parsed as JSON."""
+    """Strip markdown code fences so the LLM output can be parsed as JSON.
+
+    See the matching function in byteplus.py for the full rationale — kept
+    consistent across both providers as defense-in-depth: a model
+    occasionally emits a bare "json" language tag with no surrounding ```
+    fence markers at all (observed with BytePlus's seed-2-0-lite-260428).
+    """
     match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
-    return match.group(1).strip() if match else text.strip()
+    if match:
+        return match.group(1).strip()
+
+    stripped = text.strip()
+    tag_match = re.match(r"^json\s*\n", stripped, re.IGNORECASE)
+    if tag_match:
+        stripped = stripped[tag_match.end():].strip()
+    return stripped
 
 
 class GeminiProvider(AIProvider):
