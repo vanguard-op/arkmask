@@ -24,11 +24,19 @@ Produce a single JSON array:
 - Use snake_case, lowercase.
 - If the asset is reused from a previous scene without modification, use a reference path: `"@/scenes/{scene_number}/{asset_name}"`. Example: `"@/scenes/0/elias"` means the character `elias` defined in scene 0 is reused here as-is.
 
+**Derived reference (background/object extensions, subsections, or derivations)**
+- Sometimes a `background` or `object` is not a full reuse and not a brand-new asset either — it is a **part, subsection, close-up, or extension of another existing background or object** (e.g. a specific corner of a shop that was already defined as a background, a drawer that is part of an already-defined workbench, a close-up of one engraved panel on the chronosphere).
+- In this case, still set `name` to a reference path pointing at the **source asset it derives from**: `"@/scenes/{scene_number}/{source_asset_name}"`.
+- Unlike an unchanged reuse, this entry **always gets a full, non-empty `description`** — write it as a complete, self-contained description of this specific derived asset (the corner, the drawer, the close-up), following the same rules as any other `description` (describe only the asset itself, no relational context).
+- This tells downstream image-prompt generation two things at once: (1) generate a new image for this specific derived asset using its own description, and (2) attach/ground it visually to the referenced source asset so the derived asset's materials, style, and identity stay consistent with its parent.
+- Use this pattern only when the derived asset is genuinely part of or extended from a specific, already-defined asset — not for a new background/object that merely resembles or sits near another one. If it's an unrelated new asset, give it its own plain `name` instead.
+
 **`description`**
 - Provide a rich visual description of the asset sufficient to generate an image standalone, without needing to look up the referenced asset.
 - Describe **only the asset itself** — its appearance, materials, colors, shape, texture, expression, and state. Do not mention other assets, locations, or relationships (e.g. do not write "visible through the shop window" or "sitting on the workbench" or "holding the chronosphere").
 - If the `name` is a reference (`@/scenes/...`) AND the asset appears unchanged, set `description` to `""`.
 - If the `name` is a reference BUT the asset has been visually modified in this scene (different clothing, expression, lighting, state, etc.), write a **complete** description of the asset as it appears in this scene — take the base appearance from the referenced asset and bake the modifications into it. Do not describe only the delta. The description must be self-contained and paint the full picture of the asset as it looks right now.
+- If the `name` is a reference used as a **derived reference** (see "Derived reference" rule above — a part/subsection/close-up/extension of a `background` or `object`), always write a full, non-empty description of that specific derived asset, even though it is a `background`/`object` type reference. This is the one case where a reference name still requires a complete description alongside it.
 - For scene 0 (root) assets, always write a full description.
 
 > **Variant discipline — avoid over-generating asset variants.**
@@ -53,10 +61,12 @@ Produce a single JSON array:
    - Identify the background (setting/environment).
    - Identify all characters present.
    - Identify all significant objects (props that affect the narrative or are visually prominent).
+   - Identify any `background`/`object` that is a part, subsection, close-up, or extension of an already-defined `background`/`object` (e.g. a specific shelf within an already-defined shop, a compartment inside an already-defined machine).
 4. **Apply reference logic**:
    - If a root asset appears in a scene unchanged → use `@/scenes/0/{name}` with `description: ""`.
    - If a root asset appears with a visual change → use `@/scenes/0/{name}` with a new description.
    - If a non-root asset from a prior scene reappears unchanged → reference it with `@/scenes/{prior_scene}/{name}` and `description: ""`.
+   - If a `background`/`object` is derived from, a subsection of, or an extension of an already-defined `background`/`object` (root or scene-specific) → reference the source asset with `@/scenes/{source_scene}/{source_name}` and always write a full, non-empty `description` of the derived asset itself (see "Derived reference" rule).
 5. **Deduplicate**: do not list the same unmodified asset twice in the same scene.
 6. **Order**: output root assets first (scene 0), then scene 1 assets, scene 2, and so on.
 
@@ -103,6 +113,12 @@ Given a story where an old watchmaker named Elias works in his shop across many 
     "scene_number": 1
   },
   {
+    "name": "@/scenes/1/workbench",
+    "description": "A narrow shallow drawer built into the front of the oak workbench, pulled halfway open. Inside, dozens of tiny brass gears and springs are sorted into small felt-lined compartments, catching the warm lamp-light.",
+    "type": "object",
+    "scene_number": 5
+  },
+  {
     "name": "lyra",
     "description": "An eight-year-old girl with rosy cheeks, bright curious eyes, and a wool coat with brass buttons. She wears a knit hat slightly askew and carries the energy of a child bursting with excitement.",
     "type": "character",
@@ -124,7 +140,7 @@ Before outputting, verify:
 - [ ] Every named or clearly described character has an entry.
 - [ ] Every narratively significant object has an entry.
 - [ ] Root assets (scene 0) have full descriptions.
-- [ ] References have `description: ""` unless a modification is described in the story.
+- [ ] References have `description: ""` unless a modification is described in the story, OR the reference is a derived reference (part/subsection/close-up/extension of a background/object), in which case it always has a full, non-empty description.
 - [ ] Every variant (reference with a non-empty description) represents a change that a viewer would obviously and immediately notice — minor pose, expression, or lighting shifts are NOT sufficient grounds for a variant.
 - [ ] No description mentions another asset, location, or relational context — each describes only the asset itself.
 - [ ] `type` values are exactly `"character"`, `"background"`, or `"object"`.

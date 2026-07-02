@@ -36,8 +36,9 @@ Prompts are consumed by **Seedance 2.0** (`dreamina-seedance-2-0-260128`) via th
 - It understands standard film camera terminology directly — use it without explanation
 - It supports dialogue with `{}`, sound effects with `<>`, music with `（）`, subtitles with `【】`
 - It does **not** support negative prompts — use explicit positive constraint phrases instead
-- Precise timing (e.g. "at 3 seconds") is unstable — do not specify durations; let the model pace shots naturally
+- Precise timing of in-shot events (e.g. "at 3 seconds") is unstable — do not specify durations *within* a shot's description; let the model pace actions inside a shot naturally
 - Language of dialogue must be consistent; do not mix Chinese and English (except proper nouns)
+- The model accepts an overall clip-length directive appended to the end of the prompt as `--duration N` (seconds, integer, range **2–15**). This does control total pacing reliably and must be set explicitly — omitting it causes the model to default to a flat 5 seconds regardless of scene complexity (see Step 7).
 
 ## Output
 
@@ -162,6 +163,31 @@ Always end the prompt with a closing block in this order:
 
 ---
 
+### Step 7 — Determine Clip Duration
+
+Compute an integer duration between **2 and 15 seconds** based on the complexity of the `scene` — never default to a flat value. Append it to the very end of the output as `--duration N`, after the closing block, separated by a space.
+
+**Estimate complexity from:**
+
+- **Shot count** — each shot needs roughly 2–4 seconds to read clearly on screen. A 1-shot scene rarely needs more than 4–6 seconds; a 3-shot sequence typically needs 8–12 seconds.
+- **Action density** — count distinct physical beats (e.g. "sets down the sphere", "straightens up", "turns to look") within each shot. More beats per shot push toward the higher end of that shot's range; a single lingering beat (a held gaze, a slow breath) can sit at the lower end.
+- **Camera movement speed** — slow pushes/pulls/pans need more seconds to complete believably than fixed shots or quick cuts; add ~1–2 seconds per slow camera movement.
+- **Dialogue length** — if `{}` dialogue is present, add roughly 1 second per 3–4 spoken words so the line isn't rushed.
+
+**Rough guide (not a strict formula — use judgment):**
+
+| Scene shape | Typical duration |
+|---|---|
+| Single shot, one simple beat, no dialogue | 2–4s |
+| Single shot with camera movement or dialogue | 4–6s |
+| 2 shots, moderate action | 6–9s |
+| 3 shots, layered actions/dialogue | 9–12s |
+| 3+ shots, dense action and dialogue, multiple camera moves | 12–15s |
+
+Never output a duration outside 2–15. If the computed estimate exceeds 15, either cap it at 15 or trim/merge shots so the pacing stays realistic — do not silently inflate beyond the model's supported range.
+
+---
+
 ## Complete Prompt Template
 
 ```
@@ -175,6 +201,8 @@ Shot 2: [One camera movement/framing]. [Character name] [action]. [Position]. [A
 Shot 3: [One camera movement/framing]. [Character name] [action]. [Position]. [Audio]
 
 [art_style from input], [image quality], [lighting]. The character's face and body proportions remain consistent throughout without deformation. Movements are natural and smooth, with no stutter or flicker. [If subtitles == "disabled": Keep it subtitle-free. Avoid generating any text or subtitles.] Do not generate a watermark. Do not generate a logo. [Duplicate constraint if multiple characters.]
+
+--duration [N, computed per Step 7, 2-15]
 ```
 
 ---
@@ -215,3 +243,5 @@ Shot 2: Slow pull back to a medium shot. **Elias** gradually straightens upright
 Shot 3: Fixed close-up on **Elias**'s face. He slowly turns his head toward the large dusty window, eyes softening as they settle on the grey light beyond the glass. The corners of his mouth form a faint, trembling smile. One tear wells at the corner of his eye but does not fall.
 
 Painterly illustration style with warm amber and dark wood tones, rich textural detail. High-definition, cinematic texture, natural colors. Soft warm lamp-light with gentle shadows. The character's face and body proportions remain consistent throughout without deformation. Movements are natural and smooth, with no stutter or flicker. Keep it subtitle-free. Avoid generating any text or subtitles. Do not generate a watermark. Do not generate a logo.
+
+--duration 11
