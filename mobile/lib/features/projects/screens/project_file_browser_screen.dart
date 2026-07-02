@@ -10,6 +10,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../core/utils/formatters.dart' show formatBytes;
+import '../../../core/utils/video_download.dart';
 import '../../../core/utils/video_player_nav.dart';
 import '../cubit/file_browser_cubit.dart';
 import '../cubit/file_browser_state.dart';
@@ -260,6 +261,11 @@ class _TreeView extends StatelessWidget {
           gcsPath: tree.gcsFinalPath!,
           title: 'final.mp4',
         ),
+        onLongPress: () => showDownloadToGallerySheet(
+          context,
+          gcsPath: tree.gcsFinalPath!,
+          fileNameHint: '${projectSlug}_final.mp4',
+        ),
       ));
     }
 
@@ -422,6 +428,11 @@ class _TreeView extends StatelessWidget {
                   context,
                   gcsPath: scene.gcsVideoPath!,
                   title: 'Scene ${scene.sceneNumber}',
+                ),
+                onLongPress: () => showDownloadToGallerySheet(
+                  context,
+                  gcsPath: scene.gcsVideoPath!,
+                  fileNameHint: '${projectSlug}_scene_${scene.sceneNumber}.mp4',
                 ),
               ));
             }

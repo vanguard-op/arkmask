@@ -23,6 +23,7 @@ class FileBrowserRow extends StatelessWidget {
     this.steps,
     this.badge,
     this.onTap,
+    this.onLongPress,
     this.onToggleExpand,
   });
 
@@ -46,6 +47,12 @@ class FileBrowserRow extends StatelessWidget {
   final Widget? badge;
 
   final VoidCallback? onTap;
+
+  /// Long-press action — used by the video.mp4 / final.mp4 rows to surface
+  /// a "Download to Camera Roll" action sheet (FEAT-021 / FEAT-026). Null
+  /// for rows with no long-press behavior.
+  final VoidCallback? onLongPress;
+
   final VoidCallback? onToggleExpand;
 
   @override
@@ -67,6 +74,7 @@ class FileBrowserRow extends StatelessWidget {
         color: bgColor,
         child: InkWell(
           onTap: onTap,
+          onLongPress: onLongPress,
           splashColor: (isDark ? AppColors.surfaceHoverDark : AppColors.surfaceHoverLight),
           child: Padding(
             padding: EdgeInsets.only(

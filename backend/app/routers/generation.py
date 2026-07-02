@@ -71,6 +71,7 @@ from app.services.scene_assets import (
     resolve_scene_assets,
     to_asset_prompt_inputs,
 )
+from app.services.scene_progress import write_video_result
 
 router = APIRouter(tags=["generation"])
 logger = logging.getLogger(__name__)
@@ -752,11 +753,11 @@ async def enqueue_video(
             gcs_key = f"{firebase_uid}/{body.project_slug}/scenes/{body.scene_index}/video.mp4"
             await asyncio.to_thread(MediaStore().put_object, gcs_key, video_bytes, mime_type)
 
-            # 5. Write gcs_video_path to Firestore scene doc.
-            db.document(fs_path).set(
-                {"gcs_video_path": gcs_key, "updated_at": SERVER_TIMESTAMP},
-                merge=True,
-            )
+            # 5. Write gcs_video_path to Firestore scene doc, and bump the
+            #    project's completed_scene_count if this is the scene's
+            #    first completion (see app.services.scene_progress).
+            project_ref = db.document(f"users/{firebase_uid}/projects/{body.project_slug}")
+            write_video_result(db.transaction(), db.document(fs_path), project_ref, gcs_key)
 
             # 6. Deduct credits + update job.
             _deduct_credits(firebase_uid, "/video", pname, CREDIT_COSTS["/video"])

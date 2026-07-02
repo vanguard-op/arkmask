@@ -14,8 +14,6 @@ for why that moved server-side.
 
 import logging
 
-from google.cloud.firestore_v1 import SERVER_TIMESTAMP
-
 from app.firestore_client import get_firestore
 from app.jobs import already_terminal, deduct_credits, notify, update_job
 from app.services.ai.base import RefImage
@@ -23,6 +21,7 @@ from app.services.ai.byteplus import BytePlusProvider
 from app.services.ai.gemini import GeminiProvider
 from app.services.media_store import MediaStore
 from app.services.scene_assets import ordered_gcs_image_paths, resolve_scene_assets
+from app.services.scene_progress import write_video_result
 
 logger = logging.getLogger(__name__)
 
@@ -100,8 +99,11 @@ def run(payload: dict) -> None:
         gcs_key = f"{firebase_uid}/{project_slug}/scenes/{scene_index}/video.mp4"
         MediaStore().put_object(gcs_key, video_bytes, mime_type)
 
-        # 5. Write gcs_video_path to Firestore scene doc.
-        db.document(fs_path).set({"gcs_video_path": gcs_key, "updated_at": SERVER_TIMESTAMP}, merge=True)
+        # 5. Write gcs_video_path to Firestore scene doc, and bump the
+        #    project's completed_scene_count if this is the scene's first
+        #    completion (see app.services.scene_progress.write_video_result).
+        project_ref = db.document(f"users/{firebase_uid}/projects/{project_slug}")
+        write_video_result(db.transaction(), db.document(fs_path), project_ref, gcs_key)
 
         # 6. Deduct credits atomically + update job + notify.
         deduct_credits(db, firebase_uid, "video", provider_type)
