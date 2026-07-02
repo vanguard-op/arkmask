@@ -18,6 +18,45 @@ class RefImage:
     mime_type: str
 
 
+class AIProviderError(Exception):
+    """
+    A clean, structured error raised when an AI provider (Gemini or BytePlus)
+    returns a 4xx/5xx response.
+
+    Both provider SDKs already parse structured error info (status code,
+    provider-specific error type, human message) — this wraps that into one
+    consistent shape so callers (generation.py, workers/app/tasks/*.py) get a
+    useful message instead of either the raw SDK exception's repr or a
+    hard-coded generic string that discards what the provider actually said.
+
+    Example: a BytePlus account with an unpaid balance returns HTTP 403 with
+    body `{"type": "Forbidden", "message": "...overdue balance...", "code":
+    "AccountOverdueError"}` — previously this surfaced to the user/logs as a
+    bare "AI provider error during X." or FastAPI's generic "An internal
+    server error occurred." Now it surfaces as e.g.:
+        "BytePlus API error 403 (AccountOverdueError): The request failed
+        because your account has an overdue balance."
+    """
+
+    def __init__(
+        self,
+        provider: str,
+        status_code: int | None,
+        provider_error_code: str | None,
+        message: str,
+    ):
+        self.provider = provider
+        self.status_code = status_code
+        self.provider_error_code = provider_error_code
+        self.message = message
+        super().__init__(str(self))
+
+    def __str__(self) -> str:
+        code_part = f" {self.status_code}" if self.status_code else ""
+        type_part = f" ({self.provider_error_code})" if self.provider_error_code else ""
+        return f"{self.provider} API error{code_part}{type_part}: {self.message}"
+
+
 class AIProvider(ABC):
     """
     Abstract base for AI provider adapters.

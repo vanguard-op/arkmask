@@ -26,10 +26,40 @@ import httpx
 
 # Install with: pip install byteplus-python-sdk-v2
 from byteplussdkarkruntime import Ark as _Ark
+from byteplussdkarkruntime._exceptions import ArkAPIError
 
-from app.services.ai.base import AIProvider, RefImage
+from app.services.ai.base import AIProvider, AIProviderError, RefImage
 
 logger = logging.getLogger(__name__)
+
+
+def _call_ark(fn, *args, **kwargs):
+    """
+    Call an Ark SDK method, translating ``ArkAPIError`` into the shared
+    ``AIProviderError`` so callers get a clean, structured message instead of
+    the SDK's raw exception (previously surfaced to users/logs as either a
+    generic "AI provider error during X." or FastAPI's bare "An internal
+    server error occurred.").
+
+    ``ArkAPIStatusError`` subclasses (4xx/5xx responses) already parse
+    ``.code``/``.type``/``.message`` from the response body — this just
+    forwards them into ``AIProviderError``. Non-HTTP SDK errors (e.g.
+    connection failures) have no status code but still get a clean message.
+    """
+    try:
+        return fn(*args, **kwargs)
+    except ArkAPIError as e:
+        status_code = getattr(e, "status_code", None)
+        # Prefer `.code` (the specific error, e.g. "AccountOverdueError") over
+        # `.type` (just the generic HTTP class, e.g. "Forbidden") — `.code` is
+        # the actually useful, actionable identifier when both are present.
+        provider_error_code = getattr(e, "code", None) or getattr(e, "type", None)
+        raise AIProviderError(
+            provider="BytePlus",
+            status_code=status_code,
+            provider_error_code=provider_error_code,
+            message=e.message,
+        ) from e
 
 
 def _extract_json(text: str) -> str:
@@ -95,9 +125,9 @@ def _extract_video_url(task_result) -> str | None:
 
 
 class BytePlusProvider(AIProvider):
-    TEXT_MODEL = "seed-2-0-lite-260228"
+    TEXT_MODEL = "seed-2-0-lite-260428"
     IMAGE_MODEL = "seedream-5-0-260128"
-    VIDEO_MODEL = "dreamina-seedance-2-0-260128"
+    VIDEO_MODEL = "dreamina-seedance-2-0-mini-260615"
     BASE_URL = "https://ark.ap-southeast.bytepluses.com/api/v3"
 
     # Seedance 2.0 supports up to 9 reference images per generation task.
@@ -124,7 +154,8 @@ class BytePlusProvider(AIProvider):
         as ``None`` or empty. We fall back to ``reasoning_content`` so callers
         always get a non-None string to parse.
         """
-        response = self._client.chat.completions.create(
+        response = _call_ark(
+            self._client.chat.completions.create,
             model=self.TEXT_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -197,7 +228,8 @@ class BytePlusProvider(AIProvider):
                 "type": "image_url",
                 "image_url": {"url": _to_data_uri(img.data, img.mime_type)},
             })
-        response = self._client.chat.completions.create(
+        response = _call_ark(
+            self._client.chat.completions.create,
             model=self.TEXT_MODEL,
             messages=[{"role": "user", "content": user_content}],
         )
@@ -244,7 +276,7 @@ class BytePlusProvider(AIProvider):
             self.IMAGE_MODEL, len(ref_images),
         )
 
-        response = self._client.images.generate(**kwargs)
+        response = _call_ark(self._client.images.generate, **kwargs)
         data = _download(response.data[0].url)
         return data, "image/png"
 
@@ -294,7 +326,8 @@ class BytePlusProvider(AIProvider):
             len(capped), len(ref_images),
         )
 
-        task = self._client.content_generation.tasks.create(
+        task = _call_ark(
+            self._client.content_generation.tasks.create,
             model=self.VIDEO_MODEL,
             content=content,
         )
@@ -307,7 +340,7 @@ class BytePlusProvider(AIProvider):
         while True:
             time.sleep(self.VIDEO_POLL_INTERVAL)
 
-            result = self._client.content_generation.tasks.get(task_id=task_id)
+            result = _call_ark(self._client.content_generation.tasks.get, task_id=task_id)
             status: str = getattr(result, "status", "unknown")
             logger.debug("generate_video: poll task_id=%s status=%s", task_id, status)
 

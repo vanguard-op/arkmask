@@ -16,11 +16,30 @@ import re
 import time
 
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types
 
-from app.services.ai.base import AIProvider, RefImage
+from app.services.ai.base import AIProvider, AIProviderError, RefImage
 
 logger = logging.getLogger(__name__)
+
+
+def _call_genai(fn, *args, **kwargs):
+    """
+    Call a Gemini SDK method, translating ``google.genai.errors.APIError``
+    into the shared ``AIProviderError`` — same rationale as
+    ``byteplus._call_ark``: give callers a clean, structured message instead
+    of the SDK's raw exception or a generic fallback string.
+    """
+    try:
+        return fn(*args, **kwargs)
+    except genai_errors.APIError as e:
+        raise AIProviderError(
+            provider="Gemini",
+            status_code=getattr(e, "code", None),
+            provider_error_code=getattr(e, "status", None),
+            message=e.message or str(e),
+        ) from e
 
 
 class ContentBlockedError(ValueError):
@@ -97,7 +116,8 @@ class GeminiProvider(AIProvider):
         Returns the model's text output as a plain string.
         """
         try:
-            interaction = self._client.interactions.create(
+            interaction = _call_genai(
+                self._client.interactions.create,
                 model=self.TEXT_MODEL,
                 system_instruction=system_instruction,
                 input=payload,
@@ -165,7 +185,8 @@ class GeminiProvider(AIProvider):
         config = types.GenerateContentConfig(
             safety_settings=self._SAFETY_SETTINGS,
         )
-        response = self._client.models.generate_content(
+        response = _call_genai(
+            self._client.models.generate_content,
             model=self.TEXT_MODEL,
             contents=contents,
             config=config,
@@ -203,7 +224,8 @@ class GeminiProvider(AIProvider):
         )
 
         try:
-            response = self._client.models.generate_content(
+            response = _call_genai(
+                self._client.models.generate_content,
                 model=self.IMAGE_MODEL,
                 contents=contents,
                 config=config,
@@ -306,7 +328,8 @@ class GeminiProvider(AIProvider):
             len(veo_ref_images), len(ref_images),
         )
 
-        operation = self._client.models.generate_videos(
+        operation = _call_genai(
+            self._client.models.generate_videos,
             model=self.VIDEO_MODEL,
             prompt=storyboard,
             config=types.GenerateVideosConfig(
@@ -322,7 +345,7 @@ class GeminiProvider(AIProvider):
         # Poll until the operation completes (typically 2–5 minutes for Veo 3.1).
         while not operation.done:
             time.sleep(self.VIDEO_POLL_INTERVAL)
-            operation = self._client.operations.get(operation)
+            operation = _call_genai(self._client.operations.get, operation)
 
         # Surface operation-level errors before inspecting the response body.
         op_error = getattr(operation, "error", None)
@@ -362,7 +385,7 @@ class GeminiProvider(AIProvider):
         uri = getattr(video, "uri", None)
         if uri:
             logger.info("generate_video: fetching video bytes from URI %s", uri)
-            video_bytes = self._client.files.download(file=uri)
+            video_bytes = _call_genai(self._client.files.download, file=uri)
             return bytes(video_bytes), video.mime_type or "video/mp4"
 
         raise ValueError(
