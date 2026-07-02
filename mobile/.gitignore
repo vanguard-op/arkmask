@@ -49,3 +49,4 @@ app.*.map.json
 
 # Environment variables — copy .env.example.json → .env.json, never commit .env.json
 .env.json
+.env.prod.json
