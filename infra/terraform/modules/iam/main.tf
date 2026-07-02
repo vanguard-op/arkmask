@@ -37,11 +37,26 @@ resource "google_project_iam_member" "api_datastore" {
   member  = "serviceAccount:${google_service_account.api.email}"
 }
 
-# Enqueue jobs to Cloud Tasks queues (image-queue, video-queue, merge-queue).
+# Enqueue jobs to Cloud Tasks queues (image-queue, video-queue, merge-queue, text-queue).
 resource "google_project_iam_member" "api_cloudtasks_enqueuer" {
   project = var.project_id
   role    = "roles/cloudtasks.enqueuer"
   member  = "serviceAccount:${google_service_account.api.email}"
+}
+
+# Cloud Tasks tasks are created with oidc_token.service_account_email set to
+# this same API SA (see app/services/cloud_tasks.py) so Cloud Run can verify
+# the identity when the workers service receives the push. Minting an OIDC
+# token for a service account requires the caller to have
+# iam.serviceAccounts.actAs on that account — GCP does not grant this
+# implicitly even when the caller and the target are the same SA. Without
+# this binding, every enqueue_job() call fails with:
+#   PermissionDenied: 403 ... lacks IAM permission
+#   "iam.serviceAccounts.actAs" for the resource "<api-sa-email>"
+resource "google_service_account_iam_member" "api_act_as_self" {
+  service_account_id = google_service_account.api.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.api.email}"
 }
 
 # Send FCM push notifications via Firebase Admin SDK.
