@@ -38,6 +38,7 @@ from google.cloud.firestore_v1 import SERVER_TIMESTAMP
 
 from app.config import get_settings
 from app.dependencies import _firestore, get_current_user
+from app.firestore_paths import profile_path
 from app.models.user import UserProfile
 from app.schemas.billing import BillingUrlResponse, CheckoutRequest
 
@@ -98,7 +99,7 @@ def _get_or_create_stripe_customer(
     uid = user.firebase_uid
 
     # Persist customer_id on the profile.
-    db.document(f"users/{uid}/profile").update({
+    db.document(profile_path(uid)).update({
         "stripe_customer_id": customer.id,
         "updated_at": SERVER_TIMESTAMP,
     })
@@ -287,7 +288,7 @@ def _handle_subscription_upsert(subscription: dict) -> None:
     db_status = _map_subscription_status(sub_status)
     period_end_dt = datetime.fromtimestamp(period_end_ts, tz=timezone.utc)
 
-    _firestore().document(f"users/{uid}/profile").update({
+    _firestore().document(profile_path(uid)).update({
         "tier": tier,
         "subscription": {
             "stripe_subscription_id": subscription["id"],
@@ -311,7 +312,7 @@ def _handle_subscription_deleted(subscription: dict) -> None:
         logger.warning("No user for Stripe customer on deletion: customer_id=%s", customer_id)
         return
 
-    _firestore().document(f"users/{uid}/profile").update({
+    _firestore().document(profile_path(uid)).update({
         "tier": "free",
         "credit_balance": TIER_CREDITS["free"],
         "subscription.status": "cancelled",
@@ -333,11 +334,11 @@ def _handle_invoice_paid(invoice: dict) -> None:
         return
 
     # Read current tier from profile to determine the correct allowance.
-    profile_doc = _firestore().document(f"users/{uid}/profile").get()
+    profile_doc = _firestore().document(profile_path(uid)).get()
     tier = (profile_doc.to_dict() or {}).get("tier", "free") if profile_doc.exists else "free"
     new_balance = TIER_CREDITS.get(tier, TIER_CREDITS["free"])
 
-    _firestore().document(f"users/{uid}/profile").update({
+    _firestore().document(profile_path(uid)).update({
         "credit_balance": new_balance,
         "updated_at": SERVER_TIMESTAMP,
     })
@@ -359,7 +360,7 @@ def _handle_invoice_payment_failed(invoice: dict) -> None:
     if uid is None:
         return
 
-    _firestore().document(f"users/{uid}/profile").update({
+    _firestore().document(profile_path(uid)).update({
         "subscription.status": "past_due",
         "updated_at": SERVER_TIMESTAMP,
     })

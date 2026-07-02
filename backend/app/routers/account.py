@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, status
 from google.cloud.firestore_v1 import SERVER_TIMESTAMP
 
 from app.dependencies import _firestore, get_current_user
+from app.firestore_paths import profile_path
 from app.models.user import UserProfile
 from app.schemas.auth import (
     CreditsResponse,
@@ -96,7 +97,7 @@ def regenerate_key(
     })
 
     # Persist new hash on profile for future login rotations.
-    db.document(f"users/{uid}/profile").update({
+    db.document(profile_path(uid)).update({
         "platform_api_key_hash": new_hash,
         "updated_at": SERVER_TIMESTAMP,
     })

@@ -5,8 +5,12 @@ Firebase is the source of truth for identity; ArkMask issues a separate
 platform API key used for billing and generation request attribution.
 
 Firestore document layout:
-  users/{uid}/profile     — user account data (tier, credits, fcm_token, …)
-  api_keys/{hashed_key}   — reverse-index: hashed_key → firebase_uid (O(1) lookup)
+  users/{uid}/profile/data — user account data (tier, credits, fcm_token, …)
+                             see app.firestore_paths.profile_path — nested
+                             under a fixed singleton doc ID since a bare
+                             "users/{uid}/profile" is an odd-length path
+                             (invalid as a Firestore document reference).
+  api_keys/{hashed_key}    — reverse-index: hashed_key → firebase_uid (O(1) lookup)
 
 Key lifecycle:
   - Registration: one key issued, returned once, written as hash.
@@ -23,6 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from google.cloud.firestore_v1 import SERVER_TIMESTAMP
 
 from app.dependencies import _firestore, get_firebase_uid
+from app.firestore_paths import profile_path
 from app.schemas.auth import PlatformKeyResponse, RegisterRequest
 
 router = APIRouter(tags=["auth"])
@@ -47,8 +52,9 @@ def register(
     """
     Register a new ArkMask account.
 
-    Verifies the Firebase ID token, creates ``users/{uid}/profile`` in Firestore,
-    writes the key hash to ``api_keys/{hashed_key}``, and returns the raw key.
+    Verifies the Firebase ID token, creates the user's profile document (see
+    app.firestore_paths.profile_path) in Firestore, writes the key hash to
+    ``api_keys/{hashed_key}``, and returns the raw key.
 
     The raw key is returned exactly once — it is hashed before storage.
     The app must store it in Flutter secure storage immediately.
@@ -58,7 +64,7 @@ def register(
     db = _firestore()
 
     # Guard: existing Firebase UID (e.g. user already registered from another device).
-    profile_ref = db.document(f"users/{firebase_uid}/profile")
+    profile_ref = db.document(profile_path(firebase_uid))
     if profile_ref.get().exists:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -99,12 +105,12 @@ def login(
       1. Reads the old hashed key from the profile document.
       2. Deletes the old ``api_keys/{old_hash}`` document.
       3. Writes a new ``api_keys/{new_hash}`` document.
-      4. Updates ``users/{uid}/profile`` with the new hash.
+      4. Updates the profile document (app.firestore_paths.profile_path) with the new hash.
 
     Returns 401 if no profile exists for this Firebase UID.
     """
     db = _firestore()
-    profile_ref = db.document(f"users/{firebase_uid}/profile")
+    profile_ref = db.document(profile_path(firebase_uid))
     profile_snap = profile_ref.get()
 
     if not profile_snap.exists:

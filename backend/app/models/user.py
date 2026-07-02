@@ -1,8 +1,9 @@
 """UserProfile — in-memory representation of a Firestore user profile document.
 
 Replaces the SQLAlchemy ``User`` ORM model.  Instances are constructed by
-``get_current_user`` after reading ``users/{uid}/profile`` from Firestore
-and are passed into route handlers via FastAPI ``Depends()``.
+``get_current_user`` after reading the profile document (see
+``app.firestore_paths.profile_path``) from Firestore and are passed into
+route handlers via FastAPI ``Depends()``.
 
 Not persisted directly — all writes go back through the Firestore client.
 """
@@ -12,7 +13,7 @@ from dataclasses import dataclass, field
 
 @dataclass
 class UserProfile:
-    """Mirrors the fields stored in ``users/{uid}/profile``."""
+    """Mirrors the fields stored in the profile document (app.firestore_paths.profile_path)."""
 
     firebase_uid: str
     email: str

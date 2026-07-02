@@ -39,6 +39,7 @@ from pydantic import BaseModel, Field
 
 from app.config import get_settings
 from app.dependencies import get_ai_provider, get_current_user, _firestore
+from app.firestore_paths import profile_path
 from app.models.user import UserProfile
 from app.routers.projects import _firestore_client
 from app.schemas.generation import (
@@ -158,7 +159,7 @@ def _deduct_credits(
     """
     db = _firestore()
     if credits > 0:
-        user_ref = db.document(f"users/{firebase_uid}/profile")
+        user_ref = db.document(profile_path(firebase_uid))
         txn = db.transaction()
         _deduct_in_txn(txn, user_ref, credits)
 
@@ -241,7 +242,7 @@ def _sniff_mime(data: bytes) -> str:
 def _get_fcm_token(firebase_uid: str) -> str | None:
     """Fetch the latest FCM token from Firestore for push notification delivery."""
     try:
-        doc = _firestore().document(f"users/{firebase_uid}/profile").get()
+        doc = _firestore().document(profile_path(firebase_uid)).get()
         return (doc.to_dict() or {}).get("fcm_token") if doc.exists else None
     except Exception:
         return None

@@ -12,6 +12,7 @@ import logging
 from google.cloud.firestore_v1 import SERVER_TIMESTAMP
 from google.cloud.firestore_v1.transaction import transactional
 
+from app.firestore_paths import profile_path
 from app.services.firebase import send_fcm_notification
 
 logger = logging.getLogger(__name__)
@@ -84,7 +85,7 @@ def deduct_credits(
     """
     credits = CREDIT_COSTS.get(job_type, 0) if evt_status == "success" else 0
     if credits > 0:
-        user_ref = db.document(f"users/{firebase_uid}/profile")
+        user_ref = db.document(profile_path(firebase_uid))
         txn = db.transaction()
         _deduct_in_txn(txn, user_ref, credits)
 
@@ -100,7 +101,7 @@ def deduct_credits(
 def get_fcm_token(db, firebase_uid: str) -> str | None:
     """Fetch the latest FCM token from Firestore for push notification delivery."""
     try:
-        doc = db.document(f"users/{firebase_uid}/profile").get()
+        doc = db.document(profile_path(firebase_uid)).get()
         return (doc.to_dict() or {}).get("fcm_token") if doc.exists else None
     except Exception:
         return None

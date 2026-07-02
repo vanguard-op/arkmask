@@ -20,6 +20,7 @@ COPY backend/pyproject.toml ./pyproject.toml
 # duplicated across two independently-built images.
 COPY backend/app/services ./app/services
 COPY backend/app/config.py ./app/config.py
+COPY backend/app/firestore_paths.py ./app/firestore_paths.py
 COPY backend/instructions ./instructions
 
 # Worker-owned code: Cloud Tasks push-target endpoints + job handlers.

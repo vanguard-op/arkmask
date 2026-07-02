@@ -11,6 +11,7 @@ import logging
 
 from fastapi import Depends, Header, HTTPException, status
 
+from app.firestore_paths import profile_path
 from app.models.user import UserProfile
 from app.services.ai.base import AIProvider
 from app.services.ai.byteplus import BytePlusProvider
@@ -74,7 +75,8 @@ def get_current_user(
     Lookup path:
       1. Hash the raw key → document ID in ``api_keys/{hashed_key}``.
       2. Read ``firebase_uid`` from that document (O(1) get, no scan).
-      3. Read ``users/{uid}/profile`` to get the full user record.
+      3. Read the user's profile document (see app.firestore_paths.profile_path)
+         to get the full user record.
 
     The raw key is never stored — only the SHA-256 hash.
     Raises HTTP 401 if the key is missing or does not match any user.
@@ -92,7 +94,7 @@ def get_current_user(
     uid: str = key_doc.get("firebase_uid")
 
     # Step 2: fetch the user profile document.
-    profile_doc = db.document(f"users/{uid}/profile").get()
+    profile_doc = db.document(profile_path(uid)).get()
     if not profile_doc.exists:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
