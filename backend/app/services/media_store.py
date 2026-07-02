@@ -34,15 +34,28 @@ from botocore.config import Config
 from app.config import get_settings
 
 
+# GCS's S3-compatible XML API endpoint. When STORAGE_ENDPOINT_URL is unset
+# (production), boto3 must be pointed here explicitly — leaving endpoint_url
+# unset does NOT mean "use GCS"; boto3 falls back to its own default, which
+# is real AWS S3. That mismatch previously caused every production upload to
+# fail with "InvalidAccessKeyId" (the configured key really was invalid —
+# just not because it was wrong, but because it was being sent to AWS
+# instead of GCS in the first place).
+_GCS_S3_ENDPOINT = "https://storage.googleapis.com"
+
+
 def _make_client(endpoint_url: str, access_key: str, secret_key: str):
-    """Return a boto3 S3 client, optionally scoped to a custom endpoint."""
+    """Return a boto3 S3 client, optionally scoped to a custom endpoint.
+
+    ``endpoint_url`` empty means "use GCS" (see _GCS_S3_ENDPOINT above) —
+    MinIO/local dev always passes an explicit endpoint (http://minio:9000).
+    """
     kwargs: dict = dict(
         aws_access_key_id=access_key,
         aws_secret_access_key=secret_key,
         config=Config(signature_version="s3v4"),
+        endpoint_url=endpoint_url or _GCS_S3_ENDPOINT,
     )
-    if endpoint_url:
-        kwargs["endpoint_url"] = endpoint_url
     return boto3.client("s3", **kwargs)
 
 
