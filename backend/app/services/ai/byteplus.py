@@ -1,9 +1,11 @@
 """BytePlus Ark AI provider adapter.
 
-Models used (per architecture.md provider model mapping):
-  - Text:  seed-2-0-lite-260228 (via Doubao chat completions)
-  - Image: seedream-5-0-260128
-  - Video: dreamina-seedance-2-0-260128
+Models in use (see BytePlusProvider class attributes for the current values —
+kept there as the single source of truth since these get updated from time
+to time; this docstring is illustrative, not authoritative):
+  - Text:  chat completions model (Doubao/Seed/DeepSeek family)
+  - Image: Seedream image generation model
+  - Video: Seedance/Dreamina video generation model
 
 SDK: byteplus-python-sdk-v2 (byteplussdkarkruntime)
 
@@ -138,7 +140,7 @@ def _extract_video_url(task_result) -> str | None:
 
 
 class BytePlusProvider(AIProvider):
-    TEXT_MODEL = "seed-2-0-lite-260428"
+    TEXT_MODEL = "deepseek-v4-flash-260425"
     IMAGE_MODEL = "seedream-5-0-260128"
     VIDEO_MODEL = "dreamina-seedance-2-0-mini-260615"
     BASE_URL = "https://ark.ap-southeast.bytepluses.com/api/v3"
@@ -159,6 +161,16 @@ class BytePlusProvider(AIProvider):
 
     # ── Text helpers ──────────────────────────────────────────────────────────
 
+    # No max_tokens was previously set, so responses were capped by whatever
+    # default the API applies. For asset extraction on stories with several
+    # detailed characters, the model's JSON array (each entry ~150-300 chars
+    # of prose) can run past that default before finishing — the response
+    # gets cut off mid-generation with no closing ``` fence, which
+    # _extract_json can't recover (there's genuinely no valid JSON to find,
+    # since the array itself is incomplete). 8192 gives ample headroom for
+    # even large asset lists while staying well under typical model ceilings.
+    _CHAT_MAX_TOKENS = 8192
+
     def _chat(self, system_prompt: str, content: str) -> str:
         """Single-turn chat completion via Doubao/Seed text model.
 
@@ -174,6 +186,7 @@ class BytePlusProvider(AIProvider):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": content},
             ],
+            max_tokens=self._CHAT_MAX_TOKENS,
         )
         msg = response.choices[0].message
         text = msg.content or ""
@@ -181,11 +194,22 @@ class BytePlusProvider(AIProvider):
             # Thinking-mode fallback: some BytePlus models put the answer in
             # reasoning_content and leave content empty.
             text = getattr(msg, "reasoning_content", None) or ""
+
+        finish_reason = response.choices[0].finish_reason
+        if finish_reason == "length":
+            # The response was cut off by the token limit before the model
+            # finished — e.g. an unclosed JSON array/fence. Surfacing this
+            # clearly here (rather than only downstream as a generic
+            # "unparseable" error) makes the actual cause obvious in logs.
+            logger.warning(
+                "_chat response truncated by max_tokens=%d: model=%s output_length=%d",
+                self._CHAT_MAX_TOKENS, self.TEXT_MODEL, len(text),
+            )
         if not text:
             logger.warning(
                 "_chat returned empty content: model=%s finish_reason=%s",
                 self.TEXT_MODEL,
-                response.choices[0].finish_reason,
+                finish_reason,
             )
         return text
 
@@ -195,8 +219,20 @@ class BytePlusProvider(AIProvider):
         text = self._chat(self.ASSET_LIST_PROMPT, story)
         extracted = _extract_json(text)
         if not extracted:
+            # An opening fence with no closing one is the signature of a
+            # response truncated by max_tokens before the model finished —
+            # call this out explicitly rather than making the caller guess.
+            looks_truncated = "```" in text and text.count("```") < 2
+            hint = (
+                " Response appears truncated (opening code fence with no "
+                "closing fence) — the story likely produced more assets than "
+                "fit within max_tokens; consider a shorter story or splitting "
+                "extraction into smaller batches."
+                if looks_truncated
+                else ""
+            )
             raise ValueError(
-                f"Model returned an empty or unparseable asset list. "
+                f"Model returned an empty or unparseable asset list.{hint} "
                 f"Raw response length: {len(text)} chars. "
                 f"Preview: {text[:300]!r}"
             )
@@ -245,6 +281,7 @@ class BytePlusProvider(AIProvider):
             self._client.chat.completions.create,
             model=self.TEXT_MODEL,
             messages=[{"role": "user", "content": user_content}],
+            max_tokens=self._CHAT_MAX_TOKENS,
         )
         return response.choices[0].message.content.strip()
 
