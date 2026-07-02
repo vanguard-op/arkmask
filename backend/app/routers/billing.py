@@ -294,7 +294,22 @@ def _handle_subscription_upsert(subscription: dict) -> None:
     price_id: str = items[0]["price"]["id"]
     tier = _price_to_tier(price_id)
     if tier is None:
-        logger.warning("Unknown price_id in subscription: price_id=%s", price_id)
+        # Price IDs are not secret (unlike the API key) — safe to log in
+        # full, and doing so is what makes a monthly/annual price ID
+        # transposition in the {env}-arkmask-config Secret Manager JSON
+        # (see infra/SETUP.md Step 6) actually diagnosable from Cloud
+        # Logging instead of a silent no-op.
+        logger.warning(
+            "Unknown price_id in subscription: price_id=%s sub_id=%s "
+            "configured=%s",
+            price_id, subscription["id"],
+            {
+                "creator_monthly": settings.stripe_price_creator_monthly,
+                "creator_annual": settings.stripe_price_creator_annual,
+                "studio_monthly": settings.stripe_price_studio_monthly,
+                "studio_annual": settings.stripe_price_studio_annual,
+            },
+        )
         return
 
     uid = _resolve_uid_by_customer(customer_id)
@@ -338,6 +353,36 @@ def _handle_subscription_deleted(subscription: dict) -> None:
     logger.info("Subscription cancelled — reverted to free: uid=%s", uid)
 
 
+def _resolve_tier_from_invoice(invoice: dict) -> str | None:
+    """Resolve the ArkMask tier directly from the invoice's own line items.
+
+    Stripe does not guarantee that `customer.subscription.created/updated`
+    is processed (or even delivered) before `invoice.paid` for the same
+    checkout — they are separate webhook deliveries with no ordering
+    guarantee, and even if delivered in order, each is handled by an
+    independent async request with no synchronization between them. Reading
+    a `tier` field that a *different* event handler was supposed to have
+    already written is therefore racy: if invoice.paid runs first (or the
+    subscription-upsert handler bailed early because `_price_to_tier`
+    returned None for the price — see the warning logged there), this would
+    silently reset a paying customer's credits to the still-default Free
+    allowance while their profile is briefly (or permanently, in the
+    price-mapping-failure case) stuck showing tier "free".
+
+    Deriving the tier from this event's own `invoice["lines"]` instead makes
+    invoice.paid self-contained — it no longer depends on any other event
+    having already run successfully.
+    """
+    for line in invoice.get("lines", {}).get("data", []):
+        price_id = (line.get("price") or {}).get("id")
+        if not price_id:
+            continue
+        tier = _price_to_tier(price_id)
+        if tier is not None:
+            return tier
+    return None
+
+
 def _handle_invoice_paid(invoice: dict) -> None:
     """Handle invoice.paid — reset credits to the current tier's monthly allowance.
 
@@ -350,15 +395,41 @@ def _handle_invoice_paid(invoice: dict) -> None:
         logger.warning("No user for Stripe customer on invoice.paid: customer_id=%s", customer_id)
         return
 
-    # Read current tier from profile to determine the correct allowance.
-    profile_doc = _firestore().document(profile_path(uid)).get()
-    tier = (profile_doc.to_dict() or {}).get("tier", "free") if profile_doc.exists else "free"
-    new_balance = TIER_CREDITS.get(tier, TIER_CREDITS["free"])
+    tier = _resolve_tier_from_invoice(invoice)
+    if tier is not None:
+        # Also (re-)write tier here — not just credit_balance — so this
+        # event alone is enough to leave the profile correct even if
+        # customer.subscription.created/updated hasn't landed yet, or never
+        # will because its own price_id lookup failed (see
+        # _handle_subscription_upsert's "Unknown price_id" warning; if you
+        # see both that warning and this fallback firing for the same
+        # subscription, the configured Stripe price ID for that tier/period
+        # doesn't match stripe_price_{tier}_{monthly,annual} in the
+        # {env}-arkmask-config Secret Manager JSON — double check it against
+        # the Dashboard, especially for annual prices, which are easy to
+        # transpose with the monthly price ID).
+        update = {"tier": tier}
+    else:
+        # Could not resolve a tier from this invoice's own line items (e.g.
+        # a $0 invoice with no price line, or a payload shape without
+        # `lines`). Fall back to whatever tier is already on the profile
+        # rather than guessing — this should be rare; log loudly so it's
+        # visible in Cloud Logging if it does happen.
+        profile_doc = _firestore().document(profile_path(uid)).get()
+        tier = (profile_doc.to_dict() or {}).get("tier", "free") if profile_doc.exists else "free"
+        update = {}
+        logger.warning(
+            "invoice.paid: could not resolve tier from invoice line items — "
+            "falling back to profile tier=%s uid=%s invoice_id=%s",
+            tier, uid, invoice.get("id"),
+        )
 
-    _firestore().document(profile_path(uid)).update({
+    new_balance = TIER_CREDITS.get(tier, TIER_CREDITS["free"])
+    update.update({
         "credit_balance": new_balance,
         "updated_at": SERVER_TIMESTAMP,
     })
+    _firestore().document(profile_path(uid)).update(update)
     logger.info(
         "Credits reset on invoice.paid: uid=%s tier=%s new_balance=%d",
         uid, tier, new_balance,
