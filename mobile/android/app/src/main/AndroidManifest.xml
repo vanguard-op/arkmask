@@ -1,22 +1,5 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!--
-      Storage permissions for vault access (FEAT-vault).
-      READ/WRITE_EXTERNAL_STORAGE only apply on Android ≤ 12 (API 32).
-      MANAGE_EXTERNAL_STORAGE grants broad filesystem access on Android 11+
-      so the vault can live in any user-chosen folder (analogous to Obsidian).
-    -->
-    <uses-permission
-        android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
-    <uses-permission
-        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32"
-        tools:ignore="ScopedStorage" />
-    <uses-permission
-        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
-        tools:ignore="ScopedStorage" />
     <uses-permission android:name="android.permission.INTERNET"/>
 
     <application

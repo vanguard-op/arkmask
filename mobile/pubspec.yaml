@@ -15,7 +15,6 @@ dependencies:
 
   # State management
   flutter_bloc: ^9.1.1
-  bloc_concurrency: ^0.3.0
   equatable: ^2.0.8
 
   # Firebase
@@ -36,11 +35,9 @@ dependencies:
   # UI
   lucide_flutter: ^1.20.0
   google_fonts: ^8.1.0
-  flutter_markdown_plus: ^1.0.7
 
   # Video
   video_player: ^2.11.1
-  ffmpeg_kit_flutter_new: ^4.2.1
   gal: ^2.3.2
 
   # Utilities
@@ -49,8 +46,6 @@ dependencies:
   yaml: ^3.1.3
   url_launcher: ^6.3.1
   intl: ^0.20.2
-  file_picker: ^8.1.0
-  permission_handler: ^12.0.0
 
 dev_dependencies:
   flutter_test:
