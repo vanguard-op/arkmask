@@ -1,3 +1,7 @@
+import 'dart:async';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../core/api/ark_mask_api_client.dart';
@@ -9,8 +13,9 @@ import 'settings_state.dart';
 
 /// Cubit for the Settings Screen (FEAT-022, FEAT-023).
 ///
-/// Loads the current provider type, platform API key (masked), and credit
-/// balance on init. Handles sign-out.
+/// Loads the current provider type and platform API key (masked) on init.
+/// Credit balance and tier are live — see [_subscribeToProfile]. Handles
+/// sign-out.
 class SettingsCubit extends Cubit<SettingsState> {
   SettingsCubit({
     required this.storage,
@@ -23,6 +28,8 @@ class SettingsCubit extends Cubit<SettingsState> {
   final AuthService authService;
   final ArkMaskApiClient apiClient;
   final JobRegistryService jobRegistryService;
+
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _profileSub;
 
   /// Loads all settings data from secure storage and backend.
   Future<void> load() async {
@@ -41,28 +48,45 @@ class SettingsCubit extends Cubit<SettingsState> {
         providerType: providerType,
       ));
 
-      // Fire-and-forget credits fetch.
-      _fetchCredits();
+      _subscribeToProfile();
     } catch (e) {
       emit(const SettingsError(message: 'Failed to load settings.'));
     }
   }
 
-  Future<void> _fetchCredits() async {
-    try {
-      final data = await apiClient.getCredits();
-      final credits = data['credits'] as int?;
-      final tierStr = data['tier'] as String?;
-      final tier = tierStr != null ? UserTier.fromString(tierStr) : null;
-      if (state is SettingsLoaded) {
-        emit((state as SettingsLoaded).copyWith(
-          creditBalance: credits,
-          tier: tier,
-        ));
-      }
-    } catch (_) {
-      // Credits fetch is non-critical — ignore failures gracefully.
-    }
+  /// Subscribes to the user's Firestore profile document
+  /// (`users/{uid}/profile/data`) so credit balance / tier stay live —
+  /// e.g. a Stripe subscription upgrade (written by the webhook straight to
+  /// this document) now appears immediately instead of requiring an app
+  /// restart. Mirrors ProjectsCubit's identical fix for the Home screen pill.
+  void _subscribeToProfile() {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+
+    _profileSub?.cancel();
+    _profileSub = FirebaseFirestore.instance
+        .doc('users/$uid/profile/data')
+        .snapshots()
+        .listen(
+          (snap) {
+            if (!snap.exists) return;
+            final data = snap.data();
+            if (data == null) return;
+            final credits = data['credit_balance'] as int?;
+            final tierStr = data['tier'] as String?;
+            final tier = tierStr != null ? UserTier.fromString(tierStr) : null;
+            if (state is SettingsLoaded) {
+              emit((state as SettingsLoaded).copyWith(
+                creditBalance: credits,
+                tier: tier,
+              ));
+            }
+          },
+          onError: (_) {
+            // Non-critical — the pill just shows "—" until the next
+            // successful snapshot; the rest of the screen is unaffected.
+          },
+        );
   }
 
   /// Toggles the platform API key between masked and revealed.
@@ -106,6 +130,9 @@ class SettingsCubit extends Cubit<SettingsState> {
     if (state is! SettingsLoaded) return;
     final s = state as SettingsLoaded;
     emit(s.copyWith(isSigningOut: true));
+    // Stop listening before auth clears — otherwise the profile snapshot
+    // listener immediately hits a permission-denied error once signed out.
+    await _profileSub?.cancel();
     await jobRegistryService.clearAll();
     await authService.signOut();
     emit(const SettingsSignedOut());
@@ -118,5 +145,11 @@ class SettingsCubit extends Cubit<SettingsState> {
     if (key.length <= 4) return key;
     final last4 = key.substring(key.length - 4);
     return '••••••••$last4';
+  }
+
+  @override
+  Future<void> close() async {
+    await _profileSub?.cancel();
+    return super.close();
   }
 }

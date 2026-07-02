@@ -24,6 +24,26 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<!--
+	  Custom URL scheme for returning to the app after Stripe Checkout /
+	  Customer Portal (opened in the system browser via
+	  LaunchMode.externalApplication — see upgrade_screen.dart). Stripe's
+	  success_url/cancel_url and the Portal's return_url are set to
+	  arkmask://billing-return?status=... (see backend/app/config.py) so the
+	  OS hands control back to the app. See Routes.billingReturn in
+	  router.dart for the corresponding go_router path.
+	-->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>app.arkmask.billing</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>arkmask</string>
+			</array>
+		</dict>
+	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UIApplicationSceneManifest</key>

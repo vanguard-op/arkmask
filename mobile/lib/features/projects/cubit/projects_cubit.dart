@@ -15,8 +15,7 @@ import 'projects_state.dart';
 /// the list updates automatically when a project is created or deleted — no
 /// manual refresh needed.
 ///
-/// Credits are fetched from the backend API once per load and on each
-/// Firestore snapshot (fire-and-forget).
+/// Credit balance and tier are also live — see [_subscribeToProfile].
 ///
 /// Also subscribes to [JobsCubit]'s stream so project card "N generating"
 /// badges update in real time as jobs complete (FEAT-006) — including jobs
@@ -30,13 +29,15 @@ class ProjectsCubit extends Cubit<ProjectsState> {
   final ArkMaskApiClient apiClient;
   final JobsCubit jobsCubit;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _projectsSub;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _profileSub;
   StreamSubscription<JobsState>? _jobsSub;
 
   /// Starts listening to the project list. Safe to call multiple times —
   /// cancels any existing subscription before starting a new one.
   ///
   /// Also subscribes to [jobsCubit] so the "N generating" badge on each
-  /// project card updates in real time (FEAT-006).
+  /// project card updates in real time (FEAT-006), and to the user's
+  /// Firestore profile document so the credit balance / tier pill is live.
   void load() {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) {
@@ -46,6 +47,8 @@ class ProjectsCubit extends Cubit<ProjectsState> {
 
     _jobsSub?.cancel();
     _jobsSub = jobsCubit.stream.listen((_) => _onJobsChanged());
+
+    _subscribeToProfile(uid);
 
     _projectsSub?.cancel();
     emit(const ProjectsLoading());
@@ -63,7 +66,9 @@ class ProjectsCubit extends Cubit<ProjectsState> {
             final current = state;
             emit(ProjectsLoaded(
               projects: projects,
-              // Preserve credit balance and tier across Firestore updates.
+              // Preserve credit balance and tier across Firestore updates —
+              // the profile listener (_subscribeToProfile) owns these now,
+              // independent of this collection's own snapshot cadence.
               creditBalance:
                   current is ProjectsLoaded ? current.creditBalance : null,
               tier: current is ProjectsLoaded ? current.tier : null,
@@ -74,7 +79,6 @@ class ProjectsCubit extends Cubit<ProjectsState> {
                   current is ProjectsLoaded ? current.storageSummaries : const {},
             ));
 
-            _fetchCredits();
             // Fire-and-forget: fetch storage summaries for projects that don't
             // yet have one. Each fetch runs independently so a single failure
             // does not block the others. The cubit emits a state update as each
@@ -141,21 +145,41 @@ class ProjectsCubit extends Cubit<ProjectsState> {
     }
   }
 
-  Future<void> _fetchCredits() async {
-    try {
-      final data = await apiClient.getCredits();
-      final credits = data['credits'] as int?;
-      final tierStr = data['tier'] as String?;
-      final tier = tierStr != null ? UserTier.fromString(tierStr) : null;
-      if (state is ProjectsLoaded) {
-        emit((state as ProjectsLoaded).copyWith(
-          creditBalance: credits,
-          tier: tier,
-        ));
-      }
-    } catch (_) {
-      // Credits are non-critical — fail silently.
-    }
+  /// Subscribes to the user's Firestore profile document
+  /// (`users/{uid}/profile/data`) so [ProjectsLoaded.creditBalance] /
+  /// [ProjectsLoaded.tier] stay live.
+  ///
+  /// Previously this was a one-shot `GET /me/credits` call, fired only when
+  /// the project list happened to re-emit — which meant the credit pill
+  /// never reflected a generation's credit deduction, and a Stripe
+  /// subscription upgrade (written by the webhook straight to this same
+  /// document) didn't show up even after an app restart landed on a
+  /// *different* snapshot of the profile that happened to still be behind a
+  /// stale REST cache. Every other piece of user data in this app is
+  /// Firestore-realtime; credits/tier had been the one exception.
+  void _subscribeToProfile(String uid) {
+    _profileSub?.cancel();
+    _profileSub = FirebaseFirestore.instance
+        .doc('users/$uid/profile/data')
+        .snapshots()
+        .listen(
+          (snap) {
+            if (!snap.exists) return;
+            final data = snap.data();
+            if (data == null) return;
+            final credits = data['credit_balance'] as int?;
+            final tierStr = data['tier'] as String?;
+            final tier = tierStr != null ? UserTier.fromString(tierStr) : null;
+            final s = state;
+            if (s is ProjectsLoaded) {
+              emit(s.copyWith(creditBalance: credits, tier: tier));
+            }
+          },
+          onError: (_) {
+            // Non-critical — the pill just shows "—" until the next
+            // successful snapshot; project list functionality is unaffected.
+          },
+        );
   }
 
   /// Deletes a project via the backend API. The Firestore real-time listener
@@ -215,6 +239,7 @@ class ProjectsCubit extends Cubit<ProjectsState> {
   @override
   Future<void> close() async {
     await _jobsSub?.cancel();
+    await _profileSub?.cancel();
     await _projectsSub?.cancel();
     return super.close();
   }

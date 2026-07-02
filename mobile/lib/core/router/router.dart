@@ -11,6 +11,7 @@ import '../../features/player/screens/video_player_screen.dart';
 import '../../features/projects/screens/home_screen.dart';
 import '../../features/projects/screens/project_file_browser_screen.dart';
 import '../../features/provider_setup/screens/provider_setup_screen.dart';
+import '../../features/billing/screens/billing_return_screen.dart';
 import '../../features/billing/screens/upgrade_screen.dart';
 import '../../features/settings/screens/settings_screen.dart';
 import '../../features/usage/screens/usage_screen.dart';
@@ -184,6 +185,13 @@ GoRouter buildRouter({
       GoRoute(
         path: Routes.usage,
         builder: (context, state) => const UsageScreen(),
+      ),
+      GoRoute(
+        path: Routes.billingReturn,
+        builder: (context, state) {
+          final status = state.uri.queryParameters['status'] ?? '';
+          return BillingReturnScreen(status: status);
+        },
       ),
     ],
   );

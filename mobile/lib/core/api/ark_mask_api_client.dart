@@ -90,6 +90,14 @@ class ArkMaskApiClient {
   /// GET /me/credits — fetch the current user's credit balance and tier.
   ///
   /// Returns a map with `credits` (int) and `tier` (String).
+  ///
+  /// Not currently called anywhere in the app — [ProjectsCubit] and
+  /// [SettingsCubit] both read `credit_balance`/`tier` from a live Firestore
+  /// listener on `users/{uid}/profile/data` instead (a one-shot REST fetch
+  /// here meant the credit pill never reflected generation spend or a
+  /// Stripe webhook's tier update without a restart). Kept as a thin wrapper
+  /// around the backend endpoint in case a one-shot fetch is ever needed
+  /// again (e.g. outside a widget tree).
   Future<Map<String, dynamic>> getCredits() async {
     final response = await _execute(() => _dio.get('/me/credits'));
     return (response.data as Map<String, dynamic>);

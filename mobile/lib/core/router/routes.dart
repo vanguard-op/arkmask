@@ -39,6 +39,17 @@ abstract final class Routes {
   /// Upgrade / Paywall Screen.
   static const String upgrade = '/upgrade';
 
+  /// Billing return screen — the target of Stripe Checkout's success_url /
+  /// cancel_url and the Customer Portal's return_url (see
+  /// backend/app/config.py), all set to `arkmask://billing-return?status=...`.
+  /// Stripe Checkout/Portal is opened in the system browser
+  /// (LaunchMode.externalApplication — see upgrade_screen.dart), so a plain
+  /// https URL can't hand control back to the app; this custom-scheme deep
+  /// link can (see the arkmask:// intent-filter / CFBundleURLTypes entries
+  /// in AndroidManifest.xml / Info.plist). Distinguishes success/cancel/
+  /// portal via the `status` query parameter.
+  static const String billingReturn = '/billing-return';
+
   // ── Editor screens (Phase 2+) — declared here as stubs for router skeleton ─
 
   static const String storyEditor = '/project/:projectName/story';

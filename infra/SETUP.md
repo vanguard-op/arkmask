@@ -161,6 +161,82 @@ rm /tmp/prod-config.json
 > gcloud secrets versions add staging-arkmask-config --data-file=/tmp/new-config.json
 > ```
 
+> **Billing redirect URLs:** `stripe_billing_success_url`, `stripe_billing_cancel_url`, and
+> `stripe_billing_portal_return_url` default to `arkmask://billing-return?status=...` (see
+> `backend/app/config.py`) — the app's own custom URL scheme, not a hosted web page. ArkMask
+> has no marketing/web presence to redirect to, and Stripe Checkout/Portal is opened in the
+> system browser (`LaunchMode.externalApplication`, not an in-app WebView — required by
+> Stripe's mobile guidance), so a plain `https://` URL can't hand control back to the app even
+> if one existed. Leave these three keys **out** of the JSON secret entirely so the code
+> defaults apply — only set them if you have a real reason to override (e.g. testing against a
+> different deep-link scheme).
+
+---
+
+## Step 6b — Set up the Stripe webhook
+
+`POST /billing/webhook` (see `backend/app/routers/billing.py`) must be registered as an
+endpoint in the Stripe Dashboard (or via the Stripe CLI for local dev) pointing at your
+**actual deployed Cloud Run URL** — not `localhost`, and not a URL the Stripe CLI generates for
+local port-forwarding. If the endpoint is missing, misconfigured, or the webhook secret in the
+config JSON (Step 6) doesn't match the endpoint's own signing secret, Stripe will never notify
+the backend of a completed checkout — the user's payment succeeds on Stripe's side but their
+`tier`/`credit_balance` never updates in Firestore, no matter how long they wait or how many
+times they restart the app.
+
+**1. Get your Cloud Run API URL:**
+
+```bash
+# Staging
+terraform -chdir=infra/terraform/envs/staging output api_url
+
+# Prod
+terraform -chdir=infra/terraform/envs/prod output api_url
+```
+
+This is the `api_url` Terraform output from Step 5 (staging) / the prod equivalent — something
+like `https://staging-arkmask-api-xxxxxxxxxx-ew.a.run.app`. The webhook URL is that base URL
+plus `/billing/webhook`.
+
+**2. Create the webhook endpoint in the Stripe Dashboard** (recommended for staging/prod —
+persists independently of any local terminal session, unlike the CLI method below):
+
+1. Go to **Stripe Dashboard → Developers → Webhooks → Add endpoint**.
+2. Make sure you're in the right mode (**Test mode** for staging/test keys, **Live mode** for
+   prod/live keys — the toggle is top-right of the Dashboard).
+3. Endpoint URL: `https://<your-cloud-run-url>/billing/webhook`.
+4. Select events to listen for: `customer.subscription.created`,
+   `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`,
+   `invoice.payment_failed` (see the handler list at the top of `billing.py`).
+5. Click **Add endpoint**, then open it and click **Reveal** under "Signing secret" — this is
+   your `whsec_...` value.
+6. Put that value in `stripe_webhook_secret` in the JSON secret for the matching environment
+   (Step 6) and run the `gcloud secrets versions add` command again. Cloud Run picks it up on
+   the next container start — either wait for a natural restart or force one:
+   ```bash
+   gcloud run services update staging-arkmask-api --region=europe-west1 --project=${PROJECT_ID}
+   ```
+
+**3. Alternative — Stripe CLI, for local `uvicorn` development only:**
+
+```bash
+stripe listen --forward-to localhost:8000/billing/webhook
+```
+
+This prints a `whsec_...` secret **scoped to that CLI session** — it is a different value every
+time you run the command, and it only works while `stripe listen` keeps running in that
+terminal. **Never put a `stripe listen` secret in the staging/prod config JSON** — it does not
+correspond to any real endpoint Stripe will actually deliver events to over the internet, so
+webhooks silently never arrive (this is the most common cause of "I paid but my tier never
+updated" in a deployed environment). Use the Dashboard method above for anything other than a
+local `uvicorn` process on your own machine.
+
+**4. Verify delivery:** In the Dashboard, open the endpoint and check the **Events** tab after a
+test purchase (use a [Stripe test card](https://docs.stripe.com/testing) in test mode) — you
+should see the event listed with a `200` response. If you see a non-200 response or no event at
+all, check `gcloud run services logs read {env}-arkmask-api --region=europe-west1` for
+`STRIPE_WEBHOOK_PROCESSING_FAILED` or a signature-verification warning.
+
 ---
 
 ## Step 7 — Configure GitHub secrets and variables

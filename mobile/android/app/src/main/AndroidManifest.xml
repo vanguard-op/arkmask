@@ -39,9 +39,32 @@
               android:name="io.flutter.embedding.android.NormalTheme"
               android:resource="@style/NormalTheme"
               />
+            <!-- Required for Flutter/go_router to receive the arkmask:// deep
+                 link below via the standard platform channel. -->
+            <meta-data
+              android:name="flutter_deeplinking_enabled"
+              android:value="true" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+            <!--
+              Custom URL scheme for returning to the app after Stripe Checkout
+              / Customer Portal (opened in the system browser via
+              LaunchMode.externalApplication — see upgrade_screen.dart).
+              Stripe's success_url/cancel_url and the Portal's return_url are
+              set to arkmask://billing-return?status=... (see
+              backend/app/config.py) so the OS hands control back to the app
+              instead of landing on an unrelated/unreachable https page.
+              go_router picks up the path from the incoming URI automatically
+              once android:autoVerify is unnecessary here (custom scheme, not
+              an https App Link) — see Routes.billingReturn in router.dart.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="arkmask"/>
             </intent-filter>
         </activity>
         <!-- Don't delete the meta-data below.

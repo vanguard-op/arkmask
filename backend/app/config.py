@@ -63,10 +63,21 @@ class Settings(BaseSettings):
     stripe_price_studio_monthly: str = ""
     stripe_price_studio_annual: str = ""
     # URLs Stripe redirects to after hosted checkout completes or is cancelled.
-    stripe_billing_success_url: str = "https://arkmask.app/billing/success"
-    stripe_billing_cancel_url: str = "https://arkmask.app/billing/cancel"
+    #
+    # ArkMask has no marketing/web presence (arkmask.app is not deployed) and
+    # Checkout is opened in the system browser (LaunchMode.externalApplication
+    # — no in-app WebView, per Stripe's mobile guidance), so a plain https
+    # URL can't hand control back to the app even if one did resolve. These
+    # use the app's custom URL scheme instead — see the `arkmask://`
+    # intent-filter / CFBundleURLTypes entries in
+    # mobile/android/app/src/main/AndroidManifest.xml and
+    # mobile/ios/Runner/Info.plist, and Routes.billingReturn /
+    # BillingReturnScreen in the Flutter app — so the OS reopens ArkMask
+    # directly instead of stranding the user on an unreachable page.
+    stripe_billing_success_url: str = "arkmask://billing-return?status=success"
+    stripe_billing_cancel_url: str = "arkmask://billing-return?status=cancel"
     # URL shown as the "Return to app" link inside the Customer Portal.
-    stripe_billing_portal_return_url: str = "https://arkmask.app/billing"
+    stripe_billing_portal_return_url: str = "arkmask://billing-return?status=portal"
 
     # Cloud Tasks (async image/video/merge job dispatch to the workers service).
     # In Cloud Run these come from Terraform-injected env vars (see
