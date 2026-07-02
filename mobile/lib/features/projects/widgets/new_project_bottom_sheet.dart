@@ -330,7 +330,7 @@ class _GenerationSettingsSection extends StatelessWidget {
         Text('Art Style', style: AppTextStyles.caption(context)),
         const SizedBox(height: AppSpacing.s2),
         DropdownButtonFormField<String>(
-          value: selectedDropdownValue,
+          initialValue: selectedDropdownValue,
           isExpanded: true,
           decoration: const InputDecoration(
             contentPadding: EdgeInsets.symmetric(

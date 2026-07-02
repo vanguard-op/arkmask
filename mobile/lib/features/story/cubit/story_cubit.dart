@@ -411,6 +411,10 @@ class StoryCubit extends Cubit<StoryState> {
     if (raw.trim().isEmpty) return [];
 
     // Match `# <digit(s)>` at the start of a line.
+    // Forward-compat notice that RegExp will become `final` in a future Dart
+    // release (implement `Pattern` instead of `RegExp`); constructing one via
+    // `RegExp(pattern)` remains the supported API and has no replacement.
+    // ignore: deprecated_member_use
     final headingPattern = RegExp(r'^# (\d+)\s*$', multiLine: true);
     final matches = headingPattern.allMatches(raw).toList();
 

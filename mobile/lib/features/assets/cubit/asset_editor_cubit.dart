@@ -430,6 +430,11 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
     final dashIdx = raw.indexOf(' - ');
     if (dashIdx != -1) {
       final after = raw.substring(dashIdx + 3).trim();
+      // Forward-compat notice that RegExp will become `final` in a future
+      // Dart release (implement `Pattern` instead of `RegExp`); constructing
+      // one via `RegExp(pattern)` remains the supported API and has no
+      // replacement.
+      // ignore: deprecated_member_use
       final match = RegExp(r"""['"]message['"]\s*:\s*['"](.+?)['"]""",
               dotAll: true)
           .firstMatch(after);

@@ -221,7 +221,7 @@ class _ArtStyleDropdown extends StatelessWidget {
         isDark ? AppColors.textPrimaryDark : AppColors.textPrimaryLight;
 
     return DropdownButtonFormField<String>(
-      value: selectedPreset,
+      initialValue: selectedPreset,
       isExpanded: true,
       decoration: const InputDecoration(contentPadding: EdgeInsets.symmetric(
         horizontal: AppSpacing.s3,

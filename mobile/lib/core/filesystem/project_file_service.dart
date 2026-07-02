@@ -6,6 +6,13 @@ import 'package:yaml/yaml.dart';
 import '../models/models.dart';
 
 /// Characters not allowed in project directory names.
+//
+// The analyzer flags the RegExp class itself as slated to become `final` in
+// a future Dart release (favor implementing `Pattern` instead of `RegExp`);
+// this is a forward-compat notice about *implementing* RegExp as an
+// interface, not about constructing one via `RegExp(pattern)`, which remains
+// the supported way to build a regex and has no replacement API.
+// ignore: deprecated_member_use
 final _invalidNameChars = RegExp(r'[/\\:*?"<>|]');
 
 /// On-device filesystem operations for ArkMask projects.
@@ -493,13 +500,16 @@ class ProjectFileService {
 
       final content = await entity.readAsString();
       // Look for an unquoted @ value in the name field across any line.
+      // See _invalidNameChars doc comment above re: the RegExp ignore below.
       final hasUnquotedRef = content
           .split('\n')
+          // ignore: deprecated_member_use
           .any((line) => RegExp(r'^name:\s*@').hasMatch(line));
       if (!hasUnquotedRef) continue;
 
       // Re-quote the name field. Process line-by-line to avoid multiline regex.
       final fixed = content.split('\n').map((line) {
+        // ignore: deprecated_member_use — see _invalidNameChars doc comment above.
         final match = RegExp(r'^(name:\s*)(@.*)$').firstMatch(line);
         if (match == null) return line;
         return '${match[1]}"${match[2]}"';

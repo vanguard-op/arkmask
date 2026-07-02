@@ -418,6 +418,10 @@ class SceneCubit extends Cubit<SceneState> {
   /// scene body rather than the full list.
   static String? _parseSceneText(String raw, int targetScene) {
     if (raw.trim().isEmpty) return null;
+    // Forward-compat notice that RegExp will become `final` in a future Dart
+    // release (implement `Pattern` instead of `RegExp`); constructing one via
+    // `RegExp(pattern)` remains the supported API and has no replacement.
+    // ignore: deprecated_member_use
     final headingPattern = RegExp(r'^# (\d+)\s*$', multiLine: true);
     final matches = headingPattern.allMatches(raw).toList();
     if (matches.isEmpty) {
