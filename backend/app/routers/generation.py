@@ -44,7 +44,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Header, HTTPException
 from google.cloud.firestore_v1 import SERVER_TIMESTAMP
 from google.cloud.firestore_v1.transaction import transactional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from app.config import get_settings
 from app.dependencies import get_ai_provider, get_current_user, _firestore
@@ -62,6 +62,14 @@ from app.services.ai.base import AIProvider, RefImage
 from app.services.asset_writer import write_extracted_assets
 from app.services.firebase import send_fcm_notification
 from app.services.media_store import MediaStore
+from app.services.scene_assets import (
+    assets_ready_for_storyboard,
+    get_generation_settings,
+    get_scene_text,
+    ordered_gcs_image_paths,
+    resolve_scene_assets,
+    to_asset_prompt_inputs,
+)
 
 router = APIRouter(tags=["generation"])
 logger = logging.getLogger(__name__)
@@ -92,16 +100,25 @@ class ImageEnqueueRequest(BaseModel):
 
 
 class VideoPromptCloudRequest(BaseModel):
+    """
+    Storyboard-generation request. Scene text, the resolved (name, prompt)
+    asset list, art_style, and subtitles are all resolved server-side from
+    Firestore by app.services.scene_assets — the client only identifies
+    *which* scene, it does not assemble the generation payload itself. See
+    backend/instructions/video-prompt-generation.md "Input Format".
+    """
     project_slug: str
     scene_index: int
-    scene: str
-    ref_image_gcs_paths: list[str] = Field(default_factory=list)
 
 
 class VideoEnqueueCloudRequest(BaseModel):
+    """
+    Video-generation request. The storyboard text and the ordered reference
+    image GCS paths are resolved server-side from Firestore — see
+    app.services.scene_assets.
+    """
     project_slug: str
     scene_index: int
-    ref_image_gcs_paths: list[str] = Field(default_factory=list)
 
 
 class SceneMergeEntry(BaseModel):
@@ -560,17 +577,34 @@ async def generate_video_prompt(
     """
     Enqueue scene storyboard generation.  Returns job_id immediately.
 
+    Scene text, the resolved (name, prompt) asset list, art_style, and
+    subtitles are all resolved server-side from Firestore by
+    app.services.scene_assets — not sent by the client (see
+    VideoPromptCloudRequest). This endpoint reads Firestore once up front to
+    fail fast (400) if the scene isn't ready; the worker (or the local-dev
+    fallback below) re-resolves everything at execution time so the actual
+    generation call always uses the freshest data, even if something changed
+    between enqueue and the job actually running.
+
     On Cloud Run, dispatches to the workers service via Cloud Tasks — the
-    worker fetches reference images from GCS, generates the storyboard, and
-    writes it to the scene's Firestore document (storyboard_body). The app's
-    existing real-time listener on the scene document already fires on this
-    field. Previously ran inline on this API service, subject to Cloud Run's
-    60s timeout. Locally (no Cloud Tasks configured), runs inline via asyncio
-    as a dev-only fallback.
+    worker resolves the scene, generates the storyboard, and writes it to the
+    scene's Firestore document (storyboard_body). The app's existing
+    real-time listener on the scene document already fires on this field.
+    Previously ran inline on this API service, subject to Cloud Run's 60s
+    timeout. Locally (no Cloud Tasks configured), runs inline via asyncio as
+    a dev-only fallback.
     Credits deducted: 3 (on terminal success only).
     """
     firebase_uid = user.firebase_uid
-    _verify_gcs_ownership(firebase_uid, body.ref_image_gcs_paths)
+    db = _firestore_client()
+
+    assets = resolve_scene_assets(db, firebase_uid, body.project_slug, body.scene_index)
+    if not assets_ready_for_storyboard(assets):
+        raise HTTPException(
+            status_code=400,
+            detail="All assets must have generated images before generating a storyboard.",
+        )
+
     _check_credits(user, "/video-prompt")
     job_id = _create_job(firebase_uid, "video_prompt", body.project_slug, scene_index=body.scene_index)
     pname = _provider_name(provider)
@@ -581,8 +615,6 @@ async def generate_video_prompt(
             "job_id": job_id,
             "project_slug": body.project_slug,
             "scene_index": body.scene_index,
-            "scene": body.scene,
-            "ref_image_gcs_paths": body.ref_image_gcs_paths,
             "provider_type": x_provider_type,
             "provider_key": x_provider_key,
         })
@@ -593,25 +625,22 @@ async def generate_video_prompt(
         try:
             _update_job(firebase_uid, job_id, "running")
 
-            _default_art_style = "painterly illustration with clean lines and rich color"
-            try:
-                proj_doc = _firestore_client().document(
-                    f"users/{firebase_uid}/projects/{body.project_slug}"
-                ).get()
-                gen_settings: dict = (proj_doc.get("generation_settings") or {}) if proj_doc.exists else {}
-            except Exception:
-                logger.warning("video-prompt: could not fetch generation_settings for %s", body.project_slug)
-                gen_settings = {}
-            art_style: str = gen_settings.get("art_style") or _default_art_style
-            subtitles: bool = bool(gen_settings.get("video_subtitles", False))
+            # Re-resolve at execution time — matches the worker's behaviour
+            # and stays correct even if something changed since enqueue.
+            scene_text = get_scene_text(db, firebase_uid, body.project_slug, body.scene_index)
+            run_assets = resolve_scene_assets(db, firebase_uid, body.project_slug, body.scene_index)
+            art_style, subtitles = get_generation_settings(db, firebase_uid, body.project_slug)
 
-            ref_images = _fetch_gcs_images(body.ref_image_gcs_paths)
             storyboard = await asyncio.to_thread(
-                provider.generate_video_prompt, body.scene, ref_images, art_style=art_style, subtitles=subtitles
+                provider.generate_video_prompt,
+                scene_text,
+                to_asset_prompt_inputs(run_assets),
+                art_style=art_style,
+                subtitles=subtitles,
             )
 
             fs_path = f"users/{firebase_uid}/projects/{body.project_slug}/scenes/{body.scene_index}"
-            _firestore_client().document(fs_path).set(
+            db.document(fs_path).set(
                 {
                     "storyboard_body": storyboard,
                     "scene_number": body.scene_index,
@@ -658,14 +687,29 @@ async def enqueue_video(
     """
     Enqueue a video generation job.  Returns job_id immediately.
 
+    The ordered reference-image GCS paths are resolved server-side from
+    Firestore by app.services.scene_assets — not sent by the client (see
+    VideoEnqueueCloudRequest). This endpoint reads Firestore once up front to
+    fail fast (400) if the scene has no storyboard yet; the worker (or the
+    local-dev fallback below) re-resolves the image list at execution time.
+
     On Cloud Run, dispatches to the workers service via Cloud Tasks — the
-    worker reads storyboard_body from Firestore, fetches ref images, and
-    generates the video. Locally (no Cloud Tasks configured), runs inline via
-    asyncio as a dev-only fallback.
+    worker reads storyboard_body from Firestore, resolves and fetches ref
+    images, and generates the video. Locally (no Cloud Tasks configured),
+    runs inline via asyncio as a dev-only fallback.
     Credits deducted: 20 (on terminal success only).
     """
     firebase_uid = user.firebase_uid
-    _verify_gcs_ownership(firebase_uid, body.ref_image_gcs_paths)
+    db = _firestore_client()
+
+    fs_path = f"users/{firebase_uid}/projects/{body.project_slug}/scenes/{body.scene_index}"
+    scene_doc = db.document(fs_path).get()
+    if not scene_doc.exists or not (scene_doc.get("storyboard_body") or ""):
+        raise HTTPException(
+            status_code=400,
+            detail="Scene has no storyboard_body — generate a storyboard first.",
+        )
+
     _check_credits(user, "/video")
     job_id = _create_job(firebase_uid, "video", body.project_slug, scene_index=body.scene_index)
     pname = _provider_name(provider)
@@ -676,7 +720,6 @@ async def enqueue_video(
             "job_id": job_id,
             "project_slug": body.project_slug,
             "scene_index": body.scene_index,
-            "ref_image_gcs_paths": body.ref_image_gcs_paths,
             "provider_type": x_provider_type,
             "provider_key": x_provider_key,
         })
@@ -687,18 +730,19 @@ async def enqueue_video(
         try:
             _update_job(firebase_uid, job_id, "running")
 
-            # 1. Read storyboard_body from Firestore.
-            fs_path = (
-                f"users/{firebase_uid}/projects/{body.project_slug}"
-                f"/scenes/{body.scene_index}"
-            )
-            doc = _firestore_client().document(fs_path).get()
+            # 1. Read storyboard_body from Firestore (re-read at execution
+            #    time for freshness, matching the worker's behaviour).
+            doc = db.document(fs_path).get()
             storyboard = (doc.get("storyboard_body") or "") if doc.exists else ""
             if not storyboard:
                 raise ValueError("Scene has no storyboard_body — generate a storyboard first.")
 
-            # 2. Fetch reference images from GCS.
-            ref_images = _fetch_gcs_images(body.ref_image_gcs_paths)
+            # 2. Resolve this scene's reference assets and fetch their images
+            #    directly from GCS — same resolution rules as /video-prompt
+            #    (pass-through resolution, background->character->object
+            #    ordering), but this step needs the actual image bytes.
+            run_assets = resolve_scene_assets(db, firebase_uid, body.project_slug, body.scene_index)
+            ref_images = _fetch_gcs_images(ordered_gcs_image_paths(run_assets))
 
             # 3. Generate video via AI provider (long-running, runs in thread).
             video_bytes, mime_type = await asyncio.to_thread(provider.generate_video, storyboard, ref_images)
@@ -708,7 +752,7 @@ async def enqueue_video(
             await asyncio.to_thread(MediaStore().put_object, gcs_key, video_bytes, mime_type)
 
             # 5. Write gcs_video_path to Firestore scene doc.
-            _firestore_client().document(fs_path).set(
+            db.document(fs_path).set(
                 {"gcs_video_path": gcs_key, "updated_at": SERVER_TIMESTAMP},
                 merge=True,
             )

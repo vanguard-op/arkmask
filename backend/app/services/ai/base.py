@@ -18,6 +18,22 @@ class RefImage:
     mime_type: str
 
 
+@dataclass
+class AssetPromptInput:
+    """
+    A single scene asset's name and its already-generated image prompt text,
+    as consumed by `generate_video_prompt` (see
+    backend/instructions/video-prompt-generation.md "Input Format").
+
+    Deliberately does NOT carry image bytes — the storyboard-prompt model
+    only reads the asset's `prompt` text to understand its visual appearance
+    and type; the actual reference images are only needed later, by
+    `generate_video`, once the storyboard prompt exists.
+    """
+    name: str
+    prompt: str
+
+
 class AIProviderError(Exception):
     """
     A clean, structured error raised when an AI provider (Gemini or BytePlus)
@@ -106,15 +122,23 @@ class AIProvider(ABC):
     def generate_video_prompt(
         self,
         scene_text: str,
-        ref_images: list[RefImage],  # fetched from GCS by the router
+        assets: list[AssetPromptInput],
         art_style: str = "painterly illustration with clean lines and rich color",
         subtitles: bool = False,
     ) -> str:
         """Return a storyboard prompt string (written to Firestore storyboard_body).
 
+        No images are sent for this call — see
+        backend/instructions/video-prompt-generation.md "Input Format". The
+        model reads each asset's `name` and previously-generated `prompt`
+        text only; the real reference images are attached later, in
+        `generate_video`.
+
         Args:
-            scene_text: The scene body from story_content.
-            ref_images: Reference images fetched from GCS by the router.
+            scene_text: The scene body from story_content, resolved server-side
+                by `app.services.scene_assets.parse_scene_text`.
+            assets: This scene's resolved reference assets (name + prompt text),
+                in priority order — see `app.services.scene_assets.resolve_scene_assets`.
             art_style: Project-level visual style appended to the scene input so the
                 system prompt applies it in the closing block.
             subtitles: When ``True``, the subtitle-free constraint is omitted from

@@ -3,6 +3,13 @@
 Executes the Video Worker steps from docs/ArkMask/architecture.md ("Generation
 Workers (Cloud Tasks)"). See tasks/image.py for the rationale behind moving
 this off the API's own in-process asyncio background task.
+
+The ordered reference-image GCS paths are resolved server-side from
+Firestore via app.services.scene_assets (the same pass-through-resolution
+and background->character->object ordering used by /video-prompt) rather
+than taken from the payload — previously the Flutter client resolved and
+sent `ref_image_gcs_paths` itself; see scene_assets.py's module docstring
+for why that moved server-side.
 """
 
 import logging
@@ -15,6 +22,7 @@ from app.services.ai.base import RefImage
 from app.services.ai.byteplus import BytePlusProvider
 from app.services.ai.gemini import GeminiProvider
 from app.services.media_store import MediaStore
+from app.services.scene_assets import ordered_gcs_image_paths, resolve_scene_assets
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +63,7 @@ def run(payload: dict) -> None:
     Execute one video generation job.
 
     Expected payload keys (set by backend/app/routers/generation.py::enqueue_video):
-        firebase_uid, job_id, project_slug, scene_index,
-        ref_image_gcs_paths, provider_type, provider_key.
+        firebase_uid, job_id, project_slug, scene_index, provider_type, provider_key.
     """
     db = get_firestore()
     firebase_uid: str = payload["firebase_uid"]
@@ -79,8 +86,11 @@ def run(payload: dict) -> None:
         if not storyboard:
             raise ValueError("Scene has no storyboard_body — generate a storyboard first.")
 
-        # 2. Fetch reference images directly from GCS (no phone round-trip).
-        ref_images = _fetch_gcs_images(payload.get("ref_image_gcs_paths") or [])
+        # 2. Resolve this scene's reference assets (same pass-through
+        #    resolution + type-priority ordering as /video-prompt) and fetch
+        #    their images directly from GCS (no phone round-trip).
+        resolved_assets = resolve_scene_assets(db, firebase_uid, project_slug, scene_index)
+        ref_images = _fetch_gcs_images(ordered_gcs_image_paths(resolved_assets))
 
         # 3. Generate video via AI provider.
         provider = _make_provider(provider_type, payload["provider_key"])

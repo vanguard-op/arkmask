@@ -30,7 +30,7 @@ import httpx
 from byteplussdkarkruntime import Ark as _Ark
 from byteplussdkarkruntime._exceptions import ArkAPIError
 
-from app.services.ai.base import AIProvider, AIProviderError, RefImage
+from app.services.ai.base import AIProvider, AIProviderError, AssetPromptInput, RefImage
 
 logger = logging.getLogger(__name__)
 
@@ -257,33 +257,24 @@ class BytePlusProvider(AIProvider):
     def generate_video_prompt(
         self,
         scene_text: str,
-        ref_images: list[RefImage],
+        assets: list[AssetPromptInput],
         art_style: str = "painterly illustration with clean lines and rich color",
         subtitles: bool = False,
     ) -> str:
-        # Serialise the input as JSON matching the instruction's Input Format.
-        # art_style and subtitles sit at the root alongside scene and assets.
+        # Serialise the input as JSON matching the instruction's Input Format
+        # exactly — scene, assets (name + prompt text, no images), art_style,
+        # and subtitles all sit at the root. This is now a plain text-only
+        # call: no image parts are attached, since the model infers each
+        # asset's appearance/type purely from its `prompt` text (see
+        # video-prompt-generation.md). Real reference images are only needed
+        # later, in generate_video.
         payload = json.dumps({
             "scene": scene_text,
+            "assets": [{"name": a.name, "prompt": a.prompt} for a in assets],
             "art_style": art_style,
             "subtitles": "enabled" if subtitles else "disabled",
         })
-        # Build a multimodal user message with the scene text + ref image data URIs.
-        user_content: list[dict] = [
-            {"type": "text", "text": f"{self.VIDEO_PROMPT}\n\n---\n\n{payload}"}
-        ]
-        for img in ref_images[:8]:
-            user_content.append({
-                "type": "image_url",
-                "image_url": {"url": _to_data_uri(img.data, img.mime_type)},
-            })
-        response = _call_ark(
-            self._client.chat.completions.create,
-            model=self.TEXT_MODEL,
-            messages=[{"role": "user", "content": user_content}],
-            max_tokens=self._CHAT_MAX_TOKENS,
-        )
-        return response.choices[0].message.content.strip()
+        return self._chat(self.VIDEO_PROMPT, payload).strip()
 
     def generate_image(self, prompt: str, ref_images: list[RefImage]) -> tuple[bytes, str]:
         """Generate an image via Seedream 5.0.

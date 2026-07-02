@@ -19,7 +19,7 @@ from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
 
-from app.services.ai.base import AIProvider, AIProviderError, RefImage
+from app.services.ai.base import AIProvider, AIProviderError, AssetPromptInput, RefImage
 
 logger = logging.getLogger(__name__)
 
@@ -171,38 +171,27 @@ class GeminiProvider(AIProvider):
     def generate_video_prompt(
         self,
         scene_text: str,
-        ref_images: list[RefImage],
+        assets: list[AssetPromptInput],
         art_style: str = "painterly illustration with clean lines and rich color",
         subtitles: bool = False,
     ) -> str:
-        # Serialise the input as JSON matching the instruction's Input Format.
-        # art_style and subtitles sit at the root alongside scene and assets.
-        # (assets[] prompts are not available at this layer — ref images are passed
-        # as inline image parts below; the model uses Image N ordering to map them.)
+        # Serialise the input as JSON matching the instruction's Input Format
+        # exactly — scene, assets (name + prompt text, no images), art_style,
+        # and subtitles all sit at the root. No image parts are attached to
+        # this call: the model infers each asset's appearance/type purely
+        # from its `prompt` text, per video-prompt-generation.md. The real
+        # reference images are only needed later, in generate_video.
         payload = json.dumps({
             "scene": scene_text,
+            "assets": [{"name": a.name, "prompt": a.prompt} for a in assets],
             "art_style": art_style,
             "subtitles": "enabled" if subtitles else "disabled",
         })
-        # Build a multimodal content list: system text + image parts for each ref_image.
-        # Uses generate_content (not Interactions API) because the Interactions API
-        # does not accept image parts.
-        contents: list = [
-            types.Part.from_text(
-                text=f"{self.VIDEO_PROMPT}\n\n---\n\n{payload}"
-            )
-        ]
-        for img in ref_images[:8]:  # cap at 8 ref images for video prompt
-            contents.append(types.Part.from_bytes(data=img.data, mime_type=img.mime_type))
-
-        config = types.GenerateContentConfig(
-            safety_settings=self._SAFETY_SETTINGS,
-        )
         response = _call_genai(
             self._client.models.generate_content,
             model=self.TEXT_MODEL,
-            contents=contents,
-            config=config,
+            contents=f"{self.VIDEO_PROMPT}\n\n---\n\n{payload}",
+            config=types.GenerateContentConfig(safety_settings=self._SAFETY_SETTINGS),
         )
         return (response.text or "").strip()
 

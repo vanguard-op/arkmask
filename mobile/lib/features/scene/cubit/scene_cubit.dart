@@ -268,19 +268,16 @@ class SceneCubit extends Cubit<SceneState> {
     if (s is! SceneLoaded) return;
 
     // Guard: all assets must have GCS images before generating a storyboard.
+    // This mirrors the server-side gate in
+    // app.services.scene_assets.assets_ready_for_storyboard — kept here too
+    // purely for instant UX feedback; the backend independently re-validates
+    // and resolves the scene text / asset list / art style itself from
+    // Firestore, so nothing computed here is sent over the wire.
     if (s.assets.isEmpty || !s.allAssetsHaveImages) {
       _storyboardError = 'All asset images must be generated first.';
       emit(s.copyWith(storyboardError: _storyboardError));
       return;
     }
-
-    final sceneText = s.sceneText ?? '';
-
-    // Collect ordered GCS image paths (already sorted by type priority).
-    final refImageGcsPaths = [
-      for (final asset in s.assets)
-        if (asset.gcsImagePath != null) asset.gcsImagePath!,
-    ];
 
     _storyboardError = null;
     emit(s.copyWith(
@@ -292,8 +289,6 @@ class SceneCubit extends Cubit<SceneState> {
       final jobId = await apiClient.generateVideoPrompt(
         projectSlug: projectSlug,
         sceneIndex: sceneNumber,
-        sceneText: sceneText,
-        refImageGcsPaths: refImageGcsPaths,
       );
 
       // Register the job so it survives app restarts and can be polled on
@@ -346,12 +341,6 @@ class SceneCubit extends Cubit<SceneState> {
     if (s is! SceneLoaded) return;
     if (!s.hasStoryboard) return;
 
-    // Collect ordered GCS image paths (already sorted by type priority).
-    final refImageGcsPaths = [
-      for (final asset in s.assets)
-        if (asset.gcsImagePath != null) asset.gcsImagePath!,
-    ];
-
     _videoError = null;
     emit(s.copyWith(
       isGeneratingVideo: true,
@@ -362,7 +351,6 @@ class SceneCubit extends Cubit<SceneState> {
       final jobId = await apiClient.generateVideo(
         projectSlug: projectSlug,
         sceneIndex: sceneNumber,
-        refImageGcsPaths: refImageGcsPaths,
       );
 
       // Register the job so it survives app restarts and can be polled on

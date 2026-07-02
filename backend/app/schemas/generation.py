@@ -49,17 +49,13 @@ class ImageResponse(BaseModel):
 
 
 # ── POST /video-prompt (application/json) ─────────────────────────────────────
-
-class AssetPrompt(BaseModel):
-    """A single asset's name and its generated image prompt body."""
-    name: str
-    prompt: str
-
-
-class VideoPromptRequest(BaseModel):
-    """Input for /video-prompt — scene text and the asset prompts for that scene."""
-    scene: str
-    assets: list[AssetPrompt]
+#
+# The request body is just {project_slug, scene_index} — see
+# VideoPromptCloudRequest in app/routers/generation.py. Scene text, the
+# resolved asset (name, prompt) list, art_style, and subtitles are all
+# resolved server-side from Firestore by app.services.scene_assets, not sent
+# by the client. See backend/instructions/video-prompt-generation.md for the
+# exact shape passed to the AI provider.
 
 
 class VideoPromptResponse(BaseModel):

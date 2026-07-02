@@ -252,36 +252,31 @@ class ArkMaskApiClient {
 
   /// POST /video-prompt — enqueue storyboard generation for a scene (async job).
   ///
-  /// Sends the scene's text and resolved asset GCS image paths. The worker
-  /// generates the storyboard and writes it directly to the `storyboard_body`
-  /// field of the Firestore scene document.
+  /// Identifies the scene only — the backend resolves the scene text, the
+  /// ordered reference asset list (name + generated prompt text), and the
+  /// project's art style / subtitle settings server-side from Firestore
+  /// (see `backend/app/services/scene_assets.py`). The worker generates the
+  /// storyboard and writes it directly to the `storyboard_body` field of the
+  /// Firestore scene document.
   ///
   /// The app's Firestore real-time listener on the scene document fires when
   /// the write completes — no response parsing is needed on the client.
   ///
   /// Returns the `job_id` immediately. The caller should register it with
-  /// [JobRegistryService]; the loading spinner is cleared when the Firestore
-  /// listener detects the `storyboard_body` update (see SceneCubit), not
-  /// when this call returns.
-  ///
-  /// [refImageGcsPaths] is the ordered list of GCS image paths for all scene
-  /// assets (pass-through → referenced global asset's path; variant/local →
-  /// own asset's path). Assets sorted background → character → object.
+  /// [JobsCubit]; the loading spinner is cleared when the Firestore listener
+  /// detects the `storyboard_body` update (see SceneCubit), not when this
+  /// call returns.
   ///
   /// Per FEAT-014: subtitle suppression instructions and character count
   /// enforcement (≤ 4 character refs) are applied server-side.
   Future<String> generateVideoPrompt({
     required String projectSlug,
     required int sceneIndex,
-    required String sceneText,
-    required List<String> refImageGcsPaths,
   }) async {
     final response = await _execute(
       () => _dio.post('/video-prompt', data: {
         'project_slug': projectSlug,
         'scene_index': sceneIndex,
-        'scene': sceneText,
-        'ref_image_gcs_paths': refImageGcsPaths,
       }),
     );
     return (response.data as Map<String, dynamic>)['job_id'] as String;
@@ -289,28 +284,24 @@ class ArkMaskApiClient {
 
   /// POST /video — enqueue an async scene video generation job.
   ///
-  /// The video worker reads the scene's `storyboard_body` and asset images
-  /// directly from Firestore/GCS, generates a video clip with audio, saves it
-  /// to GCS at `{uid}/{projectSlug}/scenes/{sceneIndex}/video.mp4`, and writes
-  /// the GCS path to the scene's `gcs_video_path` Firestore field.
-  ///
-  /// [refImageGcsPaths] contains the GCS paths of all reference images,
-  /// resolved per FEAT-013 rules (pass-through uses referenced asset's path;
-  /// variant uses its own path; local uses its own path). Ordered by asset type
-  /// priority (background → character → object).
+  /// Identifies the scene only — the video worker reads the scene's
+  /// `storyboard_body` and resolves the ordered reference asset images
+  /// directly from Firestore/GCS server-side (see
+  /// `backend/app/services/scene_assets.py`), generates a video clip with
+  /// audio, saves it to GCS at
+  /// `{uid}/{projectSlug}/scenes/{sceneIndex}/video.mp4`, and writes the GCS
+  /// path to the scene's `gcs_video_path` Firestore field.
   ///
   /// Returns the `job_id` immediately. The caller writes a [JobRegistryEntry]
   /// and waits for the Firestore `gcs_video_path` update or FCM push.
   Future<String> generateVideo({
     required String projectSlug,
     required int sceneIndex,
-    required List<String> refImageGcsPaths,
   }) async {
     final response = await _execute(
       () => _dio.post('/video', data: {
         'project_slug': projectSlug,
         'scene_index': sceneIndex,
-        'ref_image_gcs_paths': refImageGcsPaths,
       }),
     );
     return (response.data as Map<String, dynamic>)['job_id'] as String;
