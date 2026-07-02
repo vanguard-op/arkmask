@@ -239,20 +239,37 @@ async def stripe_webhook(
         )
 
     event_type: str = event["type"]
-    logger.info("Stripe webhook received: event_type=%s event_id=%s", event_type, event["id"])
+    event_id: str = event["id"]
+    logger.info("Stripe webhook received: event_type=%s event_id=%s", event_type, event_id)
 
-    match event_type:
-        case "customer.subscription.created" | "customer.subscription.updated":
-            _handle_subscription_upsert(event["data"]["object"])
-        case "customer.subscription.deleted":
-            _handle_subscription_deleted(event["data"]["object"])
-        case "invoice.paid":
-            _handle_invoice_paid(event["data"]["object"])
-        case "invoice.payment_failed":
-            _handle_invoice_payment_failed(event["data"]["object"])
-        case _:
-            # Unhandled event types are silently acknowledged.
-            logger.debug("Unhandled Stripe event type: %s", event_type)
+    # Wrapped in try/except with a distinctive log message so a Cloud Logging
+    # log-based metric can alert on webhook processing failures (see
+    # infra/terraform/modules/monitoring — "STRIPE_WEBHOOK_PROCESSING_FAILED").
+    # Returning 5xx also makes Stripe retry the event automatically.
+    try:
+        match event_type:
+            case "customer.subscription.created" | "customer.subscription.updated":
+                _handle_subscription_upsert(event["data"]["object"])
+            case "customer.subscription.deleted":
+                _handle_subscription_deleted(event["data"]["object"])
+            case "invoice.paid":
+                _handle_invoice_paid(event["data"]["object"])
+            case "invoice.payment_failed":
+                _handle_invoice_payment_failed(event["data"]["object"])
+            case _:
+                # Unhandled event types are silently acknowledged.
+                logger.debug("Unhandled Stripe event type: %s", event_type)
+    except Exception:
+        logger.error(
+            "STRIPE_WEBHOOK_PROCESSING_FAILED: event_type=%s event_id=%s",
+            event_type,
+            event_id,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Webhook processing failed.",
+        )
 
     return {"received": True}
 

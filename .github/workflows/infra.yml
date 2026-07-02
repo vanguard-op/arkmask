@@ -74,6 +74,11 @@ jobs:
         run: terraform plan -no-color -out=tfplan
         env:
           TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+          # Optional — set the ALERT_EMAIL repo/environment variable to get
+          # paged by the Cloud Monitoring alerts in infra/terraform/modules/monitoring.
+          # Empty is fine: alert policies are still created, just without a
+          # notification channel.
+          TF_VAR_alert_email: ${{ vars.ALERT_EMAIL }}
 
       - name: Post plan to PR
         uses: actions/github-script@v9
@@ -123,6 +128,7 @@ jobs:
         run: terraform apply -auto-approve
         env:
           TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+          TF_VAR_alert_email: ${{ vars.ALERT_EMAIL }}
 
   # ── Firebase rules deploy ──────────────────────────────────────────────────
   firebase-rules:

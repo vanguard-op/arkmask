@@ -32,6 +32,16 @@ from app.services.media_store import MediaStore
 router = APIRouter(tags=["projects"])
 logger = logging.getLogger(__name__)
 
+# Per-tier storage quotas (R-020 in docs/ArkMask/risk_log.md), in bytes.
+# `None` means unlimited. Values from docs/ArkMask/risk_log.md R-020:
+# Free 5 GB, Creator 50 GB, Studio unlimited.
+_GB = 1024 ** 3
+TIER_STORAGE_QUOTA_BYTES: dict[str, int | None] = {
+    "free": 5 * _GB,
+    "creator": 50 * _GB,
+    "studio": None,
+}
+
 
 # ── Firestore client helper ───────────────────────────────────────────────────
 
@@ -112,6 +122,35 @@ class ProjectStorageSummaryResponse(BaseModel):
     export_bytes: int
 
 
+def _enforce_storage_quota(current_user: UserProfile) -> None:
+    """
+    Raise HTTP 403 if the user is already at or over their tier's storage quota.
+
+    Studio tier has no quota (unlimited) and skips the GCS lookup entirely.
+    """
+    quota = TIER_STORAGE_QUOTA_BYTES.get(current_user.tier)
+    if quota is None:
+        return  # unlimited tier, or unknown tier — fail open rather than block signup edge cases
+
+    try:
+        summary = MediaStore().get_storage_summary(f"{current_user.firebase_uid}/")
+    except Exception:
+        logger.warning(
+            "Could not compute storage usage for quota check: uid=%s — allowing project creation.",
+            current_user.firebase_uid,
+        )
+        return
+
+    if summary["total_bytes"] >= quota:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Storage quota reached for the {current_user.tier} tier "
+                f"({quota // _GB} GB). Delete unused projects or upgrade your plan."
+            ),
+        )
+
+
 # ── POST /projects ─────────────────────────────────────────────────────────────
 
 @router.post(
@@ -136,8 +175,16 @@ def create_project(
 
     Returns 409 if a project with the same display_name already exists for this
     user (checked against the Firestore collection).
+
+    Returns 403 if the user's current GCS storage usage (across all existing
+    projects) has already reached their tier's quota (FEAT-027 / R-020 in
+    docs/ArkMask/risk_log.md — Free 5 GB, Creator 50 GB, Studio unlimited).
+    New projects have no media yet, but rejecting creation at-quota stops
+    users from accumulating projects they can't generate into anyway.
     """
     firebase_uid = current_user.firebase_uid
+    _enforce_storage_quota(current_user)
+
     db_client = _firestore_client()
     projects_ref = db_client.collection(f"users/{firebase_uid}/projects")
 

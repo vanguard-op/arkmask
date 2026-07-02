@@ -231,6 +231,26 @@ def _fetch_gcs_images(gcs_paths: list[str]) -> list[RefImage]:
     return images
 
 
+def _verify_gcs_ownership(firebase_uid: str, gcs_paths: list[str]) -> None:
+    """
+    Raise HTTP 403 if any GCS path is outside the caller's own namespace.
+
+    Client-supplied GCS paths (conditioning images, video reference images)
+    must be validated before being fetched or forwarded to a worker — without
+    this check, a request with a valid platform key but a crafted GCS path
+    could read another user's reference images (see docs/ArkMask/risk_log.md
+    R-022). Mirrors the same check already applied on
+    POST /media/presigned-url.
+    """
+    prefix = f"{firebase_uid}/"
+    for path in gcs_paths:
+        if path and not path.startswith(prefix):
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied: GCS path is not within your project namespace.",
+            )
+
+
 def _sniff_mime(data: bytes) -> str:
     if data[:8] == b'\x89PNG\r\n\x1a\n':
         return "image/png"
@@ -337,8 +357,10 @@ async def enqueue_image(
     configured), runs the same steps inline via asyncio as a dev-only fallback.
     Credits deducted: 5 (on terminal success only).
     """
-    _check_credits(user, "/image")
     firebase_uid = user.firebase_uid
+    if body.conditioning_gcs_path:
+        _verify_gcs_ownership(firebase_uid, [body.conditioning_gcs_path])
+    _check_credits(user, "/image")
     job_id = _create_job(firebase_uid, "image", body.project_slug, asset_path=body.asset_path)
     pname = _provider_name(provider)
 
@@ -432,6 +454,7 @@ def generate_video_prompt(
     Fetches reference images from GCS synchronously before calling the AI provider.
     Credits deducted: 3 (on success only). Returns 204.
     """
+    _verify_gcs_ownership(user.firebase_uid, body.ref_image_gcs_paths)
     cost = _check_credits(user, "/video-prompt")
     pname = _provider_name(provider)
 
@@ -492,8 +515,9 @@ async def enqueue_video(
     asyncio as a dev-only fallback.
     Credits deducted: 20 (on terminal success only).
     """
-    _check_credits(user, "/video")
     firebase_uid = user.firebase_uid
+    _verify_gcs_ownership(firebase_uid, body.ref_image_gcs_paths)
+    _check_credits(user, "/video")
     job_id = _create_job(firebase_uid, "video", body.project_slug, scene_index=body.scene_index)
     pname = _provider_name(provider)
 

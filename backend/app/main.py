@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.routers import account, auth, billing, generation, projects
+from app.services.firebase import _ensure_initialized
 
 settings = get_settings()
 
@@ -73,5 +74,27 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 
 @app.get("/health", tags=["infra"])
 def health():
-    """Liveness probe for Cloud Run / load balancer health checks."""
+    """
+    Liveness probe for Cloud Run / load balancer health checks.
+
+    Also verifies the Firebase Admin SDK can actually initialise — i.e. the
+    credentials file (FIREBASE_CREDENTIALS_PATH) or Application Default
+    Credentials are present and readable (see docs/ArkMask/risk_log.md R-019:
+    "omitting [the credentials file] silently causes all /login and /register
+    requests to return 401" with no earlier signal). This check is local-only
+    (reads a cert file / ADC metadata) — it does not round-trip to Firestore,
+    so it stays fast and safe to call frequently.
+    """
+    try:
+        _ensure_initialized()
+    except Exception as e:
+        logger.error("Health check failed: Firebase Admin SDK could not initialise: %s", e)
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "status": "unhealthy",
+                "env": settings.app_env,
+                "detail": "Firebase credentials could not be loaded.",
+            },
+        )
     return {"status": "ready", "env": settings.app_env}

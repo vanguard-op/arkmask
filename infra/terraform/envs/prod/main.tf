@@ -165,6 +165,24 @@ module "workers" {
   depends_on = [module.iam]
 }
 
+# ── Monitoring ──────────────────────────────────────────────────────────────
+
+module "monitoring" {
+  source     = "../../modules/monitoring"
+  project_id = var.project_id
+  env        = local.env
+  region     = local.region
+
+  alert_email           = var.alert_email
+  api_service_name      = module.api.service_name
+  workers_service_name  = module.workers.service_name
+  cloud_tasks_queue_ids = [
+    module.cloud_tasks.image_queue_name,
+    module.cloud_tasks.video_queue_name,
+    module.cloud_tasks.merge_queue_name,
+  ]
+}
+
 # ── Outputs ───────────────────────────────────────────────────────────────────
 
 output "api_url" {
