@@ -32,6 +32,24 @@ class ProjectsCubit extends Cubit<ProjectsState> {
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _profileSub;
   StreamSubscription<JobsState>? _jobsSub;
 
+  // ── Credit balance / tier ────────────────────────────────────────────────
+  //
+  // Deliberately NOT derived from `state` (i.e. not "carried over from the
+  // previous ProjectsLoaded"): _profileSub and _projectsSub are two
+  // independent Firestore listeners started around the same time in load(),
+  // and Firestore gives no ordering guarantee between them. A single-document
+  // get (the profile doc) typically resolves before a collection query (the
+  // projects list), so the profile listener's first snapshot often arrives
+  // while `state` is still ProjectsLoading — at which point the
+  // `if (s is ProjectsLoaded)` guard in _subscribeToProfile would silently
+  // drop the update, and the credit pill would show "--" until some
+  // unrelated future profile write happened to re-fire the listener while
+  // state actually was ProjectsLoaded by then. Keeping these as cubit-lifetime
+  // fields means whichever listener's first snapshot lands first, the other
+  // one still picks up the correct value when it builds its own emission.
+  int? _creditBalance;
+  UserTier? _tier;
+
   /// Starts listening to the project list. Safe to call multiple times —
   /// cancels any existing subscription before starting a new one.
   ///
@@ -66,12 +84,11 @@ class ProjectsCubit extends Cubit<ProjectsState> {
             final current = state;
             emit(ProjectsLoaded(
               projects: projects,
-              // Preserve credit balance and tier across Firestore updates —
-              // the profile listener (_subscribeToProfile) owns these now,
-              // independent of this collection's own snapshot cadence.
-              creditBalance:
-                  current is ProjectsLoaded ? current.creditBalance : null,
-              tier: current is ProjectsLoaded ? current.tier : null,
+              // Read from the cubit-lifetime fields (not `current`) so a
+              // profile snapshot that arrived before this collection's first
+              // snapshot is never lost — see the field doc comment above.
+              creditBalance: _creditBalance,
+              tier: _tier,
               generatingCounts: _buildGeneratingCounts(),
               // Preserve existing summaries across list refreshes so cards
               // don't flicker back to "—" when Firestore emits a new snapshot.
@@ -167,12 +184,16 @@ class ProjectsCubit extends Cubit<ProjectsState> {
             if (!snap.exists) return;
             final data = snap.data();
             if (data == null) return;
-            final credits = data['credit_balance'] as int?;
+            _creditBalance = data['credit_balance'] as int?;
             final tierStr = data['tier'] as String?;
-            final tier = tierStr != null ? UserTier.fromString(tierStr) : null;
+            _tier = tierStr != null ? UserTier.fromString(tierStr) : null;
+
+            // If the project list snapshot hasn't arrived yet, there's
+            // nothing to emit into yet — _creditBalance/_tier are still
+            // picked up correctly once it does (see the field doc comment).
             final s = state;
             if (s is ProjectsLoaded) {
-              emit(s.copyWith(creditBalance: credits, tier: tier));
+              emit(s.copyWith(creditBalance: _creditBalance, tier: _tier));
             }
           },
           onError: (_) {
