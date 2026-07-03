@@ -145,11 +145,30 @@ def get_previous_scene_prompt(db, uid: str, project_slug: str, scene_index: int)
     return (doc.to_dict() or {}).get("storyboard_body") or ""
 
 
-def _extract_base_name(name: str) -> str:
-    """`"@/scenes/2/hero"` -> `"hero"`. Mirrors SceneCubit._extractBaseName."""
-    without_at = name[1:] if name.startswith("@") else name
-    parts = [p for p in without_at.split("/") if p]
-    return parts[-1] if parts else name
+@dataclass(frozen=True)
+class _AssetReference:
+    """Parsed form of a pass-through reference name (`@/scenes/N/{base_name}`)."""
+
+    scene_number: int
+    base_name: str
+
+
+def _parse_reference(name: str) -> _AssetReference | None:
+    """`"@/scenes/2/hero"` -> `_AssetReference(2, "hero")`.
+
+    Mirrors SceneCubit._parseReference. Returns `None` if `name` is not a
+    `@/scenes/N/...` reference.
+    """
+    if not name.startswith("@"):
+        return None
+    parts = [p for p in name[1:].split("/") if p]
+    if len(parts) < 3 or parts[0] != "scenes":
+        return None
+    try:
+        scene_number = int(parts[1])
+    except ValueError:
+        return None
+    return _AssetReference(scene_number=scene_number, base_name=parts[-1])
 
 
 def _type_priority(asset_type: str | None) -> int:
@@ -171,6 +190,15 @@ def resolve_scene_assets(db, uid: str, project_slug: str, scene_index: int) -> l
     Only scene-local asset documents produce rows — a global asset that is
     never referenced by a scene-local pass-through document does not appear
     in this scene's resolved list, matching the existing Dart behaviour.
+
+    A pass-through reference's *source* scene matters: only scene_number == 0
+    ("root") assets are written to the project-level `assets` collection (see
+    app.services.asset_writer.write_extracted_assets) — every other scene
+    number's assets live solely under that scene's own `scenes/{n}/assets`
+    subcollection. So a reference like `@/scenes/5/hero` must be resolved
+    against `scenes/5/assets`, not the project-level `assets` collection, or
+    it will always appear "missing" even when scene 5's asset has a generated
+    image. Non-root source scenes are fetched lazily and cached per call.
     """
     project_path = f"users/{uid}/projects/{project_slug}"
 
@@ -179,14 +207,31 @@ def resolve_scene_assets(db, uid: str, project_slug: str, scene_index: int) -> l
         data = doc.to_dict() or {}
         global_by_name[data.get("name") or doc.id] = data
 
-    def _find_global(base_name: str) -> dict:
-        if base_name in global_by_name:
-            return global_by_name[base_name]
+    def _find_by_name(by_name: dict[str, dict], base_name: str) -> dict:
+        if base_name in by_name:
+            return by_name[base_name]
         lower = base_name.lower()
-        for name, data in global_by_name.items():
+        for name, data in by_name.items():
             if name.lower() == lower:
                 return data
         return {}
+
+    # Cache of non-root source scene number -> {name: data}, populated lazily
+    # as references into those scenes are encountered below.
+    ref_scene_cache: dict[int, dict[str, dict]] = {}
+
+    def _find_reference(ref: _AssetReference) -> dict:
+        if ref.scene_number == 0:
+            return _find_by_name(global_by_name, ref.base_name)
+        if ref.scene_number not in ref_scene_cache:
+            by_name: dict[str, dict] = {}
+            for doc in db.collection(
+                f"{project_path}/scenes/{ref.scene_number}/assets"
+            ).stream():
+                data = doc.to_dict() or {}
+                by_name[data.get("name") or doc.id] = data
+            ref_scene_cache[ref.scene_number] = by_name
+        return _find_by_name(ref_scene_cache[ref.scene_number], ref.base_name)
 
     entries: list[tuple[int, ResolvedAsset]] = []
     for doc in db.collection(f"{project_path}/scenes/{scene_index}/assets").stream():
@@ -196,7 +241,8 @@ def resolve_scene_assets(db, uid: str, project_slug: str, scene_index: int) -> l
         is_pass_through = description == ""
 
         if is_pass_through:
-            referenced = _find_global(_extract_base_name(name))
+            ref = _parse_reference(name)
+            referenced = _find_reference(ref) if ref is not None else {}
             prompt = referenced.get("prompt_body") or ""
             gcs_image_path = referenced.get("gcs_image_path")
             asset_type = referenced.get("type")

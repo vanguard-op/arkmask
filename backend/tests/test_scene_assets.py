@@ -119,12 +119,14 @@ def test_resolve_scene_assets_orders_background_before_character_before_object()
 
 
 def test_resolve_scene_assets_pass_through_resolves_to_global_asset():
+    # Root ("scene 0") assets live in the project-level `assets` collection —
+    # a "@/scenes/0/..." reference resolves there.
     global_docs = [
         _FakeDoc("hero", {"name": "hero", "type": "character", "prompt_body": "the real hero prompt", "gcs_image_path": "u1/p1/hero.png"}),
     ]
     scene_docs = [
         # Pass-through: empty description, @-prefixed name referencing the global asset.
-        _FakeDoc("ref1", {"name": "@/scenes/2/hero", "description": "", "type": None, "prompt_body": None, "gcs_image_path": None}),
+        _FakeDoc("ref1", {"name": "@/scenes/0/hero", "description": "", "type": None, "prompt_body": None, "gcs_image_path": None}),
     ]
     db = _fs_with_scene_and_globals(scene_docs, global_docs)
     resolved = resolve_scene_assets(db, "u1", "p1", 2)
@@ -133,7 +135,7 @@ def test_resolve_scene_assets_pass_through_resolves_to_global_asset():
     asset = resolved[0]
     # Name stays the scene-local reference name, but prompt/image/type come
     # from the referenced global asset — never the (empty) scene-local fields.
-    assert asset.name == "@/scenes/2/hero"
+    assert asset.name == "@/scenes/0/hero"
     assert asset.prompt == "the real hero prompt"
     assert asset.gcs_image_path == "u1/p1/hero.png"
     assert asset.type == "character"
@@ -141,7 +143,7 @@ def test_resolve_scene_assets_pass_through_resolves_to_global_asset():
 
 def test_resolve_scene_assets_pass_through_case_insensitive_and_missing_global():
     scene_docs = [
-        _FakeDoc("ref1", {"name": "@/scenes/2/Hero", "description": ""}),
+        _FakeDoc("ref1", {"name": "@/scenes/0/Hero", "description": ""}),
     ]
     global_docs = [
         _FakeDoc("hero", {"name": "hero", "type": "character", "prompt_body": "hero prompt", "gcs_image_path": "u1/p1/hero.png"}),
@@ -155,6 +157,44 @@ def test_resolve_scene_assets_pass_through_case_insensitive_and_missing_global()
     resolved_missing = resolve_scene_assets(db_missing, "u1", "p1", 2)
     assert resolved_missing[0].prompt == ""
     assert resolved_missing[0].gcs_image_path is None
+
+
+def test_resolve_scene_assets_pass_through_resolves_to_non_root_source_scene():
+    # Regression test: a character first introduced in a *non-root* scene
+    # (e.g. scene 5) is never copied into the project-level `assets`
+    # collection — only scene_number == 0 assets are (see
+    # app.services.asset_writer.write_extracted_assets). A later scene's
+    # pass-through reference into that scene must resolve against scene 5's
+    # own `assets` subcollection, not the project-level one, or it will
+    # always appear "missing" even after scene 5's asset image is generated.
+    db = _FakeFirestore(
+        documents={},
+        collections={
+            "users/u1/projects/p1/assets": [],  # no root assets at all
+            "users/u1/projects/p1/scenes/5/assets": [
+                _FakeDoc(
+                    "hero",
+                    {
+                        "name": "hero",
+                        "type": "character",
+                        "prompt_body": "scene 5 hero prompt",
+                        "gcs_image_path": "u1/p1/scene5-hero.png",
+                    },
+                ),
+            ],
+            "users/u1/projects/p1/scenes/6/assets": [
+                _FakeDoc("ref1", {"name": "@/scenes/5/hero", "description": ""}),
+            ],
+        },
+    )
+    resolved = resolve_scene_assets(db, "u1", "p1", 6)
+
+    assert len(resolved) == 1
+    asset = resolved[0]
+    assert asset.name == "@/scenes/5/hero"
+    assert asset.prompt == "scene 5 hero prompt"
+    assert asset.gcs_image_path == "u1/p1/scene5-hero.png"
+    assert asset.type == "character"
 
 
 # ── assets_ready_for_storyboard ──────────────────────────────────────────────
