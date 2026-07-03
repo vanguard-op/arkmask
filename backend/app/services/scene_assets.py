@@ -120,6 +120,31 @@ def get_generation_settings(db, uid: str, project_slug: str) -> tuple[str, bool]
     return art_style, subtitles
 
 
+def get_previous_scene_prompt(db, uid: str, project_slug: str, scene_index: int) -> str:
+    """Return scene `scene_index - 1`'s generated video prompt (`storyboard_body`).
+
+    This is the *generated* storyboard/video prompt from the prior scene —
+    not its raw `story_content` text — so the video-prompt model can read
+    what was actually asked of the previous shot (camera, blocking, lighting,
+    established continuity) when deciding whether the new scene continues
+    directly from it or is a hard cut to somewhere new. See
+    backend/instructions/video-prompt-generation.md "Continuity Inference".
+
+    Returns `""` when there is no previous scene (scene_index <= the first
+    scene number, whatever that happens to be) or when the previous scene's
+    document exists but has no `storyboard_body` yet (e.g. not generated
+    yet) — in both cases the doc simply won't exist/won't have the field, so
+    no special-cased "first scene" check is needed here.
+    """
+    previous_index = scene_index - 1
+    if previous_index < 0:
+        return ""
+    doc = db.document(f"users/{uid}/projects/{project_slug}/scenes/{previous_index}").get()
+    if not doc.exists:
+        return ""
+    return (doc.to_dict() or {}).get("storyboard_body") or ""
+
+
 def _extract_base_name(name: str) -> str:
     """`"@/scenes/2/hero"` -> `"hero"`. Mirrors SceneCubit._extractBaseName."""
     without_at = name[1:] if name.startswith("@") else name

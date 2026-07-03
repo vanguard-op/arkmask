@@ -174,18 +174,24 @@ class GeminiProvider(AIProvider):
         assets: list[AssetPromptInput],
         art_style: str = "painterly illustration with clean lines and rich color",
         subtitles: bool = False,
+        previous_scene_prompt: str = "",
     ) -> str:
         # Serialise the input as JSON matching the instruction's Input Format
         # exactly — scene, assets (name + prompt text, no images), art_style,
-        # and subtitles all sit at the root. No image parts are attached to
-        # this call: the model infers each asset's appearance/type purely
-        # from its `prompt` text, per video-prompt-generation.md. The real
-        # reference images are only needed later, in generate_video.
+        # subtitles, and previous_scene_prompt all sit at the root. No image
+        # parts are attached to this call: the model infers each asset's
+        # appearance/type purely from its `prompt` text, per
+        # video-prompt-generation.md. The real reference images are only
+        # needed later, in generate_video. previous_scene_prompt is "" for
+        # the first scene / when the prior scene has none yet — the
+        # instruction handles that as "nothing to continue from", no
+        # special-casing needed here.
         payload = json.dumps({
             "scene": scene_text,
             "assets": [{"name": a.name, "prompt": a.prompt} for a in assets],
             "art_style": art_style,
             "subtitles": "enabled" if subtitles else "disabled",
+            "previous_scene_prompt": previous_scene_prompt,
         })
         response = _call_genai(
             self._client.models.generate_content,

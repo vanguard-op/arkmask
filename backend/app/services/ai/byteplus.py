@@ -260,19 +260,22 @@ class BytePlusProvider(AIProvider):
         assets: list[AssetPromptInput],
         art_style: str = "painterly illustration with clean lines and rich color",
         subtitles: bool = False,
+        previous_scene_prompt: str = "",
     ) -> str:
         # Serialise the input as JSON matching the instruction's Input Format
         # exactly — scene, assets (name + prompt text, no images), art_style,
-        # and subtitles all sit at the root. This is now a plain text-only
-        # call: no image parts are attached, since the model infers each
-        # asset's appearance/type purely from its `prompt` text (see
-        # video-prompt-generation.md). Real reference images are only needed
-        # later, in generate_video.
+        # subtitles, and previous_scene_prompt all sit at the root. This is
+        # now a plain text-only call: no image parts are attached, since the
+        # model infers each asset's appearance/type purely from its `prompt`
+        # text (see video-prompt-generation.md). Real reference images are
+        # only needed later, in generate_video. previous_scene_prompt is ""
+        # for the first scene / when the prior scene has none yet.
         payload = json.dumps({
             "scene": scene_text,
             "assets": [{"name": a.name, "prompt": a.prompt} for a in assets],
             "art_style": art_style,
             "subtitles": "enabled" if subtitles else "disabled",
+            "previous_scene_prompt": previous_scene_prompt,
         })
         return self._chat(self.VIDEO_PROMPT, payload).strip()
 

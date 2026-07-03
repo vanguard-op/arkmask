@@ -14,7 +14,8 @@ Generate a text prompt for the Ark video generation API (Seedance 2.0 model) tha
     }
   ],
   "art_style": "string",
-  "subtitles": "enabled | disabled"
+  "subtitles": "enabled | disabled",
+  "previous_scene_prompt": "string"
 }
 ```
 
@@ -24,6 +25,7 @@ Generate a text prompt for the Ark video generation API (Seedance 2.0 model) tha
   - `prompt` — the image generation prompt used to create this reference image; read it to understand the asset's visual appearance and type
 - `art_style` — the project-level visual rendering style. Always use this value verbatim in the closing block. If absent or empty, default to `painterly illustration with warm tones`.
 - `subtitles` — when `"disabled"`, include the subtitle-free constraint in the closing block. When `"enabled"`, omit it (the user may use `【】` in scene descriptions to specify dialogue subtitles).
+- `previous_scene_prompt` — the complete generated video prompt (this same construction process's own output) for the immediately preceding scene, or an empty string `""` when this is the first scene, or the previous scene has no generated prompt yet. Read for continuity inference only — see "Continuity Inference" below. An empty value requires no special handling: it simply means there is nothing to continue from, so build the scene as its own opening shot.
 
 The reference images are provided to the Seedance model in the **same order** as the `assets` list. The asset at index 0 becomes **Image 1**, index 1 becomes **Image 2**, and so on. Always use these `Image N` identifiers in the prompt — never reference an asset by its `name` alone without binding it to its image number.
 
@@ -38,7 +40,7 @@ Prompts are consumed by **Seedance 2.0** (`dreamina-seedance-2-0-260128`) via th
 - It does **not** support negative prompts — use explicit positive constraint phrases instead
 - Precise timing of in-shot events (e.g. "at 3 seconds") is unstable — do not specify durations *within* a shot's description; let the model pace actions inside a shot naturally
 - Language of dialogue must be consistent; do not mix Chinese and English (except proper nouns)
-- The model accepts an overall clip-length directive appended to the end of the prompt as `--duration N` (seconds, integer, range **2–15**). This does control total pacing reliably and must be set explicitly — omitting it causes the model to default to a flat 5 seconds regardless of scene complexity (see Step 7).
+- The model accepts an overall clip-length directive appended to the end of the prompt as `--duration N` (seconds, integer, range **2–15**). This does control total pacing reliably and must be set explicitly — omitting it causes the model to default to a flat 5 seconds regardless of scene complexity (see Step 8).
 
 ## Output
 
@@ -64,7 +66,34 @@ Assign each asset its **Image N** number by its position in the list (0-indexed 
 
 ---
 
-### Step 2 — Order Assets in the Prompt
+### Step 2 — Infer Continuity from the Previous Scene
+
+Read `previous_scene_prompt` (the previous scene's own generated video prompt, if any) and decide, from **this scene's own `scene` text and `assets` alone**, whether it directly continues the previous shot or is a deliberate cut to something new. `previous_scene_prompt` is supporting context for that decision — never a rule to always continue, and never a rule to always cut.
+
+**Signals that this scene continues directly from the previous one:**
+- `scene` picks up the same action, beat, or line of dialogue left hanging at the end of `previous_scene_prompt`'s final shot
+- Same characters, same location, no explicit time/place transition described in `scene`
+- `scene` reads like the next moment in an unbroken sequence (e.g. "she finishes speaking and turns toward the door" following a previous scene that ended mid-sentence)
+
+**Signals that this scene is a hard cut:**
+- `scene` explicitly describes a new location, a time skip ("later that night", "the next morning"), or a different set of characters
+- `scene` opens a new beat unrelated to how the previous one ended
+- `previous_scene_prompt` is empty (first scene, or previous scene has no prompt yet) — always treat as an opening shot with no continuity to establish
+
+**If continuing:**
+- Preserve established blocking, character pose/position, wardrobe, and lighting mood from `previous_scene_prompt`'s final shot as the implicit starting point of Shot 1 in this scene — do not silently reset a character's position or the time of day without cause
+- You may open with a camera movement that reads as a continuation (e.g. `cut to` rather than an establishing wide shot) if the previous scene's last shot supports it
+- Still follow Steps 3–8 in full — continuity only affects the *starting state* assumed for Shot 1, not the construction process itself
+
+**If cutting:**
+- Build the scene as its own opening shot (establishing wide shot or equivalent), independent of how `previous_scene_prompt` ended
+- Do not carry over blocking, pose, or lighting from the previous scene — only reuse it if `scene`'s own description supports the same look (e.g. same location revisited later)
+
+This step never overrides subject/asset definitions (Step 4) or the closing block (Step 7) — it only informs how Shot 1 opens.
+
+---
+
+### Step 3 — Order Assets in the Prompt
 
 Assets must appear in the prompt in this priority order, from most important to least:
 
@@ -76,7 +105,7 @@ This ordering matters: the model assigns higher feature weight to assets mention
 
 ---
 
-### Step 3 — Define Subjects (Characters)
+### Step 4 — Define Subjects (Characters)
 
 For every character asset, write a subject definition that binds the character to their image number. Use 2–3 concrete, stable, static visual features extracted from the asset's `prompt` (clothing, hair, skin, distinctive accessories — not abstract traits like "kind" or "mysterious").
 
@@ -97,7 +126,7 @@ For simple single-character scenes with no prior definition block, you may refer
 
 ---
 
-### Step 4 — Reference the Background
+### Step 5 — Reference the Background
 
 Bind the background asset to the scene context explicitly:
 
@@ -111,7 +140,7 @@ Do not describe the environment in prose if an image reference already captures 
 
 ---
 
-### Step 5 — Write the Shot Sequence
+### Step 6 — Write the Shot Sequence
 
 Break the `scene` into numbered shots: **Shot 1 / Shot 2 / Shot 3**... in chronological order (primary action first, secondary details later).
 
@@ -149,7 +178,7 @@ Break the `scene` into numbered shots: **Shot 1 / Shot 2 / Shot 3**... in chrono
 
 ---
 
-### Step 6 — Write the Closing Block
+### Step 7 — Write the Closing Block
 
 Always end the prompt with a closing block in this order:
 
@@ -163,7 +192,7 @@ Always end the prompt with a closing block in this order:
 
 ---
 
-### Step 7 — Determine Clip Duration
+### Step 8 — Determine Clip Duration
 
 Compute an integer duration between **2 and 15 seconds** based on the complexity of the `scene` — never default to a flat value. Append it to the very end of the output as `--duration N`, after the closing block, separated by a space.
 
@@ -202,7 +231,7 @@ Shot 3: [One camera movement/framing]. [Character name] [action]. [Position]. [A
 
 [art_style from input], [image quality], [lighting]. The character's face and body proportions remain consistent throughout without deformation. Movements are natural and smooth, with no stutter or flicker. [If subtitles == "disabled": Keep it subtitle-free. Avoid generating any text or subtitles.] Do not generate a watermark. Do not generate a logo. [Duplicate constraint if multiple characters.]
 
---duration [N, computed per Step 7, 2-15]
+--duration [N, computed per Step 8, 2-15]
 ```
 
 ---
@@ -228,9 +257,12 @@ Shot 3: [One camera movement/framing]. [Character name] [action]. [Position]. [A
     }
   ],
   "art_style": "painterly illustration with warm amber and dark wood tones",
-  "subtitles": "disabled"
+  "subtitles": "disabled",
+  "previous_scene_prompt": ""
 }
 ```
+
+This is the first scene in the project, so `previous_scene_prompt` is empty — the scene is built as its own opening shot, with no continuity to establish (see Step 2).
 
 **Output:**
 

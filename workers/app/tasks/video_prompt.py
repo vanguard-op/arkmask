@@ -16,6 +16,14 @@ Resolution moved server-side (previously the payload carried a pre-resolved
   - The storyboard-prompt AI call no longer needs images at all — see
     backend/instructions/video-prompt-generation.md "Input Format": it reads
     each asset's `name` and `prompt` text only.
+
+Also reads the previous scene's own generated video prompt
+(`scenes/{scene_index-1}.storyboard_body`, via
+app.services.scene_assets.get_previous_scene_prompt) and passes it through as
+`previous_scene_prompt` — "" for the first scene / when the prior scene has
+no storyboard yet. This lets the model infer continuity (or a deliberate
+hard cut) from the new scene's own text/assets — see
+backend/instructions/video-prompt-generation.md "Continuity Inference".
 """
 
 import logging
@@ -29,6 +37,7 @@ from app.services.ai.gemini import GeminiProvider
 from app.services.scene_assets import (
     assets_ready_for_storyboard,
     get_generation_settings,
+    get_previous_scene_prompt,
     get_scene_text,
     resolve_scene_assets,
     to_asset_prompt_inputs,
@@ -80,10 +89,15 @@ def run(payload: dict) -> None:
 
         scene_text = get_scene_text(db, firebase_uid, project_slug, scene_index)
         art_style, subtitles = get_generation_settings(db, firebase_uid, project_slug)
+        previous_scene_prompt = get_previous_scene_prompt(db, firebase_uid, project_slug, scene_index)
 
         provider = _make_provider(provider_type, payload["provider_key"])
         storyboard = provider.generate_video_prompt(
-            scene_text, to_asset_prompt_inputs(assets), art_style=art_style, subtitles=subtitles
+            scene_text,
+            to_asset_prompt_inputs(assets),
+            art_style=art_style,
+            subtitles=subtitles,
+            previous_scene_prompt=previous_scene_prompt,
         )
 
         fs_path = f"users/{firebase_uid}/projects/{project_slug}/scenes/{scene_index}"

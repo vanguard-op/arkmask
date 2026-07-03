@@ -125,6 +125,7 @@ class AIProvider(ABC):
         assets: list[AssetPromptInput],
         art_style: str = "painterly illustration with clean lines and rich color",
         subtitles: bool = False,
+        previous_scene_prompt: str = "",
     ) -> str:
         """Return a storyboard prompt string (written to Firestore storyboard_body).
 
@@ -143,6 +144,13 @@ class AIProvider(ABC):
                 system prompt applies it in the closing block.
             subtitles: When ``True``, the subtitle-free constraint is omitted from
                 the closing block so ``【】`` subtitle syntax is respected.
+            previous_scene_prompt: The previous scene's own generated video prompt
+                (its `storyboard_body`), or ``""`` when there is no previous scene
+                (first scene) or it has none yet. Used by the model for continuity
+                inference only — see backend/instructions/video-prompt-generation.md
+                "Continuity Inference": whether the new scene picks up directly from
+                the last shot or is a hard cut is decided from THIS scene's own
+                `scene_text`/`assets`, not defaulted from the presence of this field.
         """
 
     @abstractmethod

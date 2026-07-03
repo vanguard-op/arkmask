@@ -66,6 +66,7 @@ from app.services.media_store import MediaStore
 from app.services.scene_assets import (
     assets_ready_for_storyboard,
     get_generation_settings,
+    get_previous_scene_prompt,
     get_scene_text,
     ordered_gcs_image_paths,
     resolve_scene_assets,
@@ -632,6 +633,9 @@ async def generate_video_prompt(
             scene_text = get_scene_text(db, firebase_uid, body.project_slug, body.scene_index)
             run_assets = resolve_scene_assets(db, firebase_uid, body.project_slug, body.scene_index)
             art_style, subtitles = get_generation_settings(db, firebase_uid, body.project_slug)
+            previous_scene_prompt = get_previous_scene_prompt(
+                db, firebase_uid, body.project_slug, body.scene_index
+            )
 
             storyboard = await asyncio.to_thread(
                 provider.generate_video_prompt,
@@ -639,6 +643,7 @@ async def generate_video_prompt(
                 to_asset_prompt_inputs(run_assets),
                 art_style=art_style,
                 subtitles=subtitles,
+                previous_scene_prompt=previous_scene_prompt,
             )
 
             fs_path = f"users/{firebase_uid}/projects/{body.project_slug}/scenes/{body.scene_index}"
