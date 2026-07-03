@@ -190,8 +190,12 @@ class _LoadedBody extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // ── Reference indicator (scene-local only) ──────────────────
-              if (!state.isGlobal) _ReferenceIndicatorBanner(state: state),
+              // ── Reference indicator ──────────────────────────────────────
+              // Only shown for scene-local *reference* assets (pass-through
+              // or variant) — a brand-new, non-reference scene-local asset
+              // has nothing to indicate here and previously incorrectly fell
+              // through to the "Generating variant" label.
+              if (state.isReference) _ReferenceIndicatorBanner(state: state),
 
               // ── Frontmatter card ────────────────────────────────────────
               _FrontmatterCard(state: state),
@@ -242,8 +246,12 @@ class _ReferenceIndicatorBanner extends StatelessWidget {
       ),
       child: Row(
         children: [
+          // isPassThrough -> unmodified reuse of the referenced asset's own
+          // image. isVariant (the only other case this banner renders for,
+          // since the caller now gates on state.isReference) -> a visually
+          // modified copy that gets its own generated prompt/image.
           Icon(
-            isPassThrough ? LucideIcons.link : LucideIcons.imageOff,
+            isPassThrough ? LucideIcons.link : LucideIcons.gitBranch,
             size: AppSizing.iconSm,
             color: isPassThrough
                 ? primaryColor
@@ -262,7 +270,11 @@ class _ReferenceIndicatorBanner extends StatelessWidget {
               borderRadius: BorderRadius.circular(AppSizing.radiusXs),
             ),
             child: Text(
-              isPassThrough ? 'Using global image' : 'Generating variant',
+              // Previously read "Generating variant" unconditionally, which
+              // was misleading even for a genuine variant (nothing is
+              // actively "generating" just because this screen is open —
+              // that's what isGeneratingPrompt/isGeneratingImage track).
+              isPassThrough ? 'Using global image' : 'Variant of reference',
               style: AppTextStyles.caption(context).copyWith(
                 color: isPassThrough
                     ? primaryColor

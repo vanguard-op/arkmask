@@ -78,9 +78,24 @@ class AssetEditorLoaded extends AssetEditorState {
   /// `'__credits__'` means insufficient credits — show paywall dialog.
   final String? imageError;
 
-  /// A scene-local asset with an empty description uses the global asset's
-  /// image and does not need its own prompt or image generated.
-  bool get isPassThrough => !isGlobal && description.isEmpty;
+  /// True when [name] is a reference into another asset
+  /// (`@/scenes/{n}/{baseName}`), as opposed to a brand-new, independent
+  /// scene-local asset with its own plain name. Only reference assets ever
+  /// show the reference-indicator banner — see [isPassThrough]/[isVariant].
+  bool get isReference => !isGlobal && name.startsWith('@');
+
+  /// A scene-local reference asset with an empty description uses the
+  /// referenced asset's image as-is and does not need its own prompt or
+  /// image generated.
+  bool get isPassThrough => isReference && description.isEmpty;
+
+  /// A scene-local reference asset whose description is non-empty — the
+  /// story calls for a visually-modified copy of the referenced asset (e.g.
+  /// a different outfit), so it gets its own generated prompt/image instead
+  /// of reusing the referenced asset's. Not to be confused with a brand-new,
+  /// non-reference scene-local asset, which also has a non-empty
+  /// description but [isReference] is false for it.
+  bool get isVariant => isReference && !isPassThrough;
 
   bool get hasImage => gcsImagePath != null;
   bool get hasPromptBody => promptBody != null && promptBody!.isNotEmpty;
