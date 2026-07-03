@@ -289,11 +289,29 @@ class _FrontmatterCard extends StatefulWidget {
 
 class _FrontmatterCardState extends State<_FrontmatterCard> {
   late final TextEditingController _descController;
+  late final FocusNode _descFocusNode;
 
   @override
   void initState() {
     super.initState();
     _descController = TextEditingController(text: widget.state.description);
+    _descFocusNode = FocusNode();
+    // Multiline TextFields show a "newline" keyboard action, not "done", so
+    // onEditingComplete rarely fires. Losing focus (tapping elsewhere,
+    // navigating back) is the reliable signal that editing has ended —
+    // persist to Firestore at that point.
+    _descFocusNode.addListener(_onFocusChange);
+  }
+
+  void _onFocusChange() {
+    if (!_descFocusNode.hasFocus) _save();
+  }
+
+  void _save() {
+    if (!mounted) return;
+    if (_descController.text != widget.state.description) {
+      context.read<AssetEditorCubit>().onDescriptionChanged(_descController.text);
+    }
   }
 
   @override
@@ -309,6 +327,11 @@ class _FrontmatterCardState extends State<_FrontmatterCard> {
 
   @override
   void dispose() {
+    // Flush any pending edit if the widget is torn down (e.g. user navigates
+    // back) without the field ever losing focus first.
+    _save();
+    _descFocusNode.removeListener(_onFocusChange);
+    _descFocusNode.dispose();
     _descController.dispose();
     super.dispose();
   }
@@ -364,6 +387,7 @@ class _FrontmatterCardState extends State<_FrontmatterCard> {
             label: 'DESCRIPTION',
             child: TextField(
               controller: _descController,
+              focusNode: _descFocusNode,
               maxLines: null,
               style: AppTextStyles.body(context),
               decoration: InputDecoration(
@@ -376,11 +400,7 @@ class _FrontmatterCardState extends State<_FrontmatterCard> {
                 ),
                 contentPadding: EdgeInsets.zero,
               ),
-              onEditingComplete: () {
-                context
-                    .read<AssetEditorCubit>()
-                    .onDescriptionChanged(_descController.text);
-              },
+              onEditingComplete: _save,
             ),
           ),
         ],
@@ -499,11 +519,29 @@ class _PromptBodySection extends StatefulWidget {
 
 class _PromptBodySectionState extends State<_PromptBodySection> {
   late final TextEditingController _controller;
+  late final FocusNode _focusNode;
 
   @override
   void initState() {
     super.initState();
     _controller = TextEditingController(text: widget.state.promptBody ?? '');
+    _focusNode = FocusNode();
+    // Multiline TextFields show a "newline" keyboard action, not "done", so
+    // onEditingComplete rarely fires. Losing focus (tapping elsewhere,
+    // navigating back) is the reliable signal that editing has ended —
+    // persist to Firestore at that point.
+    _focusNode.addListener(_onFocusChange);
+  }
+
+  void _onFocusChange() {
+    if (!_focusNode.hasFocus) _save();
+  }
+
+  void _save() {
+    if (!mounted) return;
+    if (_controller.text != (widget.state.promptBody ?? '')) {
+      context.read<AssetEditorCubit>().onPromptBodyChanged(_controller.text);
+    }
   }
 
   @override
@@ -520,6 +558,11 @@ class _PromptBodySectionState extends State<_PromptBodySection> {
 
   @override
   void dispose() {
+    // Flush any pending edit if the widget is torn down (e.g. user navigates
+    // back) without the field ever losing focus first.
+    _save();
+    _focusNode.removeListener(_onFocusChange);
+    _focusNode.dispose();
     _controller.dispose();
     super.dispose();
   }
@@ -593,6 +636,7 @@ class _PromptBodySectionState extends State<_PromptBodySection> {
                   )
                 : TextField(
                     controller: _controller,
+                    focusNode: _focusNode,
                     maxLines: null,
                     style: AppTextStyles.monoBody(context),
                     decoration: InputDecoration(
@@ -606,9 +650,7 @@ class _PromptBodySectionState extends State<_PromptBodySection> {
                       ),
                       contentPadding: EdgeInsets.zero,
                     ),
-                    onEditingComplete: () => context
-                        .read<AssetEditorCubit>()
-                        .onPromptBodyChanged(_controller.text),
+                    onEditingComplete: _save,
                   ),
           ),
         ],

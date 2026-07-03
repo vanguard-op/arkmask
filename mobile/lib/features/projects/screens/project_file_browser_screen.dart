@@ -39,17 +39,16 @@ class ProjectFileBrowserScreen extends StatefulWidget {
 }
 
 class _ProjectFileBrowserScreenState extends State<ProjectFileBrowserScreen> {
-  /// Future for the storage summary fetch (FEAT-027). Failures are caught
-  /// inside [_StorageBanner] and shown as nothing (non-blocking).
-  // Not `final` — reassigned by [_refreshSummary].
-  late Future<Map<String, dynamic>> _summaryFuture;
+  /// Last successfully resolved storage summary (FEAT-027), or null before the
+  /// first fetch has ever completed. Kept across refreshes so the banner shows
+  /// the previous value in place while a new fetch is in flight, instead of
+  /// hiding and re-appearing — avoids a jarring UI "jump" every time the user
+  /// returns from a child screen.
+  ProjectStorageSummary? _lastSummary;
 
   @override
   void initState() {
     super.initState();
-    // Assign a completed future as placeholder so _summaryFuture is always
-    // initialized before the first build.
-    _summaryFuture = Future.value({});
     // Defer until context is fully available (ArkMaskServices.of requires it).
     WidgetsBinding.instance.addPostFrameCallback((_) => _refreshSummary());
   }
@@ -64,13 +63,23 @@ class _ProjectFileBrowserScreenState extends State<ProjectFileBrowserScreen> {
   /// live and does NOT need re-fetching on return; a full `load()` used to
   /// be called here too, which reset scroll/expand state on every back
   /// navigation for no benefit (see FileBrowserCubit doc comments).
-  void _refreshSummary() {
+  ///
+  /// Deliberately does NOT clear [_lastSummary] before the fetch — the banner
+  /// keeps rendering the old numbers until the new summary arrives, then
+  /// updates directly via [setState]. On failure the previous value is left
+  /// untouched (fails silently, non-blocking).
+  Future<void> _refreshSummary() async {
     if (!mounted) return;
-    setState(() {
-      _summaryFuture = ArkMaskServices.of(context)
-          .apiClient
-          .getProjectStorageSummary(widget.projectSlug);
-    });
+    final apiClient = ArkMaskServices.of(context).apiClient;
+    try {
+      final data = await apiClient.getProjectStorageSummary(widget.projectSlug);
+      if (!mounted) return;
+      setState(() {
+        _lastSummary = ProjectStorageSummary.fromJson(widget.projectSlug, data);
+      });
+    } catch (_) {
+      // Non-critical — keep showing the last known summary, if any.
+    }
   }
 
   @override
@@ -81,7 +90,7 @@ class _ProjectFileBrowserScreenState extends State<ProjectFileBrowserScreen> {
       )..load(widget.projectSlug),
       child: _FileBrowserView(
         projectSlug: widget.projectSlug,
-        summaryFuture: _summaryFuture,
+        storageSummary: _lastSummary,
         onReturnFromChild: _refreshSummary,
       ),
     );
@@ -91,12 +100,14 @@ class _ProjectFileBrowserScreenState extends State<ProjectFileBrowserScreen> {
 class _FileBrowserView extends StatelessWidget {
   const _FileBrowserView({
     required this.projectSlug,
-    required this.summaryFuture,
+    required this.storageSummary,
     required this.onReturnFromChild,
   });
 
   final String projectSlug;
-  final Future<Map<String, dynamic>> summaryFuture;
+
+  /// Last resolved storage summary, or null before the first fetch completes.
+  final ProjectStorageSummary? storageSummary;
 
   /// Called when the user pops back from a pushed child screen. Only
   /// refreshes the storage summary (FEAT-027) — the tree itself stays live
@@ -156,10 +167,7 @@ class _FileBrowserView extends StatelessWidget {
             FileBrowserLoaded() => Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  _StorageBanner(
-                    slug: projectSlug,
-                    summaryFuture: summaryFuture,
-                  ),
+                  _StorageBanner(summary: storageSummary),
                   Expanded(
                     child: _TreeView(
                       state: state,
@@ -555,72 +563,65 @@ class _ExtractAssetsButton extends StatelessWidget {
 // ── Storage banner (FEAT-027) ─────────────────────────────────────────────────
 
 /// Compact per-category storage breakdown shown below the AppBar in the project
-/// file browser. Hidden when the summary is unavailable or all categories are 0.
+/// file browser. Hidden only when no summary has ever resolved successfully
+/// (first launch, before the initial fetch completes) or all categories are 0.
 ///
-/// Uses a [FutureBuilder] against [summaryFuture] — a single fetch started in
-/// [_ProjectFileBrowserScreenState.initState]. Errors are silently swallowed;
-/// the banner simply renders nothing on failure.
+/// Renders directly off [summary] — no [FutureBuilder] here. The parent
+/// ([_ProjectFileBrowserScreenState]) holds the last successfully resolved
+/// summary in state and keeps rendering it while a background refresh is in
+/// flight, only swapping to the new value once it lands. This avoids the
+/// banner disappearing and reappearing (a jarring "jump") every time the user
+/// returns from a child screen and a refresh is triggered.
 class _StorageBanner extends StatelessWidget {
-  const _StorageBanner({required this.slug, required this.summaryFuture});
+  const _StorageBanner({required this.summary});
 
-  final String slug;
-  final Future<Map<String, dynamic>> summaryFuture;
+  final ProjectStorageSummary? summary;
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<Map<String, dynamic>>(
-      future: summaryFuture,
-      builder: (context, snapshot) {
-        if (snapshot.connectionState != ConnectionState.done) {
-          return const SizedBox.shrink();
-        }
-        if (snapshot.hasError || !snapshot.hasData) {
-          return const SizedBox.shrink();
-        }
+    final summary = this.summary;
+    if (summary == null || summary.totalBytes == 0) {
+      return const SizedBox.shrink();
+    }
 
-        final summary = ProjectStorageSummary.fromJson(slug, snapshot.data!);
-        if (summary.totalBytes == 0) return const SizedBox.shrink();
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final chipBg =
+        isDark ? AppColors.surfaceRaisedDark : AppColors.surfaceRaisedLight;
+    final textColor =
+        isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight;
 
-        final isDark = Theme.of(context).brightness == Brightness.dark;
-        final chipBg =
-            isDark ? AppColors.surfaceRaisedDark : AppColors.surfaceRaisedLight;
-        final textColor =
-            isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight;
-
-        return Padding(
-          padding: const EdgeInsets.symmetric(
-            horizontal: AppSpacing.s3,
-            vertical: AppSpacing.s2,
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.s3,
+        vertical: AppSpacing.s2,
+      ),
+      child: Row(
+        children: [
+          _StorageChip(
+            label: 'Images',
+            bytes: summary.imagesBytes,
+            chipBg: chipBg,
+            textColor: textColor,
+            context: context,
           ),
-          child: Row(
-            children: [
-              _StorageChip(
-                label: 'Images',
-                bytes: summary.imagesBytes,
-                chipBg: chipBg,
-                textColor: textColor,
-                context: context,
-              ),
-              const SizedBox(width: AppSpacing.s2),
-              _StorageChip(
-                label: 'Videos',
-                bytes: summary.videosBytes,
-                chipBg: chipBg,
-                textColor: textColor,
-                context: context,
-              ),
-              const SizedBox(width: AppSpacing.s2),
-              _StorageChip(
-                label: 'Export',
-                bytes: summary.exportBytes,
-                chipBg: chipBg,
-                textColor: textColor,
-                context: context,
-              ),
-            ],
+          const SizedBox(width: AppSpacing.s2),
+          _StorageChip(
+            label: 'Videos',
+            bytes: summary.videosBytes,
+            chipBg: chipBg,
+            textColor: textColor,
+            context: context,
           ),
-        );
-      },
+          const SizedBox(width: AppSpacing.s2),
+          _StorageChip(
+            label: 'Export',
+            bytes: summary.exportBytes,
+            chipBg: chipBg,
+            textColor: textColor,
+            context: context,
+          ),
+        ],
+      ),
     );
   }
 }
