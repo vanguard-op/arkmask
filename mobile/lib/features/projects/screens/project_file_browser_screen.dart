@@ -1,3 +1,5 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
@@ -356,6 +358,15 @@ class _TreeView extends StatelessWidget {
           context.read<FileBrowserCubit>().toggleExpand(scenesKey),
       onToggleExpand: () =>
           context.read<FileBrowserCubit>().toggleExpand(scenesKey),
+      // FEAT-038 — long-press offers to create a Scene N document for any
+      // story scene (from story.mdx's `# N` headings) that doesn't have one
+      // yet. Scene docs are otherwise only ever created as a side effect of
+      // asset extraction touching that scene number.
+      onLongPress: () => showCreateSceneSheet(
+        context,
+        projectSlug: projectSlug,
+        missingSceneNumbers: tree.missingSceneNumbers,
+      ),
     ));
 
     if (expanded.contains(scenesKey)) {
@@ -723,6 +734,146 @@ class _SkeletonTree extends StatelessWidget {
           ),
         );
       }),
+    );
+  }
+}
+
+/// Long-press action on the "scenes" folder header (FEAT-038): lets the user
+/// create a `scenes/{n}` document for any story scene (from story.mdx's
+/// `# N` headings, [missingSceneNumbers]) that doesn't have one yet. Scene
+/// documents are otherwise only ever created as a side effect of `/assets`
+/// extraction touching that scene number — a story scene with no extracted
+/// assets (or written after extraction already ran) would never get one
+/// without this manual path.
+Future<void> showCreateSceneSheet(
+  BuildContext context, {
+  required String projectSlug,
+  required List<int> missingSceneNumbers,
+}) {
+  return showModalBottomSheet<void>(
+    context: context,
+    builder: (_) => _CreateSceneSheet(
+      projectSlug: projectSlug,
+      missingSceneNumbers: missingSceneNumbers,
+    ),
+  );
+}
+
+class _CreateSceneSheet extends StatefulWidget {
+  const _CreateSceneSheet({
+    required this.projectSlug,
+    required this.missingSceneNumbers,
+  });
+
+  final String projectSlug;
+  final List<int> missingSceneNumbers;
+
+  @override
+  State<_CreateSceneSheet> createState() => _CreateSceneSheetState();
+}
+
+class _CreateSceneSheetState extends State<_CreateSceneSheet> {
+  /// Scene numbers currently being written — disables their row and drives
+  /// the inline spinner without blocking taps on other rows.
+  final Set<int> _creating = {};
+
+  String? get _uid => FirebaseAuth.instance.currentUser?.uid;
+
+  /// Mirrors the backend's scene-doc creation in
+  /// backend/app/services/asset_writer.py (`write_extracted_assets`) —
+  /// same fields, same merge:true — so a manually-created scene is
+  /// indistinguishable from one created by asset extraction.
+  Future<void> _create(int sceneNumber) async {
+    setState(() => _creating.add(sceneNumber));
+    try {
+      await FirebaseFirestore.instance
+          .doc('users/$_uid/projects/${widget.projectSlug}/scenes/$sceneNumber')
+          .set({
+        'scene_number': sceneNumber,
+        'created_at': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      // Firestore listener adds the row to the tree automatically. Sheet
+      // stays open so the user can create more than one in a row.
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to create Scene $sceneNumber: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _creating.remove(sceneNumber));
+    }
+  }
+
+  Future<void> _createAll() async {
+    for (final n in List<int>.from(widget.missingSceneNumbers)) {
+      await _create(n);
+    }
+    if (mounted) Navigator.of(context).pop();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final missing = widget.missingSceneNumbers;
+
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(AppSpacing.s4),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Create Scene', style: AppTextStyles.h3(context)),
+            const SizedBox(height: AppSpacing.s2),
+            if (missing.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: AppSpacing.s4),
+                child: Text(
+                  'Every scene in story.mdx already has a Scene entry.',
+                  style: AppTextStyles.body(context).copyWith(
+                    color: isDark
+                        ? AppColors.textSecondaryDark
+                        : AppColors.textSecondaryLight,
+                  ),
+                ),
+              )
+            else ...[
+              Text(
+                'These scene numbers exist in story.mdx but have not been '
+                'created yet.',
+                style: AppTextStyles.bodySmall(context).copyWith(
+                  color: isDark
+                      ? AppColors.textSecondaryDark
+                      : AppColors.textSecondaryLight,
+                ),
+              ),
+              const SizedBox(height: AppSpacing.s3),
+              ...missing.map((n) => ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(LucideIcons.film),
+                    title: Text('Scene $n'),
+                    trailing: _creating.contains(n)
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(LucideIcons.plus),
+                    enabled: !_creating.contains(n),
+                    onTap: () => _create(n),
+                  )),
+              if (missing.length > 1) ...[
+                const SizedBox(height: AppSpacing.s2),
+                ElevatedButton(
+                  onPressed: _creating.isEmpty ? _createAll : null,
+                  child: Text('Create All (${missing.length})'),
+                ),
+              ],
+            ],
+          ],
+        ),
+      ),
     );
   }
 }

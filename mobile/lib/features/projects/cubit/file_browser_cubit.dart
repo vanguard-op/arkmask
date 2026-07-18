@@ -300,6 +300,7 @@ class FileBrowserCubit extends Cubit<FileBrowserState> {
       globalAssets: globalAssetNodes,
       scenes: sceneNodes,
       gcsFinalPath: data['gcs_final_path'] as String?,
+      storyScenesCount: _countStoryScenes(data['story_content'] as String? ?? ''),
     );
 
     // Read from the cubit-lifetime fields (not `state`) so expand/select
@@ -341,6 +342,28 @@ class FileBrowserCubit extends Cubit<FileBrowserState> {
           assetName: null,
         ) !=
         null;
+  }
+
+  /// Counts `# N` scene headings in raw `story_content` MDX — mirrors
+  /// StoryCubit._parseScenes' heading detection (kept independent rather
+  /// than shared code since this cubit only needs the count, not full scene
+  /// bodies). No headings but non-empty content means the whole thing is an
+  /// unheaded scene 1, matching StoryCubit's fallback. Used to compute
+  /// [ProjectTree.missingSceneNumbers] for manual scene creation (FEAT-038).
+  static int _countStoryScenes(String raw) {
+    if (raw.trim().isEmpty) return 0;
+    // ignore: deprecated_member_use
+    final headingPattern = RegExp(r'^# (\d+)\s*$', multiLine: true);
+    final matches = headingPattern.allMatches(raw).toList();
+    if (matches.isEmpty) return 1;
+    // Story scenes are always sequentially re-indexed 1..N on save (see
+    // StoryCubit._reindex), so the highest heading number found is the count.
+    var maxNumber = 0;
+    for (final m in matches) {
+      final n = int.tryParse(m.group(1)!) ?? 0;
+      if (n > maxNumber) maxNumber = n;
+    }
+    return maxNumber;
   }
 
   /// Sort priority for asset types in the file browser.

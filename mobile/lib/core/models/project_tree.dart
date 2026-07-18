@@ -23,6 +23,7 @@ class ProjectTree {
     required this.globalAssets,
     required this.scenes,
     this.gcsFinalPath,
+    this.storyScenesCount = 0,
   });
 
   /// Immutable project identifier — Firestore doc ID and GCS folder prefix.
@@ -46,8 +47,28 @@ class ProjectTree {
   /// completes. Used to show the final.mp4 node in the file browser.
   final String? gcsFinalPath;
 
+  /// Number of `# N` scenes currently written in the project's `story_content`
+  /// (parsed the same way as StoryCubit — see FileBrowserCubit._countStoryScenes).
+  /// 0 when the story is empty. Scene *documents* under `scenes/` may lag
+  /// behind this — a story scene only gets a `scenes/{n}` document once
+  /// asset extraction touches it or the user manually creates one (FEAT-038).
+  final int storyScenesCount;
+
   /// True when there are no global assets and no scenes yet (blank new project).
   bool get isBlank => globalAssets.isEmpty && scenes.isEmpty;
+
+  /// Story scene numbers (1..[storyScenesCount]) that do not yet have a
+  /// corresponding `scenes/{n}` document — candidates for manual scene
+  /// creation (FEAT-038). Empty when every story scene already has one, or
+  /// the story has no scenes yet.
+  List<int> get missingSceneNumbers {
+    if (storyScenesCount <= 0) return const [];
+    final existing = scenes.map((s) => s.sceneNumber).toSet();
+    return [
+      for (var n = 1; n <= storyScenesCount; n++)
+        if (!existing.contains(n)) n,
+    ];
+  }
 }
 
 /// Represents a single asset document in the Firestore assets subcollection.
