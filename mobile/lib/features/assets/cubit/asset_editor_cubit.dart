@@ -152,6 +152,8 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
           current is AssetEditorLoaded ? current.promptError : null,
       imageError: current is AssetEditorLoaded ? current.imageError : null,
       source: data['source'] as String? ?? 'extracted',
+      styleAdapted: data['style_adapted'] as bool? ?? false,
+      originalUploadGcsPath: data['original_upload_gcs_path'] as String?,
     ));
   }
 
@@ -300,9 +302,14 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
 
   /// Calls POST /image to enqueue an async image generation job.
   ///
-  /// Resolves a conditioning GCS path for variant assets (name starts with
-  /// `@`): reads the referenced asset document once from Firestore to get its
-  /// `gcs_image_path`. [isGeneratingImage] is derived from [jobsCubit] (see
+  /// Resolves a conditioning GCS path for two cases:
+  ///  - Variant assets (name starts with `@`): reads the referenced asset
+  ///    document once from Firestore to get its `gcs_image_path`.
+  ///  - Manually-created style-adapted assets (FEAT-034): uses the
+  ///    originally uploaded photo (`original_upload_gcs_path`) as the
+  ///    reference so the image model actually has the source photo to adapt
+  ///    the art style from, instead of generating from the prompt alone.
+  /// [isGeneratingImage] is derived from [jobsCubit] (see
   /// [_syncGeneratingFlags]).
   Future<void> generateImage() async {
     final s = state;
@@ -311,10 +318,14 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
     // this guard is a defensive double-check.
     if (s.isPassThrough) return;
 
-    // Resolve conditioning GCS path for variant assets.
+    // Resolve conditioning GCS path: variant assets reference another
+    // asset's image; style-adapted manual assets reference their own
+    // originally uploaded photo. These are mutually exclusive in practice.
     String? conditioningGcsPath;
     if (s.name.startsWith('@')) {
       conditioningGcsPath = await _resolveConditioningGcsPath(s.name);
+    } else if (s.styleAdapted && s.originalUploadGcsPath != null) {
+      conditioningGcsPath = s.originalUploadGcsPath;
     }
 
     emit(s.copyWith(isGeneratingImage: true, clearImageError: true));

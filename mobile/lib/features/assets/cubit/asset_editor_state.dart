@@ -38,6 +38,8 @@ class AssetEditorLoaded extends AssetEditorState {
     this.source = 'extracted',
     this.isDeleting = false,
     this.deleteBlockedBy,
+    this.styleAdapted = false,
+    this.originalUploadGcsPath,
   });
 
   /// Firestore document ID for this asset (the last path segment).
@@ -92,6 +94,18 @@ class AssetEditorLoaded extends AssetEditorState {
   /// (FEAT-037 — backend returned 409). Null when no delete is blocked.
   final List<String>? deleteBlockedBy;
 
+  /// From Firestore `style_adapted` field (FEAT-034). True when this asset
+  /// was created from an uploaded photo with "Adapt to story asset style"
+  /// switched on — its image must be generated using
+  /// [originalUploadGcsPath] as the conditioning reference so the art style
+  /// adaptation actually has the source photo to work from.
+  final bool styleAdapted;
+
+  /// From Firestore `original_upload_gcs_path` field (FEAT-034). The GCS
+  /// path of the originally uploaded photo for a style-adapted asset. Null
+  /// for every other asset source.
+  final String? originalUploadGcsPath;
+
   /// True when [name] is a reference into another asset
   /// (`@/scenes/{n}/{baseName}`), as opposed to a brand-new, independent
   /// scene-local asset with its own plain name. Only reference assets ever
@@ -134,6 +148,8 @@ class AssetEditorLoaded extends AssetEditorState {
     bool? isDeleting,
     List<String>? deleteBlockedBy,
     bool clearDeleteBlockedBy = false,
+    bool? styleAdapted,
+    String? originalUploadGcsPath,
   }) {
     return AssetEditorLoaded(
       assetId: assetId ?? this.assetId,
@@ -152,6 +168,8 @@ class AssetEditorLoaded extends AssetEditorState {
       isDeleting: isDeleting ?? this.isDeleting,
       deleteBlockedBy:
           clearDeleteBlockedBy ? null : (deleteBlockedBy ?? this.deleteBlockedBy),
+      styleAdapted: styleAdapted ?? this.styleAdapted,
+      originalUploadGcsPath: originalUploadGcsPath ?? this.originalUploadGcsPath,
     );
   }
 
@@ -172,5 +190,7 @@ class AssetEditorLoaded extends AssetEditorState {
         source,
         isDeleting,
         deleteBlockedBy,
+        styleAdapted,
+        originalUploadGcsPath,
       ];
 }
