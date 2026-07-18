@@ -894,26 +894,46 @@ class _StoryboardTab extends StatelessWidget {
 
   final SceneLoaded state;
 
+  static const double _storyboardBoxHeight = 320;
+
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
         Expanded(
-          child: state.hasStoryboard
-              ? _StoryboardDisplay(
-                  storyboardBody: state.storyboardBody!,
-                )
-              : _EmptyStoryboardState(),
-        ),
+          // Scrollable, with the storyboard box given a fixed height instead
+          // of Expanded/expands filling whatever space is left: with the
+          // storyboard now editable (FEAT-015), opening the keyboard shrinks
+          // this Expanded's available height (Scaffold resizeToAvoidBottomInset),
+          // and the fixed-size siblings below (status strip, 180px video
+          // preview) used to eat nearly all of what remained, squeezing the
+          // text field to near zero. A fixed height inside a scroll view lets
+          // the column overflow into scroll instead of being crushed, and
+          // Flutter auto-scrolls the focused field above the keyboard.
+          child: SingleChildScrollView(
+            child: Column(
+              children: [
+                SizedBox(
+                  height: _storyboardBoxHeight,
+                  child: state.hasStoryboard
+                      ? _StoryboardDisplay(
+                          storyboardBody: state.storyboardBody!,
+                        )
+                      : _EmptyStoryboardState(),
+                ),
 
-        // Generation status strip — driven by cubit state, derived live from JobsCubit.
-        _GenerationStatusStrip(state: state),
+                // Generation status strip — driven by cubit state, derived live from JobsCubit.
+                _GenerationStatusStrip(state: state),
 
-        // Video preview: shows a card with a play button when video is ready.
-        if (state.hasVideo)
-          _VideoPreviewArea(
-            gcsVideoPath: state.gcsVideoPath!,
+                // Video preview: shows a card with a play button when video is ready.
+                if (state.hasVideo)
+                  _VideoPreviewArea(
+                    gcsVideoPath: state.gcsVideoPath!,
+                  ),
+              ],
+            ),
           ),
+        ),
 
         // Generate Video button.
         _GenerateVideoButton(state: state),
