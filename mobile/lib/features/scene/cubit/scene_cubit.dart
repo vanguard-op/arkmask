@@ -88,6 +88,11 @@ class SceneCubit extends Cubit<SceneState> {
   String? _videoError;
   int _selectedTabIndex = 0;
 
+  /// True while a manual `storyboard_body` edit is being written to
+  /// Firestore (FEAT-015). Local flag rather than a job — the write is a
+  /// direct, synchronous Firestore update, not an async worker job.
+  bool _isSavingStoryboard = false;
+
   bool get _isGeneratingStoryboard => jobsCubit.activeJob(
         type: 'video_prompt',
         projectId: projectSlug,
@@ -288,6 +293,7 @@ class SceneCubit extends Cubit<SceneState> {
       storyboardError: _storyboardError,
       videoError: _videoError,
       selectedTabIndex: _selectedTabIndex,
+      isSavingStoryboard: _isSavingStoryboard,
     ));
   }
 
@@ -430,6 +436,35 @@ class SceneCubit extends Cubit<SceneState> {
           videoError: msg,
         ));
       }
+    }
+  }
+
+  // ── Manual storyboard edit (FEAT-015) ─────────────────────────────────────
+
+  /// Called when the storyboard `TextField` loses focus, mirroring
+  /// [AssetEditorCubit.onPromptBodyChanged] — direct Firestore write, no job
+  /// queue, since this is a synchronous user edit rather than a generation.
+  Future<void> onStoryboardBodyChanged(String body) async {
+    final s = state;
+    if (s is! SceneLoaded) return;
+    _isSavingStoryboard = true;
+    emit(s.copyWith(isSavingStoryboard: true));
+    try {
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      await FirebaseFirestore.instance
+          .doc('users/$uid/projects/$projectSlug/scenes/$sceneNumber')
+          .update({'storyboard_body': body});
+    } catch (e) {
+      // The Firestore listener will not fire on a failed write; restore flag.
+      _isSavingStoryboard = false;
+      if (!isClosed && state is SceneLoaded) {
+        emit((state as SceneLoaded).copyWith(isSavingStoryboard: false));
+      }
+      return;
+    }
+    _isSavingStoryboard = false;
+    if (!isClosed && state is SceneLoaded) {
+      emit((state as SceneLoaded).copyWith(isSavingStoryboard: false));
     }
   }
 

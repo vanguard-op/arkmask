@@ -960,11 +960,15 @@ class _EmptyStoryboardState extends StatelessWidget {
 
 // ── Storyboard display ────────────────────────────────────────────────────────
 
-/// Read-only display of the storyboard body written by the backend.
+/// Editable display of the storyboard body written by the backend (FEAT-015).
 ///
-/// Phase 2: The storyboard lives in Firestore (`storyboard_body`). The
-/// Firestore listener in [SceneCubit] delivers updates automatically.
-/// There is no client-side save path — display only.
+/// The storyboard lives in Firestore (`storyboard_body`); the Firestore
+/// listener in [SceneCubit] delivers updates automatically (e.g. after
+/// (re)generation). User edits are persisted on focus loss — same
+/// save-on-blur pattern as an asset's description/prompt fields (see
+/// `_PromptBodySection` in asset_editor_screen.dart) — since a multiline
+/// field's keyboard shows "newline" rather than "done", making focus loss
+/// the only reliable signal that editing has ended.
 class _StoryboardDisplay extends StatefulWidget {
   const _StoryboardDisplay({required this.storyboardBody});
 
@@ -976,25 +980,46 @@ class _StoryboardDisplay extends StatefulWidget {
 
 class _StoryboardDisplayState extends State<_StoryboardDisplay> {
   late final TextEditingController _controller;
+  late final FocusNode _focusNode;
 
   @override
   void initState() {
     super.initState();
     _controller = TextEditingController(text: widget.storyboardBody);
+    _focusNode = FocusNode();
+    _focusNode.addListener(_onFocusChange);
+  }
+
+  void _onFocusChange() {
+    if (!_focusNode.hasFocus) _save();
+  }
+
+  void _save() {
+    if (!mounted) return;
+    if (_controller.text != widget.storyboardBody) {
+      context.read<SceneCubit>().onStoryboardBodyChanged(_controller.text);
+    }
   }
 
   @override
   void didUpdateWidget(_StoryboardDisplay old) {
     super.didUpdateWidget(old);
-    // Keep the display in sync when the Firestore listener delivers new text.
+    // Keep the display in sync when the Firestore listener delivers new text
+    // (e.g. after (re)generation) — but never clobber active local edits.
     if (old.storyboardBody != widget.storyboardBody &&
-        _controller.text != widget.storyboardBody) {
+        _controller.text != widget.storyboardBody &&
+        !_focusNode.hasFocus) {
       _controller.text = widget.storyboardBody;
     }
   }
 
   @override
   void dispose() {
+    // Flush any pending edit if the widget is torn down (e.g. user navigates
+    // back or switches tabs) without the field ever losing focus first.
+    _save();
+    _focusNode.removeListener(_onFocusChange);
+    _focusNode.dispose();
     _controller.dispose();
     super.dispose();
   }
@@ -1010,7 +1035,7 @@ class _StoryboardDisplayState extends State<_StoryboardDisplay> {
       padding: const EdgeInsets.all(AppSpacing.s3),
       child: TextField(
         controller: _controller,
-        readOnly: true,
+        focusNode: _focusNode,
         maxLines: null,
         expands: true,
         textAlignVertical: TextAlignVertical.top,

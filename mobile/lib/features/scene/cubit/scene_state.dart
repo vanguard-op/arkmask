@@ -86,6 +86,7 @@ class SceneLoaded extends SceneState {
     this.storyboardError,
     this.videoError,
     this.selectedTabIndex = 0,
+    this.isSavingStoryboard = false,
   });
 
   final int sceneNumber;
@@ -119,6 +120,12 @@ class SceneLoaded extends SceneState {
   /// 0 = Assets tab, 1 = Storyboard tab.
   final int selectedTabIndex;
 
+  /// True while a manual edit to `storyboard_body` is being written to
+  /// Firestore (FEAT-015 — same manual-edit pattern as an asset's
+  /// description/prompt fields). Does not overlap with
+  /// [isGeneratingStoryboard], which tracks the async `/video-prompt` job.
+  final bool isSavingStoryboard;
+
   bool get hasStoryboard =>
       storyboardBody != null && storyboardBody!.isNotEmpty;
   bool get hasVideo => gcsVideoPath != null;
@@ -139,6 +146,7 @@ class SceneLoaded extends SceneState {
     Object? storyboardError = _sentinel,
     Object? videoError = _sentinel,
     int? selectedTabIndex,
+    bool? isSavingStoryboard,
   }) {
     return SceneLoaded(
       sceneNumber: sceneNumber ?? this.sceneNumber,
@@ -155,6 +163,7 @@ class SceneLoaded extends SceneState {
       videoError:
           videoError == _sentinel ? this.videoError : videoError as String?,
       selectedTabIndex: selectedTabIndex ?? this.selectedTabIndex,
+      isSavingStoryboard: isSavingStoryboard ?? this.isSavingStoryboard,
     );
   }
 
@@ -172,5 +181,6 @@ class SceneLoaded extends SceneState {
         storyboardError,
         videoError,
         selectedTabIndex,
+        isSavingStoryboard,
       ];
 }
