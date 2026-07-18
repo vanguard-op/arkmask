@@ -676,6 +676,30 @@ class _ImageTabState extends State<_ImageTab> {
       controller: widget.scrollController,
       padding: const EdgeInsets.all(AppSpacing.s4),
       children: [
+        // Type and style-adapt choices are set BEFORE picking an image —
+        // both feed the upload/describe call fired the instant a photo is
+        // selected (asset type for /image-describe, style-adapt for the
+        // upload's GCS object naming), so there is no image-picked window
+        // during which these settings can still be silently overridden.
+        _AssetTypeSelector(
+          selected: _type,
+          onChanged: (t) => setState(() => _type = t),
+        ),
+        const SizedBox(height: AppSpacing.s3),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Adapt to story asset style?'),
+          subtitle: Text(
+            _styleAdapted
+                ? 'A new image will be generated in the project\'s art style, using your photo as a reference (${CreditCost.imagePrompt + CreditCost.imageGeneration} credits). Set this before picking a photo below.'
+                : 'The uploaded photo is used as-is with no regeneration. Set this before picking a photo below.',
+          ),
+          value: _styleAdapted,
+          onChanged: _picked != null
+              ? null
+              : (v) => setState(() => _styleAdapted = v),
+        ),
+        const SizedBox(height: AppSpacing.s3),
         if (_picked == null)
           Row(
             children: [
@@ -696,28 +720,32 @@ class _ImageTabState extends State<_ImageTab> {
               ),
             ],
           )
-        else
+        else ...[
           ClipRRect(
             borderRadius: BorderRadius.circular(AppSizing.radiusMd),
             child: Image.file(File(_picked!.path), height: 160, fit: BoxFit.cover),
           ),
-        const SizedBox(height: AppSpacing.s3),
-        _AssetTypeSelector(
-          selected: _type,
-          onChanged: (t) => setState(() => _type = t),
-        ),
-        const SizedBox(height: AppSpacing.s3),
-        SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          title: const Text('Adapt to story asset style?'),
-          subtitle: Text(
-            _styleAdapted
-                ? 'A new image will be generated in the project\'s art style, using this photo as a reference (${CreditCost.imagePrompt + CreditCost.imageGeneration} credits).'
-                : 'The uploaded photo is used as-is with no regeneration.',
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton.icon(
+              // Only way back to the type/style-adapt choices, which lock
+              // once a photo is picked (see the switch above) — lets the
+              // user reconsider those without leaving and reopening the
+              // whole sheet. Discards the in-flight upload/description;
+              // the orphaned temp GCS object is harmless and unreferenced.
+              onPressed: (_uploading || _describing || _saving)
+                  ? null
+                  : () => setState(() {
+                        _picked = null;
+                        _uploadedGcsPath = null;
+                        _descController.clear();
+                        _error = null;
+                      }),
+              icon: const Icon(LucideIcons.rotateCcw, size: 16),
+              label: const Text('Change photo'),
+            ),
           ),
-          value: _styleAdapted,
-          onChanged: _picked == null ? null : (v) => setState(() => _styleAdapted = v),
-        ),
+        ],
         const SizedBox(height: AppSpacing.s3),
         TextField(
           controller: _nameController,
