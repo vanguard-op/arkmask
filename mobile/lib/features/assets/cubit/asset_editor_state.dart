@@ -35,6 +35,9 @@ class AssetEditorLoaded extends AssetEditorState {
     this.isGeneratingImage = false,
     this.promptError,
     this.imageError,
+    this.source = 'extracted',
+    this.isDeleting = false,
+    this.deleteBlockedBy,
   });
 
   /// Firestore document ID for this asset (the last path segment).
@@ -78,6 +81,17 @@ class AssetEditorLoaded extends AssetEditorState {
   /// `'__credits__'` means insufficient credits — show paywall dialog.
   final String? imageError;
 
+  /// How this asset document was created — see [AssetNode.source] for the
+  /// full contract. Drives the informational source badge (FEAT-010).
+  final String source;
+
+  /// True while `DELETE /assets` is in flight (FEAT-037).
+  final bool isDeleting;
+
+  /// Names of dependent assets that blocked the last delete attempt
+  /// (FEAT-037 — backend returned 409). Null when no delete is blocked.
+  final List<String>? deleteBlockedBy;
+
   /// True when [name] is a reference into another asset
   /// (`@/scenes/{n}/{baseName}`), as opposed to a brand-new, independent
   /// scene-local asset with its own plain name. Only reference assets ever
@@ -116,6 +130,10 @@ class AssetEditorLoaded extends AssetEditorState {
     bool clearPromptError = false,
     bool clearImageError = false,
     bool clearGcsImagePath = false,
+    String? source,
+    bool? isDeleting,
+    List<String>? deleteBlockedBy,
+    bool clearDeleteBlockedBy = false,
   }) {
     return AssetEditorLoaded(
       assetId: assetId ?? this.assetId,
@@ -130,6 +148,10 @@ class AssetEditorLoaded extends AssetEditorState {
       isGeneratingImage: isGeneratingImage ?? this.isGeneratingImage,
       promptError: clearPromptError ? null : (promptError ?? this.promptError),
       imageError: clearImageError ? null : (imageError ?? this.imageError),
+      source: source ?? this.source,
+      isDeleting: isDeleting ?? this.isDeleting,
+      deleteBlockedBy:
+          clearDeleteBlockedBy ? null : (deleteBlockedBy ?? this.deleteBlockedBy),
     );
   }
 
@@ -147,5 +169,8 @@ class AssetEditorLoaded extends AssetEditorState {
         isGeneratingImage,
         promptError,
         imageError,
+        source,
+        isDeleting,
+        deleteBlockedBy,
       ];
 }

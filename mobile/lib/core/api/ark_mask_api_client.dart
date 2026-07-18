@@ -378,6 +378,115 @@ class ArkMaskApiClient {
     return (response.data as Map<String, dynamic>)['url'] as String;
   }
 
+  // ── Manual asset management endpoints (FEAT-033–037) ─────────────────────
+
+  /// POST /media/upload-url — obtain a presigned PUT URL for a manual asset
+  /// image upload (FEAT-034).
+  ///
+  /// [objectPath] is the relative object key under `{uid}/{projectSlug}/`,
+  /// e.g. `assets/{slug}/image.png` (style_adapted off) or
+  /// `assets/{slug}/original.<ext>` (style_adapted on). Returns
+  /// `(uploadUrl, gcsPath)` — the caller performs an HTTP PUT of the raw
+  /// file bytes to [uploadUrl] with the same [contentType], then uses
+  /// `gcsPath` as `gcs_image_path`, `original_upload_gcs_path`, or
+  /// `conditioning_gcs_path` as appropriate.
+  Future<(String uploadUrl, String gcsPath)> getUploadUrl({
+    required String projectSlug,
+    required String objectPath,
+    required String contentType,
+  }) async {
+    final response = await _execute(
+      () => _dio.post('/media/upload-url', data: {
+        'project_slug': projectSlug,
+        'object_path': objectPath,
+        'content_type': contentType,
+      }),
+    );
+    final body = response.data as Map<String, dynamic>;
+    return (body['upload_url'] as String, body['gcs_path'] as String);
+  }
+
+  /// Uploads raw [bytes] directly to a GCS presigned PUT URL obtained from
+  /// [getUploadUrl]. Uses a bare Dio PUT (not through [_execute]) since the
+  /// presigned URL is not an ArkMask API endpoint and must not receive the
+  /// `X-Platform-Key` / provider headers injected by [CredentialInterceptor].
+  Future<void> uploadToPresignedUrl({
+    required String uploadUrl,
+    required List<int> bytes,
+    required String contentType,
+  }) async {
+    try {
+      await Dio().put<void>(
+        uploadUrl,
+        data: bytes,
+        options: Options(
+          headers: {'Content-Type': contentType},
+          contentType: contentType,
+        ),
+      );
+    } on DioException catch (e) {
+      throw _mapDioError(e);
+    }
+  }
+
+  /// POST /image-describe — generate a text description of an uploaded
+  /// image (FEAT-034). Synchronous, single vision-model call — 1 credit.
+  ///
+  /// [gcsPath] is the value returned by [getUploadUrl] once the upload has
+  /// completed. [type] is the asset type (`character` | `background` |
+  /// `object`).
+  Future<String> describeImage({
+    required String gcsPath,
+    required String type,
+  }) async {
+    final response = await _execute(
+      () => _dio.post('/image-describe', data: {
+        'gcs_path': gcsPath,
+        'type': type,
+      }),
+    );
+    return (response.data as Map<String, dynamic>)['description'] as String;
+  }
+
+  /// DELETE /assets — hard-delete an asset (FEAT-037).
+  ///
+  /// [assetFirestorePath] is the relative asset path, e.g. `assets/palace`
+  /// or `scenes/2/assets/shade`. When [force] is false (default) and other
+  /// assets reference this one via the `@` naming convention, throws
+  /// [AssetDeleteBlockedException] listing the dependents instead of
+  /// deleting — the caller should show them to the user and offer a
+  /// force-delete retry.
+  Future<void> deleteAsset({
+    required String projectSlug,
+    required String assetFirestorePath,
+    bool force = false,
+  }) async {
+    try {
+      await _dio.delete(
+        '/assets',
+        data: {
+          'project_slug': projectSlug,
+          'asset_path': assetFirestorePath,
+          'force': force,
+        },
+      );
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 409) {
+        final body = e.response?.data;
+        final dependents = (body is Map ? body['dependents'] as List<dynamic>? : null) ?? [];
+        throw AssetDeleteBlockedException(
+          dependents: dependents
+              .map((d) => AssetDependent(
+                    assetPath: (d as Map)['asset_path'] as String,
+                    name: d['name'] as String,
+                  ))
+              .toList(),
+        );
+      }
+      throw _mapDioError(e);
+    }
+  }
+
   /// Fetches the GCS storage summary for a project (FEAT-027).
   ///
   /// Calls `GET /projects/{slug}/storage`. Returns a map with keys:

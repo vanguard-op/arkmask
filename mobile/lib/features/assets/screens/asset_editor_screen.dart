@@ -9,6 +9,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../billing/widgets/credits_exhausted_dialog.dart';
+import '../../projects/widgets/file_browser_row.dart' show SourceBadge;
 import '../../projects/widgets/generation_step_dots.dart';
 import '../cubit/asset_editor_cubit.dart';
 import '../cubit/asset_editor_state.dart';
@@ -98,6 +99,10 @@ class _AssetEditorView extends StatelessWidget {
             showCreditsExhaustedDialog(context);
             context.read<AssetEditorCubit>().clearImageError();
           }
+          if (state.deleteBlockedBy != null) {
+            _showDeleteBlockedDialog(context, state.deleteBlockedBy!);
+            context.read<AssetEditorCubit>().clearDeleteBlocked();
+          }
         }
       },
       builder: (context, state) {
@@ -115,6 +120,67 @@ class _AssetEditorView extends StatelessWidget {
       },
     );
   }
+}
+
+/// Shows the "Delete [asset name]? This cannot be undone." confirmation
+/// (FEAT-037), then calls the cubit's delete method. On success, pops back
+/// to the file browser. On a 409 conflict, the cubit re-emits
+/// [AssetEditorLoaded.deleteBlockedBy] and the listener above shows
+/// [_showDeleteBlockedDialog] with a force-delete retry.
+Future<void> _confirmAndDelete(BuildContext context, String assetName) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (_) => AlertDialog(
+      title: const Text('Delete asset?'),
+      content: Text('Delete $assetName? This cannot be undone.'),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('Delete'),
+        ),
+      ],
+    ),
+  );
+  if (confirmed != true || !context.mounted) return;
+
+  final ok = await context.read<AssetEditorCubit>().deleteAsset();
+  if (ok && context.mounted) context.pop();
+}
+
+/// Shown when a delete is blocked by dependent references (FEAT-037).
+/// Offers a force-delete retry that leaves the dependents dangling —
+/// mirroring the `force: true` semantics documented in schema.md.
+void _showDeleteBlockedDialog(BuildContext context, List<String> dependents) {
+  showDialog<void>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: const Text('Asset is referenced elsewhere'),
+      content: Text(
+        'This asset is referenced by: ${dependents.join(', ')}.\n\n'
+        'Delete or repoint those references first, or force-delete anyway '
+        '(referencing assets will point at a missing asset).',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () async {
+            Navigator.of(dialogContext).pop();
+            final cubit = context.read<AssetEditorCubit>();
+            final ok = await cubit.deleteAsset(force: true);
+            if (ok && context.mounted) context.pop();
+          },
+          child: const Text('Force Delete'),
+        ),
+      ],
+    ),
+  );
 }
 
 // ── AppBar ────────────────────────────────────────────────────────────────────
@@ -169,7 +235,23 @@ class _AssetAppBar extends StatelessWidget implements PreferredSizeWidget {
       ),
       actions: [
         GenerationStepDots(steps: [promptStep, imageStep]),
-        const SizedBox(width: AppSpacing.s3),
+        const SizedBox(width: AppSpacing.s2),
+        // Delete action (FEAT-037) — available once the asset has loaded.
+        if (loaded != null)
+          IconButton(
+            icon: loaded.isDeleting
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(LucideIcons.trash2),
+            tooltip: 'Delete asset',
+            onPressed: loaded.isDeleting
+                ? null
+                : () => _confirmAndDelete(context, loaded.name),
+          ),
+        const SizedBox(width: AppSpacing.s2),
       ],
     );
   }
@@ -377,9 +459,18 @@ class _FrontmatterCardState extends State<_FrontmatterCard> {
           // NAME (read-only — set by backend on asset creation)
           _FieldRow(
             label: 'NAME',
-            child: Text(
-              widget.state.name,
-              style: AppTextStyles.body(context),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    widget.state.name,
+                    style: AppTextStyles.body(context),
+                  ),
+                ),
+                // Informational source badge (FEAT-010) — hidden for
+                // 'extracted' assets, the default/legacy case.
+                SourceBadge(source: widget.state.source),
+              ],
             ),
           ),
           Divider(height: 1, color: dividerColor),

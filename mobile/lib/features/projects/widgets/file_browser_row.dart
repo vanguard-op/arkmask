@@ -197,3 +197,44 @@ class AssetReferenceBadge extends StatelessWidget {
     );
   }
 }
+
+/// Small, non-blocking informational pill shown on asset cards/editors for
+/// assets whose `source` is not `"extracted"` (FEAT-010, FEAT-033–037).
+///
+/// Purely informational — does not change editing or generation behavior.
+/// Returns an empty widget for `"extracted"` (the default/legacy case, no
+/// badge shown).
+class SourceBadge extends StatelessWidget {
+  const SourceBadge({super.key, required this.source});
+
+  /// One of 'extracted', 'manual_image', 'manual_text', 'manual_reference'.
+  final String source;
+
+  static const Map<String, String> _labels = {
+    'manual_image': 'From photo',
+    'manual_text': 'Manually added',
+    'manual_reference': 'Reference',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final label = _labels[source];
+    if (label == null) return const SizedBox.shrink();
+
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.s2, vertical: 2),
+      decoration: BoxDecoration(
+        color: isDark ? AppColors.surfaceOverlayDark : AppColors.surfaceOverlayLight,
+        borderRadius: BorderRadius.circular(AppSizing.radiusXs),
+      ),
+      child: Text(
+        label,
+        style: AppTextStyles.caption(context).copyWith(
+          color: isDark ? AppColors.textTertiaryDark : AppColors.textTertiaryLight,
+          fontSize: 10,
+        ),
+      ),
+    );
+  }
+}

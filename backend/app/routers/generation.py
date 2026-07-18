@@ -42,6 +42,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi.responses import JSONResponse
 from google.cloud.firestore_v1 import SERVER_TIMESTAMP
 from google.cloud.firestore_v1.transaction import transactional
 from pydantic import BaseModel
@@ -52,12 +53,20 @@ from app.firestore_paths import profile_path
 from app.models.user import UserProfile
 from app.routers.projects import _firestore_client
 from app.schemas.generation import (
+    AssetDependent,
+    AssetsDeleteRequest,
+    AssetsDeleteResponse,
     AssetsRequest,
+    ImageDescribeRequest,
+    ImageDescribeResponse,
+    MediaUploadUrlRequest,
+    MediaUploadUrlResponse,
     VideoEnqueueResponse,
     VideoStatusEnum,
     VideoStatusResponse,
 )
 from app.services import cloud_tasks
+from app.services import asset_manage
 from app.services.ai.base import AIProvider, RefImage
 from app.services.asset_writer import write_extracted_assets
 from app.services.ffmpeg_merge import build_merge_filter_cmd
@@ -84,6 +93,7 @@ CREDIT_COSTS: dict[str, int] = {
     "/image": 5,
     "/video": 20,
     "/merge": 5,
+    "/image-describe": 1,
 }
 
 # ── Request / Response schemas (endpoint-local) ───────────────────────────────
@@ -1005,3 +1015,126 @@ def get_presigned_url(
         logger.error("presigned-url failed: path=%s error=%s", body.gcs_path, e)
         raise HTTPException(502, "Failed to generate presigned URL.")
     return PresignedUrlResponse(url=url)
+
+
+# ── POST /media/upload-url (FEAT-034) ───────────────────────────────────────────
+
+@router.post("/media/upload-url", response_model=MediaUploadUrlResponse)
+def get_upload_url(
+    body: MediaUploadUrlRequest,
+    user: UserProfile = Depends(get_current_user),
+) -> MediaUploadUrlResponse:
+    """
+    Generate a presigned GCS PUT URL for a manual asset image upload (FEAT-034).
+
+    Mirrors POST /media/presigned-url (GET) but for writes — the app performs
+    an HTTP PUT of the raw file bytes directly to the returned URL. The
+    device never sends image bytes through Cloud Run.
+
+    Security: the resolved object path (`{uid}/{project_slug}/{object_path}`)
+    is implicitly scoped to the caller's own namespace since it is built
+    server-side from the authenticated uid — there is no way for the caller
+    to escape their own prefix (see docs/ArkMask/risk_log.md R-024).
+    """
+    gcs_path = f"{user.firebase_uid}/{body.project_slug}/{body.object_path}"
+    try:
+        upload_url = MediaStore().presign_put(gcs_path, body.content_type)
+    except Exception as e:
+        logger.error("upload-url failed: path=%s error=%s", gcs_path, e)
+        raise HTTPException(502, "Failed to generate upload URL.")
+    return MediaUploadUrlResponse(upload_url=upload_url, gcs_path=gcs_path)
+
+
+# ── POST /image-describe (FEAT-034) ─────────────────────────────────────────────
+
+@router.post("/image-describe", response_model=ImageDescribeResponse)
+async def describe_image(
+    body: ImageDescribeRequest,
+    user: UserProfile = Depends(get_current_user),
+    provider: AIProvider = Depends(get_ai_provider),
+) -> ImageDescribeResponse:
+    """
+    Generate a text description of an uploaded image (FEAT-034).
+
+    Synchronous, single vision-model call — same response pattern as
+    /image-prompt (text in/out, no job polling, no Firestore write). The
+    caller presents the returned description for review/edit before saving
+    the asset document; this endpoint never writes to Firestore itself.
+    Credits deducted: 1 (on terminal success only).
+    """
+    firebase_uid = user.firebase_uid
+    _verify_gcs_ownership(firebase_uid, [body.gcs_path])
+    _check_credits(user, "/image-describe")
+    pname = _provider_name(provider)
+
+    try:
+        data = await asyncio.to_thread(MediaStore().get_object_bytes, body.gcs_path)
+    except Exception as e:
+        logger.error("image-describe: could not fetch %s: %s", body.gcs_path, e)
+        raise HTTPException(404, "Uploaded image not found — has the upload completed?")
+
+    image = RefImage(data=data, mime_type=_sniff_mime(data))
+    try:
+        description = await asyncio.to_thread(provider.generate_image_description, image, body.type.value)
+    except Exception as e:
+        logger.error("image-describe: generation failed: %s", e, exc_info=True)
+        _deduct_credits(firebase_uid, "/image-describe", pname, 0, "refunded")
+        raise HTTPException(502, "Failed to generate an image description.")
+
+    _deduct_credits(firebase_uid, "/image-describe", pname, CREDIT_COSTS["/image-describe"])
+    return ImageDescribeResponse(description=description)
+
+
+# ── DELETE /assets (FEAT-037) ───────────────────────────────────────────────────
+
+@router.delete(
+    "/assets",
+    response_model=AssetsDeleteResponse,
+    responses={409: {"model": None, "description": "Blocked by dependent references"}},
+)
+def delete_asset(
+    body: AssetsDeleteRequest,
+    user: UserProfile = Depends(get_current_user),
+):
+    """
+    Hard-delete a manually created or extracted asset (FEAT-037).
+
+    Requires the backend (rather than a direct Flutter Firestore write)
+    because the client has no GCS delete credentials. Deletes the Firestore
+    asset document and all GCS objects under its asset path (image.png, and
+    original.<ext> if present).
+
+    Blocks the delete (HTTP 409, listing dependents) if any other asset in
+    the project references this one via the `@` naming convention (FEAT-013)
+    — unless `force` is set, in which case the delete proceeds regardless
+    and any dependent reference is left dangling (see docs/ArkMask/risk_log.md
+    R-025; the UI strongly discourages this path).
+    """
+    firebase_uid = user.firebase_uid
+    db = _firestore_client()
+
+    try:
+        asset_manage.parse_asset_path(body.asset_path)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    if not body.force:
+        dependents = asset_manage.find_dependent_assets(db, firebase_uid, body.project_slug, body.asset_path)
+        if dependents:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "dependents": [
+                        AssetDependent(asset_path=d.asset_path, name=d.name).model_dump()
+                        for d in dependents
+                    ]
+                },
+            )
+
+    try:
+        asset_manage.delete_asset(db, MediaStore(), firebase_uid, body.project_slug, body.asset_path)
+    except Exception as e:
+        logger.error("delete_asset failed: asset_path=%s error=%s", body.asset_path, e, exc_info=True)
+        raise HTTPException(502, "Failed to delete asset.")
+
+    return AssetsDeleteResponse(deleted=True)

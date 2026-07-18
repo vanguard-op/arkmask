@@ -196,6 +196,8 @@ abstract final class CreditCost {
   static const int videoGeneration = 20;
   /// Cloud FFmpeg merge — flat fee regardless of scene count.
   static const int merge = 5;
+  /// POST /image-describe — single vision-model call (FEAT-034).
+  static const int imageDescribe = 1;
 }
 
 // ── Generation settings ───────────────────────────────────────────────────────

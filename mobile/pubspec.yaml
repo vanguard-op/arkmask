@@ -40,6 +40,9 @@ dependencies:
   video_player: ^2.11.1
   gal: ^2.3.2
 
+  # Media picking (FEAT-034 — Add Asset from Image)
+  image_picker: ^1.2.0
+
   # Utilities
   path: ^1.9.1
   path_provider: ^2.1.5

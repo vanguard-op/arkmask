@@ -324,6 +324,35 @@ class BytePlusProvider(AIProvider):
         data = _download(response.data[0].url)
         return data, "image/png"
 
+    def generate_image_description(self, image: RefImage, type_: str) -> str:
+        """Vision call: describe an uploaded image (FEAT-034).
+
+        Sends the image as a base64 data URI multimodal chat message (same
+        encoding used for reference images in generate_image) alongside the
+        image-description-generation.md system instruction. Text-only output.
+        """
+        response = _call_ark(
+            self._client.chat.completions.create,
+            model=self.TEXT_MODEL,
+            messages=[
+                {"role": "system", "content": self.IMAGE_DESCRIPTION_PROMPT},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": json.dumps({"type": type_})},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": _to_data_uri(image.data, image.mime_type)},
+                        },
+                    ],
+                },
+            ],
+            max_tokens=self._CHAT_MAX_TOKENS,
+        )
+        msg = response.choices[0].message
+        text = msg.content or getattr(msg, "reasoning_content", None) or ""
+        return text.strip()
+
     def generate_video(self, storyboard: str, ref_images: list[RefImage]) -> tuple[bytes, str]:
         """Generate a video via Seedance 2.0 using the async content-generation task API.
 

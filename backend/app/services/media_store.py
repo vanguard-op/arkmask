@@ -163,6 +163,27 @@ class MediaStore:
         """Generate a fresh presigned URL for an object at a known GCS path."""
         return self._presign(gcs_path)
 
+    def presign_put(self, gcs_path: str, content_type: str, ttl_seconds: int = 900) -> str:
+        """
+        Generate a presigned PUT URL so the client can upload raw bytes
+        directly to GCS (FEAT-034 — POST /media/upload-url).
+
+        Mirrors ``_presign`` (GET) but for writes; the device performs an
+        HTTP PUT of the file directly to the returned URL with the same
+        Content-Type. TTL defaults to 15 minutes per docs/ArkMask/schema.md.
+        Uses the presign client so the signed Host matches what external
+        clients (emulator/device) actually use — same rationale as `_presign`.
+        """
+        return self._presign_client.generate_presigned_url(
+            "put_object",
+            Params={"Bucket": self._bucket, "Key": gcs_path, "ContentType": content_type},
+            ExpiresIn=ttl_seconds,
+        )
+
+    def delete_object(self, gcs_path: str) -> None:
+        """Delete a single object at `gcs_path`. No-op if it does not exist."""
+        self._upload_client.delete_object(Bucket=self._bucket, Key=gcs_path)
+
     def _presign(self, key: str) -> str:
         return self._presign_client.generate_presigned_url(
             "get_object",

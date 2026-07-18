@@ -67,6 +67,9 @@ class AssetNode {
     this.gcsImagePath,
     this.isGeneratingPrompt = false,
     this.isGeneratingImage = false,
+    this.source = 'extracted',
+    this.styleAdapted,
+    this.originalUploadGcsPath,
   });
 
   /// Firestore document ID for this asset.
@@ -104,6 +107,23 @@ class AssetNode {
   /// True while an `/image` job for this asset is in progress (from
   /// [JobsCubit]). Drives the image dot's [GenerationStepState.running] state.
   final bool isGeneratingImage;
+
+  /// How this asset document was created (FEAT-033–037 / docs/ArkMask/schema.md):
+  /// 'extracted' (default, from /assets story extraction), 'manual_image'
+  /// (FEAT-034), 'manual_text' (FEAT-035), 'manual_reference' (FEAT-036).
+  /// Informational only — shown as a source badge in the Asset Editor and
+  /// file browser (FEAT-010). Assumed 'extracted' if absent on legacy docs.
+  final String source;
+
+  /// Only meaningful when [source] is 'manual_image'. true = the uploaded
+  /// image was used only as a conditioning reference and [gcsImagePath]
+  /// holds a newly generated, style-adapted image. false = the uploaded
+  /// image was kept as-is. Null for all other source values.
+  final bool? styleAdapted;
+
+  /// GCS path of the originally uploaded image, retained for provenance.
+  /// Set only when [source] is 'manual_image' and [styleAdapted] is true.
+  final String? originalUploadGcsPath;
 
   /// True for a scene-local pass-through reference (name starts with @,
   /// description is empty). Pass-through assets reuse the referenced global

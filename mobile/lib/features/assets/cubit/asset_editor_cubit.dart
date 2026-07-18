@@ -151,6 +151,7 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
       promptError:
           current is AssetEditorLoaded ? current.promptError : null,
       imageError: current is AssetEditorLoaded ? current.imageError : null,
+      source: data['source'] as String? ?? 'extracted',
     ));
   }
 
@@ -398,6 +399,47 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
   void clearImageError() {
     final s = state;
     if (s is AssetEditorLoaded) emit(s.copyWith(clearImageError: true));
+  }
+
+  // ── Delete Asset (FEAT-037) ──────────────────────────────────────────────────
+
+  /// Calls `DELETE /assets`. Returns `true` on success.
+  ///
+  /// When [force] is false (default) and other assets reference this one via
+  /// the `@` naming convention, the backend responds 409; this sets
+  /// [AssetEditorLoaded.deleteBlockedBy] with the dependent names so the UI
+  /// can show them and offer a force-delete retry, and returns `false`.
+  Future<bool> deleteAsset({bool force = false}) async {
+    final s = state;
+    if (s is! AssetEditorLoaded) return false;
+    emit(s.copyWith(isDeleting: true, clearDeleteBlockedBy: true));
+
+    try {
+      await apiClient.deleteAsset(
+        projectSlug: projectSlug,
+        assetFirestorePath: assetFirestorePath,
+        force: force,
+      );
+      return true;
+    } on AssetDeleteBlockedException catch (e) {
+      final current = state;
+      if (current is AssetEditorLoaded) {
+        emit(current.copyWith(
+          isDeleting: false,
+          deleteBlockedBy: e.dependents.map((d) => d.name).toList(),
+        ));
+      }
+      return false;
+    } catch (e) {
+      final current = state;
+      if (current is AssetEditorLoaded) emit(current.copyWith(isDeleting: false));
+      return false;
+    }
+  }
+
+  void clearDeleteBlocked() {
+    final s = state;
+    if (s is AssetEditorLoaded) emit(s.copyWith(clearDeleteBlockedBy: true));
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────

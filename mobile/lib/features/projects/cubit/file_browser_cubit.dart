@@ -227,6 +227,9 @@ class FileBrowserCubit extends Cubit<FileBrowserState> {
           sceneIndex: null,
           assetName: d['name'] as String? ?? doc.id,
         ),
+        source: d['source'] as String? ?? 'extracted',
+        styleAdapted: d['style_adapted'] as bool?,
+        originalUploadGcsPath: d['original_upload_gcs_path'] as String?,
       );
     }).toList()
       ..sort((a, b) => _assetTypeSortOrder(a.type) - _assetTypeSortOrder(b.type));
@@ -261,6 +264,9 @@ class FileBrowserCubit extends Cubit<FileBrowserState> {
             sceneIndex: sceneNumber,
             assetName: assetName,
           ),
+          source: ad['source'] as String? ?? 'extracted',
+          styleAdapted: ad['style_adapted'] as bool?,
+          originalUploadGcsPath: ad['original_upload_gcs_path'] as String?,
         );
       }).toList()
         ..sort((a, b) => _assetTypeSortOrder(a.type) - _assetTypeSortOrder(b.type));

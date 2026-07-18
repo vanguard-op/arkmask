@@ -87,6 +87,9 @@ class AIProvider(ABC):
     VIDEO_PROMPT: str = (INSTRUCTIONS_DIR / "video-prompt-generation.md").read_text(encoding="utf-8")
     # Applied only for variant generation (when reference images are attached).
     IMAGE_VARIANT_INSTRUCTION: str = (INSTRUCTIONS_DIR / "image-variant-generation.md").read_text(encoding="utf-8")
+    # FEAT-034 — vision-model call that turns an uploaded image into a text
+    # description usable as a normal asset `description` field.
+    IMAGE_DESCRIPTION_PROMPT: str = (INSTRUCTIONS_DIR / "image-description-generation.md").read_text(encoding="utf-8")
 
     def __init__(self, api_key: str):
         """
@@ -164,3 +167,18 @@ class AIProvider(ABC):
         ref_images: list[RefImage],
     ) -> tuple[bytes, str]:
         """Return (raw_bytes, mime_type) for the generated video."""
+
+    @abstractmethod
+    def generate_image_description(self, image: RefImage, type_: str) -> str:
+        """Return a generated text description of an uploaded image (FEAT-034).
+
+        Uses ``backend/instructions/image-description-generation.md``. The
+        returned description is presented to the user for review/edit before
+        being saved as the asset's `description` field — it is not written to
+        Firestore automatically.
+
+        Args:
+            image: The uploaded reference image bytes fetched from GCS.
+            type_: Asset type — ``"character"``, ``"background"``, or ``"object"``
+                — tailors the focus of the generated description.
+        """

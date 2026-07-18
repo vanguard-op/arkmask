@@ -87,3 +87,48 @@ class VideoStatusResponse(BaseModel):
     status: VideoStatusEnum
     url: str | None = None     # present only when status = success
     error: str | None = None   # present only when status = failed
+
+
+# ── POST /media/upload-url (FEAT-034) ─────────────────────────────────────────
+
+class MediaUploadUrlRequest(BaseModel):
+    project_slug: str
+    object_path: str
+    content_type: str
+
+
+class MediaUploadUrlResponse(BaseModel):
+    upload_url: str
+    gcs_path: str
+
+
+# ── POST /image-describe (FEAT-034) ───────────────────────────────────────────
+
+class ImageDescribeRequest(BaseModel):
+    gcs_path: str
+    type: AssetTypeEnum
+
+
+class ImageDescribeResponse(BaseModel):
+    description: str
+
+
+# ── DELETE /assets (FEAT-037) ─────────────────────────────────────────────────
+
+class AssetsDeleteRequest(BaseModel):
+    project_slug: str
+    asset_path: str
+    force: bool = False
+
+
+class AssetsDeleteResponse(BaseModel):
+    deleted: bool
+
+
+class AssetDependent(BaseModel):
+    asset_path: str
+    name: str
+
+
+class AssetsDeleteConflictResponse(BaseModel):
+    dependents: list[AssetDependent]

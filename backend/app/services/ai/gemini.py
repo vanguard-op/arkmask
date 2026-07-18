@@ -269,6 +269,25 @@ class GeminiProvider(AIProvider):
 
         raise ValueError("generate_content returned no image for the given prompt.")
 
+    def generate_image_description(self, image: RefImage, type_: str) -> str:
+        """Vision call: describe an uploaded image (FEAT-034).
+
+        Uses generate_content with the image attached as an inline part plus
+        the image-description-generation.md system instruction. Text-only
+        output — no JSON wrapping, per the instruction's "Output" section.
+        """
+        payload = json.dumps({"type": type_})
+        response = _call_genai(
+            self._client.models.generate_content,
+            model=self.TEXT_MODEL,
+            contents=[
+                types.Part.from_text(text=f"{self.IMAGE_DESCRIPTION_PROMPT}\n\n---\n\n{payload}"),
+                types.Part.from_bytes(data=image.data, mime_type=image.mime_type),
+            ],
+            config=types.GenerateContentConfig(safety_settings=self._SAFETY_SETTINGS),
+        )
+        return (response.text or "").strip()
+
     @staticmethod
     def _sniff_mime(data: bytes) -> str:
         """Detect image format from magic bytes."""

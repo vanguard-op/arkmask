@@ -4,6 +4,8 @@ import 'package:go_router/go_router.dart';
 import 'package:lucide_flutter/lucide_flutter.dart';
 
 import '../../../app.dart';
+import '../../../core/api/api_error.dart';
+import '../../../core/api/ark_mask_api_client.dart';
 import '../../../core/models/models.dart';
 import '../../../core/router/routes.dart';
 import '../../../core/theme/app_colors.dart';
@@ -12,6 +14,7 @@ import '../../../core/theme/app_text_styles.dart';
 import '../../../core/utils/formatters.dart' show formatBytes;
 import '../../../core/utils/video_download.dart';
 import '../../../core/utils/video_player_nav.dart';
+import '../../assets/widgets/add_asset_sheet.dart';
 import '../cubit/file_browser_cubit.dart';
 import '../cubit/file_browser_state.dart';
 import '../widgets/file_browser_row.dart';
@@ -290,6 +293,12 @@ class _TreeView extends StatelessWidget {
           context.read<FileBrowserCubit>().toggleExpand(assetsKey),
       onToggleExpand: () =>
           context.read<FileBrowserCubit>().toggleExpand(assetsKey),
+      // FEAT-033 — long-press opens the Add Asset Sheet scoped globally.
+      // Deliberately does not conflict with the section header's own
+      // expand/collapse tap gesture (long-press vs. tap are distinct
+      // GestureDetector recognizers).
+      onLongPress: () =>
+          showAddAssetSheet(context, projectSlug: projectSlug),
     ));
 
     if (expanded.contains(assetsKey)) {
@@ -302,6 +311,7 @@ class _TreeView extends StatelessWidget {
             icon: asset.hasImage ? LucideIcons.image : LucideIcons.image,
             depth: 1,
             isSelected: state.selectedId == asset.id,
+            badge: SourceBadge(source: asset.source),
             steps: [
               asset.isGeneratingPrompt
                   ? GenerationStepState.running
@@ -321,6 +331,13 @@ class _TreeView extends StatelessWidget {
                 onReturnFromChild();
               }
             },
+            // FEAT-037 — long-press reveals a delete option.
+            onLongPress: () => confirmAndDeleteAssetRow(
+              context,
+              projectSlug: projectSlug,
+              assetFirestorePath: 'assets/${asset.id}',
+              assetName: asset.name,
+            ),
           ));
         }
       }
@@ -373,6 +390,13 @@ class _TreeView extends StatelessWidget {
             },
             onToggleExpand: () =>
                 context.read<FileBrowserCubit>().toggleExpand(scene.id),
+            // FEAT-033 — long-press opens the Add Asset Sheet scoped to
+            // this scene (all three tabs, including Reference).
+            onLongPress: () => showAddAssetSheet(
+              context,
+              projectSlug: projectSlug,
+              scope: scene.sceneNumber,
+            ),
           ));
 
           if (expanded.contains(scene.id)) {
@@ -383,9 +407,16 @@ class _TreeView extends StatelessWidget {
                 icon: LucideIcons.image,
                 depth: 2,
                 isSelected: state.selectedId == asset.id,
-                badge: AssetReferenceBadge(
-                  assetName: asset.name,
-                  description: asset.description,
+                badge: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SourceBadge(source: asset.source),
+                    if (asset.source != 'extracted') const SizedBox(width: AppSpacing.s1),
+                    AssetReferenceBadge(
+                      assetName: asset.name,
+                      description: asset.description,
+                    ),
+                  ],
                 ),
                 steps: asset.isPassThrough
                     ? null
@@ -410,6 +441,13 @@ class _TreeView extends StatelessWidget {
                     onReturnFromChild();
                   }
                 },
+                // FEAT-037 — long-press reveals a delete option.
+                onLongPress: () => confirmAndDeleteAssetRow(
+                  context,
+                  projectSlug: projectSlug,
+                  assetFirestorePath: 'scenes/${scene.id}/assets/${asset.id}',
+                  assetName: asset.name,
+                ),
               ));
             }
 
@@ -685,6 +723,91 @@ class _SkeletonTree extends StatelessWidget {
           ),
         );
       }),
+    );
+  }
+}
+
+/// Long-press delete action for an asset row in the file browser (FEAT-037).
+///
+/// Shows the standard "Delete [name]? This cannot be undone." confirmation,
+/// calls `DELETE /assets`, and on a 409 (dependents found) offers a
+/// force-delete retry listing the dependent asset names. Uses the API client
+/// directly rather than a Cubit — this action lives in the tree, not inside
+/// an already-open Asset Editor screen.
+Future<void> confirmAndDeleteAssetRow(
+  BuildContext context, {
+  required String projectSlug,
+  required String assetFirestorePath,
+  required String assetName,
+}) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (_) => AlertDialog(
+      title: const Text('Delete asset?'),
+      content: Text('Delete $assetName? This cannot be undone.'),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('Delete'),
+        ),
+      ],
+    ),
+  );
+  if (confirmed != true || !context.mounted) return;
+
+  final apiClient = ArkMaskServices.of(context).apiClient;
+  await _deleteAssetRow(context, apiClient, projectSlug, assetFirestorePath, force: false);
+}
+
+Future<void> _deleteAssetRow(
+  BuildContext context,
+  ArkMaskApiClient apiClient,
+  String projectSlug,
+  String assetFirestorePath, {
+  required bool force,
+}) async {
+  try {
+    await apiClient.deleteAsset(
+      projectSlug: projectSlug,
+      assetFirestorePath: assetFirestorePath,
+      force: force,
+    );
+    // Firestore listener removes the row from the tree automatically.
+  } on AssetDeleteBlockedException catch (e) {
+    if (!context.mounted) return;
+    final names = e.dependents.map((d) => d.name).join(', ');
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Asset is referenced elsewhere'),
+        content: Text(
+          'This asset is referenced by: $names.\n\n'
+          'Delete or repoint those references first, or force-delete anyway '
+          '(referencing assets will point at a missing asset).',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.of(dialogContext).pop();
+              _deleteAssetRow(context, apiClient, projectSlug, assetFirestorePath, force: true);
+            },
+            child: const Text('Force Delete'),
+          ),
+        ],
+      ),
+    );
+  } catch (e) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Failed to delete asset: $e')),
     );
   }
 }
