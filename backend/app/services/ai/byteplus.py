@@ -140,7 +140,7 @@ def _extract_video_url(task_result) -> str | None:
 
 
 class BytePlusProvider(AIProvider):
-    TEXT_MODEL = "deepseek-v4-flash-260425"
+    TEXT_MODEL = "seed-2-0-mini-260428"
     IMAGE_MODEL = "seedream-5-0-260128"
     VIDEO_MODEL = "dreamina-seedance-2-0-mini-260615"
     BASE_URL = "https://ark.ap-southeast.bytepluses.com/api/v3"
