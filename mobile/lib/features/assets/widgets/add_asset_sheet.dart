@@ -721,9 +721,19 @@ class _ImageTabState extends State<_ImageTab> {
             ],
           )
         else ...[
-          ClipRRect(
-            borderRadius: BorderRadius.circular(AppSizing.radiusMd),
-            child: Image.file(File(_picked!.path), height: 160, fit: BoxFit.cover),
+          GestureDetector(
+            onTap: () => _openFullscreenLocalImage(
+              context,
+              File(_picked!.path),
+              heroTag: 'add-asset-picked-${_picked!.path}',
+            ),
+            child: Hero(
+              tag: 'add-asset-picked-${_picked!.path}',
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(AppSizing.radiusMd),
+                child: Image.file(File(_picked!.path), height: 160, fit: BoxFit.cover),
+              ),
+            ),
           ),
           Align(
             alignment: Alignment.centerRight,
@@ -799,6 +809,79 @@ class _ImageTabState extends State<_ImageTab> {
               : const Text('Save'),
         ),
       ],
+    );
+  }
+
+  /// Opens the picked (not-yet-uploaded) photo fullscreen with a hero
+  /// animation — mirrors the pattern used for the generated asset image in
+  /// asset_editor_screen.dart, adapted for a local [File] instead of a
+  /// network URL since nothing has been uploaded to view over the network
+  /// at this point in the flow.
+  void _openFullscreenLocalImage(
+    BuildContext context,
+    File file, {
+    required String heroTag,
+  }) {
+    Navigator.of(context).push(
+      PageRouteBuilder<void>(
+        opaque: false,
+        barrierColor: Colors.black87,
+        barrierDismissible: true,
+        pageBuilder: (context, animation, _) => FadeTransition(
+          opacity: animation,
+          child: _FullscreenLocalImageViewer(file: file, heroTag: heroTag),
+        ),
+      ),
+    );
+  }
+}
+
+/// Fullscreen viewer for a locally-picked (not-yet-uploaded) image — tap
+/// anywhere or the close button to dismiss, pinch/drag to zoom and pan.
+class _FullscreenLocalImageViewer extends StatelessWidget {
+  const _FullscreenLocalImageViewer({required this.file, required this.heroTag});
+
+  final File file;
+  final String heroTag;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      body: GestureDetector(
+        onTap: () => Navigator.of(context).pop(),
+        behavior: HitTestBehavior.opaque,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            InteractiveViewer(
+              minScale: 0.5,
+              maxScale: 6.0,
+              child: Center(
+                child: Hero(
+                  tag: heroTag,
+                  child: Image.file(file, fit: BoxFit.contain),
+                ),
+              ),
+            ),
+            Positioned(
+              top: MediaQuery.of(context).padding.top + 8,
+              right: 12,
+              child: GestureDetector(
+                onTap: () => Navigator.of(context).pop(),
+                child: Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: const BoxDecoration(
+                    color: Colors.black54,
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(LucideIcons.x, color: Colors.white, size: 20),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
