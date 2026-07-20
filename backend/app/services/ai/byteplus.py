@@ -219,7 +219,9 @@ class BytePlusProvider(AIProvider):
 
     # ── AI pipeline methods ───────────────────────────────────────────────────
 
-    def generate_asset_list(self, story: str, existing_assets: list[dict] | None = None) -> list[dict]:
+    def _generate_asset_list_batch(
+        self, story: str, existing_assets: list[dict] | None = None
+    ) -> list[dict]:
         # JSON-wrap the payload per asset-list-generation.md "Input Format"
         # — existing_assets is omitted (left as an empty list) on a
         # first-time extraction, matching the "omitted or empty" language in

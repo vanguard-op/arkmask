@@ -4,7 +4,7 @@ Analyze a story and produce a flat JSON array of all visual assets needed to rea
 
 ## Input Format
 
-You will always receive the full story text. If this is a **re-extraction** on a project that already has assets, you will also receive an `existing_assets` JSON block listing every asset already defined for this project:
+`story` is either the full story text or a contiguous chunk of it (a fixed-size run of consecutive `# N` scenes, split by the caller so a single call never has to enumerate more than a handful of scenes at once — this keeps per-scene coverage reliable on long stories). Never assume `story` starts at scene 1 or ends at the story's last scene — walk exactly the scene(s) present in `story`, using each one's own `# N` heading number, and do not skip any of them. If this is a **re-extraction** on a project that already has assets — or a later chunk of the same story within one extraction run — you will also receive an `existing_assets` JSON block listing every asset already defined so far:
 
 ```json
 {
@@ -168,7 +168,7 @@ Given a story where an old watchmaker named Elias works in his shop across many 
 ## Quality Checklist
 
 Before outputting, verify:
-- [ ] Every scene in the story has at least one background asset.
+- [ ] Every scene present in `story` (see "Input Format" — this may be the whole story or one chunk of it) has at least one background asset, even if it's only a `description: ""` reuse reference. Re-check this against the actual list of `# N` headings in `story` before finalizing — do not silently drop a scene's boilerplate reuse entry because it feels repetitive.
 - [ ] Every named or clearly described character has an entry.
 - [ ] Every narratively significant object has an entry.
 - [ ] Root assets (scene 0) have full descriptions.

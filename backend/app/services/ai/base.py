@@ -4,11 +4,56 @@ Both `GeminiProvider` and `BytePlusProvider` implement this contract so the
 generation router can call them interchangeably based on `X-Provider-Type`.
 """
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 
 from app.config import INSTRUCTIONS_DIR
+
+# Matches the same `# N` scene heading convention as the Flutter app's
+# FileBrowserCubit._countStoryScenes / app.services.asset_writer._count_story_scenes.
+_SCENE_HEADING_RE = re.compile(r"^# (\d+)\s*$", re.MULTILINE)
+
+# Scenes per asset-extraction call. Asset extraction asks the model to walk
+# every scene and, per asset-list-generation.md's quality checklist, emit at
+# least a reused-background reference for each one — even scenes that
+# introduce nothing new. In practice, on stories with ~20+ scenes the model
+# starts silently skipping that boilerplate entry for scattered scenes deep
+# in the output (an instruction-following degradation on long, repetitive
+# enumeration tasks, not a token-limit truncation — a truncated response cuts
+# off the tail, not scattered scenes throughout). Capping each call to a
+# small, fixed number of scenes keeps the enumeration short enough that the
+# model reliably covers every one of them.
+ASSET_EXTRACTION_BATCH_SIZE = 8
+
+
+def split_story_into_scene_batches(
+    story: str, batch_size: int = ASSET_EXTRACTION_BATCH_SIZE
+) -> list[str]:
+    """
+    Split `story` into chunks of at most `batch_size` consecutive scenes,
+    each a self-contained string of complete `# N` scene blocks (any text
+    before the first heading, if present, is kept with the first chunk).
+
+    Returns `[story]` unchanged when there's nothing to split — no headings
+    at all (single unheaded scene) or already within `batch_size` scenes.
+    """
+    matches = list(_SCENE_HEADING_RE.finditer(story))
+    if len(matches) <= batch_size:
+        return [story]
+
+    scene_blocks = [
+        story[m.start() : matches[i + 1].start() if i + 1 < len(matches) else len(story)]
+        for i, m in enumerate(matches)
+    ]
+    preamble = story[: matches[0].start()]
+
+    batches = []
+    for i in range(0, len(scene_blocks), batch_size):
+        chunk = "".join(scene_blocks[i : i + batch_size])
+        batches.append(preamble + chunk if i == 0 else chunk)
+    return batches
 
 
 @dataclass
@@ -104,7 +149,6 @@ class AIProvider(ABC):
         """
         self._api_key = api_key
 
-    @abstractmethod
     def generate_asset_list(self, story: str, existing_assets: list[dict] | None = None) -> list[dict]:
         """Return a list of asset dicts matching the AssetsResponse schema.
 
@@ -119,6 +163,40 @@ class AIProvider(ABC):
                 / "Existing-Assets Rules", the model must never re-emit an
                 asset already covered here — only genuinely missing assets
                 are returned.
+
+        Concrete (not abstract): splits `story` into
+        `split_story_into_scene_batches` chunks and calls
+        `_generate_asset_list_batch` once per chunk, feeding each batch's
+        newly-extracted assets into the `existing_assets` pool for the next
+        batch — the same "never re-emit what's already covered" contract
+        asset-list-generation.md already defines for incremental
+        re-extraction applies naturally here between batches of one run.
+        Single-batch stories (the common case) make exactly one call, same
+        as before this existed.
+        """
+        batches = split_story_into_scene_batches(story)
+        if len(batches) == 1:
+            return self._generate_asset_list_batch(story, existing_assets)
+
+        pool = list(existing_assets or [])
+        all_assets: list[dict] = []
+        for batch_story in batches:
+            batch_assets = self._generate_asset_list_batch(batch_story, pool)
+            all_assets.extend(batch_assets)
+            pool = pool + batch_assets
+        return all_assets
+
+    @abstractmethod
+    def _generate_asset_list_batch(
+        self, story: str, existing_assets: list[dict] | None = None
+    ) -> list[dict]:
+        """One asset-extraction model call over a single batch of scenes.
+
+        Same contract as `generate_asset_list` — see its docstring — but
+        `story` may be a partial chunk (see `split_story_into_scene_batches`)
+        rather than the full story, and `existing_assets` may include assets
+        extracted from earlier batches of the same run in addition to
+        assets already saved for the project.
         """
 
     @abstractmethod
