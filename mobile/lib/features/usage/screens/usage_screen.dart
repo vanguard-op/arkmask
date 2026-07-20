@@ -101,10 +101,11 @@ class _FilterBar extends StatelessWidget {
   // what UsageEvent.type now holds directly from the API response.
   static const _labels = <String?, String>{
     null: 'All',
-    '/image-prompt': 'Prompt',
+    '/image-prompt': 'Image Prompt',
     '/image': 'Image',
     '/video-prompt': 'Storyboard',
     '/video': 'Video',
+    '/refine-story': 'Refine',
   };
 
   @override

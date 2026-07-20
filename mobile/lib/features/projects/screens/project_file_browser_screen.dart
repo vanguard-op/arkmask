@@ -839,6 +839,12 @@ Future<void> showCreateSceneSheet(
 }) {
   return showModalBottomSheet<void>(
     context: context,
+    // Matches add_asset_sheet.dart's pattern: without this, the sheet's
+    // own SafeArea only pads for the display cutout/status bar side of
+    // things — it doesn't reliably clear the system nav bar on devices
+    // using gesture/button navigation, so "Create All" ends up sitting
+    // under (and partially behind) the system nav bar.
+    useSafeArea: true,
     builder: (_) => _CreateSceneSheet(
       projectSlug: projectSlug,
       missingSceneNumbers: missingSceneNumbers,
