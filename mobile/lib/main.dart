@@ -1,6 +1,7 @@
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'app.dart';
 import 'firebase_options.dart';
@@ -19,6 +20,14 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {}
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Establish a deterministic system UI mode at startup rather than relying
+  // on whatever the OS/manufacturer default happens to be — otherwise the
+  // system navigation bar's mode (and therefore its overlay behavior) is
+  // effectively random until something else (e.g. the video player) first
+  // touches it. app.dart's root AnnotatedRegion sets the actual color/icon
+  // style on top of this.
+  SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
 
   // Initialize Firebase if the project has been configured via `flutterfire configure`.
   // Until firebase_options.dart is populated with real values, Firebase features

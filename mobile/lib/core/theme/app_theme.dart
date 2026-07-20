@@ -15,12 +15,24 @@ abstract final class AppTheme {
     final isDark = brightness == Brightness.dark;
 
     final primary = isDark ? AppColors.primaryDark : AppColors.primaryLight;
-    final onPrimary = isDark ? AppColors.primaryOnDark : AppColors.primaryOnLight;
-    final surfaceBase = isDark ? AppColors.surfaceBaseDark : AppColors.surfaceBaseLight;
-    final surfaceRaised = isDark ? AppColors.surfaceRaisedDark : AppColors.surfaceRaisedLight;
-    final textPrimary = isDark ? AppColors.textPrimaryDark : AppColors.textPrimaryLight;
-    final textSecondary = isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight;
-    final borderDefault = isDark ? AppColors.borderDefaultDark : AppColors.borderDefaultLight;
+    final onPrimary = isDark
+        ? AppColors.primaryOnDark
+        : AppColors.primaryOnLight;
+    final surfaceBase = isDark
+        ? AppColors.surfaceBaseDark
+        : AppColors.surfaceBaseLight;
+    final surfaceRaised = isDark
+        ? AppColors.surfaceRaisedDark
+        : AppColors.surfaceRaisedLight;
+    final textPrimary = isDark
+        ? AppColors.textPrimaryDark
+        : AppColors.textPrimaryLight;
+    final textSecondary = isDark
+        ? AppColors.textSecondaryDark
+        : AppColors.textSecondaryLight;
+    final borderDefault = isDark
+        ? AppColors.borderDefaultDark
+        : AppColors.borderDefaultLight;
     final error = isDark ? AppColors.errorDark : AppColors.errorLight;
 
     final bodyStyle = isDark ? AppTextStyles.bodyDark : AppTextStyles.bodyLight;
@@ -42,14 +54,22 @@ abstract final class AppTheme {
       ),
       textTheme: GoogleFonts.dmSansTextTheme(
         TextTheme(
-          displayLarge: isDark ? AppTextStyles.displayDark : AppTextStyles.displayLight,
+          displayLarge: isDark
+              ? AppTextStyles.displayDark
+              : AppTextStyles.displayLight,
           titleLarge: isDark ? AppTextStyles.h1Dark : AppTextStyles.h1Light,
           titleMedium: isDark ? AppTextStyles.h2Dark : AppTextStyles.h2Light,
           titleSmall: isDark ? AppTextStyles.h3Dark : AppTextStyles.h3Light,
-          bodyLarge: isDark ? AppTextStyles.bodyLargeDark : AppTextStyles.bodyLargeLight,
+          bodyLarge: isDark
+              ? AppTextStyles.bodyLargeDark
+              : AppTextStyles.bodyLargeLight,
           bodyMedium: isDark ? AppTextStyles.bodyDark : AppTextStyles.bodyLight,
-          bodySmall: isDark ? AppTextStyles.bodySmallDark : AppTextStyles.bodySmallLight,
-          labelSmall: isDark ? AppTextStyles.captionDark : AppTextStyles.captionLight,
+          bodySmall: isDark
+              ? AppTextStyles.bodySmallDark
+              : AppTextStyles.bodySmallLight,
+          labelSmall: isDark
+              ? AppTextStyles.captionDark
+              : AppTextStyles.captionLight,
         ),
       ),
       appBarTheme: AppBarTheme(
@@ -115,7 +135,9 @@ abstract final class AppTheme {
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: isDark ? AppColors.surfaceSunkenDark : AppColors.surfaceSunkenLight,
+        fillColor: isDark
+            ? AppColors.surfaceSunkenDark
+            : AppColors.surfaceSunkenLight,
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(AppSizing.radiusSm),
           borderSide: BorderSide(color: borderDefault),
@@ -137,37 +159,64 @@ abstract final class AppTheme {
           vertical: AppSpacing.s3,
         ),
         hintStyle: bodyStyle.copyWith(
-          color: isDark ? AppColors.textTertiaryDark : AppColors.textTertiaryLight,
+          color: isDark
+              ? AppColors.textTertiaryDark
+              : AppColors.textTertiaryLight,
         ),
         constraints: const BoxConstraints(minHeight: AppSizing.inputHeight),
       ),
       bottomSheetTheme: BottomSheetThemeData(
-        backgroundColor: isDark ? AppColors.surfaceOverlayDark : AppColors.surfaceOverlayLight,
+        backgroundColor: isDark
+            ? AppColors.surfaceOverlayDark
+            : AppColors.surfaceOverlayLight,
         shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(AppSizing.radiusLg)),
+          borderRadius: BorderRadius.vertical(
+            top: Radius.circular(AppSizing.radiusLg),
+          ),
         ),
         modalElevation: 0,
         showDragHandle: false,
       ),
       dialogTheme: DialogThemeData(
-        backgroundColor: isDark ? AppColors.surfaceOverlayDark : AppColors.surfaceOverlayLight,
+        backgroundColor: isDark
+            ? AppColors.surfaceOverlayDark
+            : AppColors.surfaceOverlayLight,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(AppSizing.radiusMd),
           side: BorderSide(
-            color: isDark ? AppColors.borderSubtleDark : AppColors.borderSubtleLight,
+            color: isDark
+                ? AppColors.borderSubtleDark
+                : AppColors.borderSubtleLight,
           ),
         ),
         titleTextStyle: isDark ? AppTextStyles.h2Dark : AppTextStyles.h2Light,
-        contentTextStyle: isDark ? AppTextStyles.bodyDark : AppTextStyles.bodyLight,
+        contentTextStyle: isDark
+            ? AppTextStyles.bodyDark
+            : AppTextStyles.bodyLight,
       ),
       dividerTheme: DividerThemeData(
-        color: isDark ? AppColors.borderSubtleDark : AppColors.borderSubtleLight,
+        color: isDark
+            ? AppColors.borderSubtleDark
+            : AppColors.borderSubtleLight,
         thickness: 1,
         space: 1,
       ),
       snackBarTheme: SnackBarThemeData(
-        backgroundColor: isDark ? AppColors.surfaceOverlayDark : AppColors.surfaceOverlayLight,
-        contentTextStyle: isDark ? AppTextStyles.bodyDark : AppTextStyles.bodyLight,
+        backgroundColor: isDark
+            ? AppColors.surfaceOverlayDark
+            : AppColors.surfaceOverlayLight,
+        contentTextStyle: isDark
+            ? AppTextStyles.bodyDark
+            : AppTextStyles.bodyLight,
+        // Explicit action color — without this, SnackBarAction (e.g. the
+        // "Retry" buttons scattered across the app) falls back to Material's
+        // default action color, which reads too close to the snackbar's own
+        // surfaceOverlay background to be legible. Primary matches every
+        // other actionable-text color in the theme (buttons, links).
+        actionTextColor: primary,
+        disabledActionTextColor: isDark
+            ? AppColors.textTertiaryDark
+            : AppColors.textTertiaryLight,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(AppSizing.radiusSm),
         ),

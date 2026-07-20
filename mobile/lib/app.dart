@@ -1,5 +1,6 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import 'package:go_router/go_router.dart';
@@ -12,7 +13,31 @@ import 'core/jobs/jobs_cubit.dart';
 import 'core/messaging/fcm_service.dart';
 import 'core/router/router.dart';
 import 'core/storage/secure_storage_service.dart';
+import 'core/theme/app_colors.dart';
 import 'core/theme/app_theme.dart';
+
+/// Baseline system UI style for the app root — the system navigation bar
+/// takes the app's own dark surface color (instead of the OS default black,
+/// which read as a jarring mismatched bar) and its divider is hidden so it
+/// blends into the Scaffold background seamlessly. themeMode is pinned to
+/// ThemeMode.dark app-wide (see below), so this is hardcoded to the dark
+/// surface token rather than switching on Theme.of(context).
+///
+/// Screens that need a different style while they're on top (e.g.
+/// [VideoPlayerScreen]'s black fullscreen player) wrap themselves in their
+/// own nested AnnotatedRegion — Flutter automatically reverts to this root
+/// region's style the instant that screen is popped, no manual restore
+/// needed (this is what was missing before: nothing ever established this
+/// baseline, so restoring "edgeToEdge" mode after the player closed left the
+/// navigation bar in an undefined, sometimes content-overlapping state).
+const _rootSystemUiOverlayStyle = SystemUiOverlayStyle(
+  statusBarColor: Colors.transparent,
+  statusBarIconBrightness: Brightness.light,
+  statusBarBrightness: Brightness.dark,
+  systemNavigationBarColor: AppColors.surfaceBaseDark,
+  systemNavigationBarIconBrightness: Brightness.light,
+  systemNavigationBarDividerColor: Colors.transparent,
+);
 
 /// Root widget for ArkMask.
 ///
@@ -111,23 +136,26 @@ class _ArkMaskAppState extends State<ArkMaskApp> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    return BlocProvider<JobsCubit>.value(
-      value: _jobsCubit,
-      child: ArkMaskServices(
-        storage: _storage,
-        apiClient: _apiClient,
-        authService: _authService,
-        jobRegistryService: _jobRegistryService,
-        jobsCubit: _jobsCubit,
-        fileService: _fileService,
-        child: MaterialApp.router(
-          title: 'ArkMask',
-          debugShowCheckedModeBanner: false,
-          theme: AppTheme.light,
-          darkTheme: AppTheme.dark,
-          // Dark mode is the primary experience per branding.md.
-          themeMode: ThemeMode.dark,
-          routerConfig: _routerWrapper.router,
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: _rootSystemUiOverlayStyle,
+      child: BlocProvider<JobsCubit>.value(
+        value: _jobsCubit,
+        child: ArkMaskServices(
+          storage: _storage,
+          apiClient: _apiClient,
+          authService: _authService,
+          jobRegistryService: _jobRegistryService,
+          jobsCubit: _jobsCubit,
+          fileService: _fileService,
+          child: MaterialApp.router(
+            title: 'ArkMask',
+            debugShowCheckedModeBanner: false,
+            theme: AppTheme.light,
+            darkTheme: AppTheme.dark,
+            // Dark mode is the primary experience per branding.md.
+            themeMode: ThemeMode.dark,
+            routerConfig: _routerWrapper.router,
+          ),
         ),
       ),
     );
@@ -139,10 +167,7 @@ class GoRouterWrapper {
   GoRouterWrapper({
     required SecureStorageService storage,
     required FirebaseAuth firebaseAuth,
-  }) : router = buildRouter(
-          storage: storage,
-          firebaseAuth: firebaseAuth,
-        );
+  }) : router = buildRouter(storage: storage, firebaseAuth: firebaseAuth);
 
   final GoRouter router;
 }
@@ -186,9 +211,13 @@ class ArkMaskServices extends InheritedWidget {
   final ProjectFileService fileService;
 
   static ArkMaskServices of(BuildContext context) {
-    final result = context.dependOnInheritedWidgetOfExactType<ArkMaskServices>();
-    assert(result != null, 'No ArkMaskServices found in context. '
-        'Ensure ArkMaskApp is an ancestor.');
+    final result = context
+        .dependOnInheritedWidgetOfExactType<ArkMaskServices>();
+    assert(
+      result != null,
+      'No ArkMaskServices found in context. '
+      'Ensure ArkMaskApp is an ancestor.',
+    );
     return result!;
   }
 

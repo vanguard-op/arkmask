@@ -64,7 +64,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
 
   Future<void> _initController() async {
     // Determine whether videoPath is a network URL or a local file path.
-    final isUrl = widget.videoPath.startsWith('http://') ||
+    final isUrl =
+        widget.videoPath.startsWith('http://') ||
         widget.videoPath.startsWith('https://');
 
     if (isUrl) {
@@ -108,8 +109,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
       // ArkMaskServices provides access to the API client without needing
       // the apiClient to be injected into the widget constructor.
       final services = ArkMaskServices.of(context);
-      final freshUrl = await services.apiClient
-          .getPresignedUrl(gcsPath: widget.gcsPath!);
+      final freshUrl = await services.apiClient.getPresignedUrl(
+        gcsPath: widget.gcsPath!,
+      );
 
       await _controller.dispose();
       _controller = VideoPlayerController.networkUrl(Uri.parse(freshUrl));
@@ -180,54 +182,69 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: Stack(
-        children: [
-          // ── Video surface ──────────────────────────────────────────────────
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: () {
-              if (!_isInitialized) return;
-              if (_controlsVisible) {
-                _togglePlayPause();
-              } else {
-                _onUserInteraction();
-              }
-            },
-            child: Center(
-              child: _isInitialized
-                  ? AspectRatio(
-                      aspectRatio: _controller.value.aspectRatio,
-                      child: VideoPlayer(_controller),
-                    )
-                  : _hasError
-                      ? const _ErrorView()
-                      : const _LoadingView(),
-            ),
-          ),
-
-          // ── Controls overlay ───────────────────────────────────────────────
-          if (_isInitialized)
-            AnimatedOpacity(
-              opacity: _controlsVisible ? 1.0 : 0.0,
-              duration: const Duration(milliseconds: 200),
-              child: IgnorePointer(
-                ignoring: !_controlsVisible,
-                child: _ControlsOverlay(
-                  controller: _controller,
-                  title: widget.title,
-                  isDark: isDark,
-                  onPlayPause: _togglePlayPause,
-                  onSeek: (pos) {
-                    _onUserInteraction();
-                    _controller.seekTo(pos);
-                  },
-                  onBack: () => Navigator.of(context).pop(),
-                ),
+    // Nested override of app.dart's root SystemUiOverlayStyle while this
+    // fullscreen black player is on top — Flutter automatically reverts to
+    // the root region's style the instant this screen is popped, so no
+    // manual restore is needed here (only the SystemUiMode toggle above is
+    // this screen's own responsibility, since that's a real OS mode change
+    // rather than a region style).
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.light,
+        systemNavigationBarColor: Colors.black,
+        systemNavigationBarIconBrightness: Brightness.light,
+        systemNavigationBarDividerColor: Colors.transparent,
+      ),
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: Stack(
+          children: [
+            // ── Video surface ──────────────────────────────────────────────────
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () {
+                if (!_isInitialized) return;
+                if (_controlsVisible) {
+                  _togglePlayPause();
+                } else {
+                  _onUserInteraction();
+                }
+              },
+              child: Center(
+                child: _isInitialized
+                    ? AspectRatio(
+                        aspectRatio: _controller.value.aspectRatio,
+                        child: VideoPlayer(_controller),
+                      )
+                    : _hasError
+                    ? const _ErrorView()
+                    : const _LoadingView(),
               ),
             ),
-        ],
+
+            // ── Controls overlay ───────────────────────────────────────────────
+            if (_isInitialized)
+              AnimatedOpacity(
+                opacity: _controlsVisible ? 1.0 : 0.0,
+                duration: const Duration(milliseconds: 200),
+                child: IgnorePointer(
+                  ignoring: !_controlsVisible,
+                  child: _ControlsOverlay(
+                    controller: _controller,
+                    title: widget.title,
+                    isDark: isDark,
+                    onPlayPause: _togglePlayPause,
+                    onSeek: (pos) {
+                      _onUserInteraction();
+                      _controller.seekTo(pos);
+                    },
+                    onBack: () => Navigator.of(context).pop(),
+                  ),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -287,8 +304,9 @@ class _ControlsOverlay extends StatelessWidget {
                   Expanded(
                     child: Text(
                       title!,
-                      style: AppTextStyles.body(context)
-                          .copyWith(color: Colors.white),
+                      style: AppTextStyles.body(
+                        context,
+                      ).copyWith(color: Colors.white),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -309,13 +327,15 @@ class _ControlsOverlay extends StatelessWidget {
                     children: [
                       Text(
                         _formatDuration(position),
-                        style: AppTextStyles.caption(context)
-                            .copyWith(color: Colors.white70),
+                        style: AppTextStyles.caption(
+                          context,
+                        ).copyWith(color: Colors.white70),
                       ),
                       Text(
                         _formatDuration(duration),
-                        style: AppTextStyles.caption(context)
-                            .copyWith(color: Colors.white70),
+                        style: AppTextStyles.caption(
+                          context,
+                        ).copyWith(color: Colors.white70),
                       ),
                     ],
                   ),
@@ -323,10 +343,12 @@ class _ControlsOverlay extends StatelessWidget {
                   SliderTheme(
                     data: SliderTheme.of(context).copyWith(
                       trackHeight: 2.0,
-                      thumbShape:
-                          const RoundSliderThumbShape(enabledThumbRadius: 6),
-                      overlayShape:
-                          const RoundSliderOverlayShape(overlayRadius: 14),
+                      thumbShape: const RoundSliderThumbShape(
+                        enabledThumbRadius: 6,
+                      ),
+                      overlayShape: const RoundSliderOverlayShape(
+                        overlayRadius: 14,
+                      ),
                       activeTrackColor: Colors.white,
                       inactiveTrackColor: Colors.white30,
                       thumbColor: Colors.white,
@@ -334,16 +356,15 @@ class _ControlsOverlay extends StatelessWidget {
                     ),
                     child: Slider(
                       value: duration.inMilliseconds > 0
-                          ? position.inMilliseconds /
-                              duration.inMilliseconds
+                          ? position.inMilliseconds / duration.inMilliseconds
                           : 0.0,
                       onChanged: duration.inMilliseconds > 0
                           ? (v) => onSeek(
-                                Duration(
-                                  milliseconds:
-                                      (v * duration.inMilliseconds).round(),
-                                ),
-                              )
+                              Duration(
+                                milliseconds: (v * duration.inMilliseconds)
+                                    .round(),
+                              ),
+                            )
                           : null,
                     ),
                   ),

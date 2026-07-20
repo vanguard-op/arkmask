@@ -528,11 +528,23 @@ class _TreeView extends StatelessWidget {
       children: [
         if (state.isExtracting) const Positioned(top: 0, left: 0, right: 0, child: LinearProgressIndicator()),
         ListView(children: rows),
-        // ── Extract Assets CTA (blank project with story content) ──────────
+        // ── Extract Assets CTA (any project with story content) ────────────
         // Sole entry point for asset extraction as of FEAT-038 — triggers
         // /assets directly rather than navigating to the Story Editor (whose
         // former "Extract Assets" toolbar slot is now "Refine Story").
-        if (tree.isBlank && tree.storyHasContent)
+        //
+        // Deliberately NOT gated on tree.isBlank: that condition (no assets,
+        // no scenes) made sense when this button only needed to nudge a
+        // brand-new project through its first extraction, but it meant the
+        // button vanished permanently on every project that already had
+        // assets/scenes — including every pre-existing project, since there
+        // is no longer any other way to (re-)run extraction. Re-extraction
+        // is now incremental server-side (only missing assets are added, see
+        // asset-list-generation.md) and already has its own "existing assets
+        // detected" confirmation dialog (FileBrowserCubit.extractAssets),
+        // so it's safe to always offer this whenever there's a story to
+        // extract from.
+        if (tree.storyHasContent)
           Positioned(
             left: AppSpacing.s4,
             right: AppSpacing.s4,
