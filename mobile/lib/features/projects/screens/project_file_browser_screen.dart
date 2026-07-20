@@ -137,7 +137,8 @@ class _FileBrowserView extends StatelessWidget {
                 content: Text(state.extractError!),
                 action: SnackBarAction(
                   label: 'Retry',
-                  onPressed: () => context.read<FileBrowserCubit>().extractAssets(),
+                  onPressed: () =>
+                      context.read<FileBrowserCubit>().extractAssets(),
                 ),
               ),
             );
@@ -191,24 +192,23 @@ class _FileBrowserView extends StatelessWidget {
           body: switch (state) {
             FileBrowserLoading() => const _SkeletonTree(),
             FileBrowserError(:final message) => _ErrorView(
-                message: message,
-                onRetry: () =>
-                    context.read<FileBrowserCubit>().load(projectSlug),
-              ),
+              message: message,
+              onRetry: () => context.read<FileBrowserCubit>().load(projectSlug),
+            ),
             FileBrowserLoaded() => Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _StorageBanner(summary: storageSummary),
-                  Expanded(
-                    child: _TreeView(
-                      state: state,
-                      projectSlug: projectSlug,
-                      isDark: isDark,
-                      onReturnFromChild: onReturnFromChild,
-                    ),
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _StorageBanner(summary: storageSummary),
+                Expanded(
+                  child: _TreeView(
+                    state: state,
+                    projectSlug: projectSlug,
+                    isDark: isDark,
+                    onReturnFromChild: onReturnFromChild,
                   ),
-                ],
-              ),
+                ),
+              ],
+            ),
           },
         );
       },
@@ -274,250 +274,271 @@ class _TreeView extends StatelessWidget {
     final List<Widget> rows = [];
 
     // ── story.mdx (Phase 2: opens story editor) ────────────────────────────
-    rows.add(FileBrowserRow(
-      label: 'story.mdx',
-      icon: LucideIcons.fileText,
-      depth: 0,
-      isSelected: state.selectedId == '__story__',
-      onTap: () async {
-        context.read<FileBrowserCubit>().select('__story__');
-        await context.push(Routes.storyEditor
-            .replaceFirst(':projectName', Uri.encodeComponent(projectSlug)));
-        if (context.mounted) {
-          onReturnFromChild();
-        }
-      },
-    ));
+    rows.add(
+      FileBrowserRow(
+        label: 'story.mdx',
+        icon: LucideIcons.fileText,
+        depth: 0,
+        isSelected: state.selectedId == '__story__',
+        onTap: () async {
+          context.read<FileBrowserCubit>().select('__story__');
+          await context.push(
+            Routes.storyEditor.replaceFirst(
+              ':projectName',
+              Uri.encodeComponent(projectSlug),
+            ),
+          );
+          if (context.mounted) {
+            onReturnFromChild();
+          }
+        },
+      ),
+    );
 
     // ── final.mp4 (shown once merge worker writes gcs_final_path) ─────────
     if (tree.gcsFinalPath != null) {
-      rows.add(FileBrowserRow(
-        label: 'final.mp4',
-        icon: LucideIcons.fileVideo,
-        depth: 0,
-        onTap: () => openVideoPlayer(
-          context,
-          gcsPath: tree.gcsFinalPath!,
-          title: 'final.mp4',
+      rows.add(
+        FileBrowserRow(
+          label: 'final.mp4',
+          icon: LucideIcons.fileVideo,
+          depth: 0,
+          onTap: () => openVideoPlayer(
+            context,
+            gcsPath: tree.gcsFinalPath!,
+            title: 'final.mp4',
+          ),
+          onLongPress: () => showDownloadToGallerySheet(
+            context,
+            gcsPath: tree.gcsFinalPath!,
+            fileNameHint: '${projectSlug}_final.mp4',
+          ),
         ),
-        onLongPress: () => showDownloadToGallerySheet(
-          context,
-          gcsPath: tree.gcsFinalPath!,
-          fileNameHint: '${projectSlug}_final.mp4',
-        ),
-      ));
+      );
     }
 
     // ── assets/ ────────────────────────────────────────────────────────────
-    rows.add(FileBrowserRow(
-      label: 'assets',
-      icon: expanded.contains(assetsKey)
-          ? LucideIcons.folderOpen
-          : LucideIcons.folder,
-      depth: 0,
-      isFolder: true,
-      isExpanded: expanded.contains(assetsKey),
-      onTap: () =>
-          context.read<FileBrowserCubit>().toggleExpand(assetsKey),
-      onToggleExpand: () =>
-          context.read<FileBrowserCubit>().toggleExpand(assetsKey),
-      // FEAT-033 — long-press opens the Add Asset Sheet scoped globally.
-      // Deliberately does not conflict with the section header's own
-      // expand/collapse tap gesture (long-press vs. tap are distinct
-      // GestureDetector recognizers).
-      onLongPress: () =>
-          showAddAssetSheet(context, projectSlug: projectSlug),
-    ));
+    rows.add(
+      FileBrowserRow(
+        label: 'assets',
+        icon: expanded.contains(assetsKey)
+            ? LucideIcons.folderOpen
+            : LucideIcons.folder,
+        depth: 0,
+        isFolder: true,
+        isExpanded: expanded.contains(assetsKey),
+        onTap: () => context.read<FileBrowserCubit>().toggleExpand(assetsKey),
+        onToggleExpand: () =>
+            context.read<FileBrowserCubit>().toggleExpand(assetsKey),
+        // FEAT-033 — long-press opens the Add Asset Sheet scoped globally.
+        // Deliberately does not conflict with the section header's own
+        // expand/collapse tap gesture (long-press vs. tap are distinct
+        // GestureDetector recognizers).
+        onLongPress: () => showAddAssetSheet(context, projectSlug: projectSlug),
+      ),
+    );
 
     if (expanded.contains(assetsKey)) {
       if (tree.globalAssets.isEmpty) {
         rows.add(_EmptyFolderRow(depth: 1, isDark: isDark));
       } else {
         for (final asset in tree.globalAssets) {
-          rows.add(FileBrowserRow(
-            label: asset.name,
-            icon: asset.hasImage ? LucideIcons.image : LucideIcons.image,
-            depth: 1,
-            isSelected: state.selectedId == asset.id,
-            badge: SourceBadge(source: asset.source),
-            steps: [
-              asset.isGeneratingPrompt
-                  ? GenerationStepState.running
-                  : (asset.hasPromptBody
-                      ? GenerationStepState.done
-                      : GenerationStepState.pending),
-              asset.isGeneratingImage
-                  ? GenerationStepState.running
-                  : (asset.hasImage
-                      ? GenerationStepState.done
-                      : GenerationStepState.pending),
-            ],
-            onTap: () async {
-              context.read<FileBrowserCubit>().select(asset.id);
-              await context.push(_globalAssetEditorPath(asset.id));
-              if (context.mounted) {
-                onReturnFromChild();
-              }
-            },
-            // FEAT-037 — long-press reveals a delete option.
-            onLongPress: () => confirmAndDeleteAssetRow(
-              context,
-              projectSlug: projectSlug,
-              assetFirestorePath: 'assets/${asset.id}',
-              assetName: asset.name,
+          rows.add(
+            FileBrowserRow(
+              label: asset.name,
+              icon: asset.hasImage ? LucideIcons.image : LucideIcons.image,
+              depth: 1,
+              isSelected: state.selectedId == asset.id,
+              badge: SourceBadge(source: asset.source),
+              steps: [
+                asset.isGeneratingPrompt
+                    ? GenerationStepState.running
+                    : (asset.hasPromptBody
+                          ? GenerationStepState.done
+                          : GenerationStepState.pending),
+                asset.isGeneratingImage
+                    ? GenerationStepState.running
+                    : (asset.hasImage
+                          ? GenerationStepState.done
+                          : GenerationStepState.pending),
+              ],
+              onTap: () async {
+                context.read<FileBrowserCubit>().select(asset.id);
+                await context.push(_globalAssetEditorPath(asset.id));
+                if (context.mounted) {
+                  onReturnFromChild();
+                }
+              },
+              // FEAT-037 — long-press reveals a delete option.
+              onLongPress: () => confirmAndDeleteAssetRow(
+                context,
+                projectSlug: projectSlug,
+                assetFirestorePath: 'assets/${asset.id}',
+                assetName: asset.name,
+              ),
             ),
-          ));
+          );
         }
       }
     }
 
     // ── scenes/ ───────────────────────────────────────────────────────────
-    rows.add(FileBrowserRow(
-      label: 'scenes',
-      icon: expanded.contains(scenesKey)
-          ? LucideIcons.folderOpen
-          : LucideIcons.film,
-      depth: 0,
-      isFolder: true,
-      isExpanded: expanded.contains(scenesKey),
-      onTap: () =>
-          context.read<FileBrowserCubit>().toggleExpand(scenesKey),
-      onToggleExpand: () =>
-          context.read<FileBrowserCubit>().toggleExpand(scenesKey),
-      // FEAT-038 — long-press offers to create a Scene N document for any
-      // story scene (from story.mdx's `# N` headings) that doesn't have one
-      // yet. Scene docs are otherwise only ever created as a side effect of
-      // asset extraction touching that scene number.
-      onLongPress: () => showCreateSceneSheet(
-        context,
-        projectSlug: projectSlug,
-        missingSceneNumbers: tree.missingSceneNumbers,
+    rows.add(
+      FileBrowserRow(
+        label: 'scenes',
+        icon: expanded.contains(scenesKey)
+            ? LucideIcons.folderOpen
+            : LucideIcons.film,
+        depth: 0,
+        isFolder: true,
+        isExpanded: expanded.contains(scenesKey),
+        onTap: () => context.read<FileBrowserCubit>().toggleExpand(scenesKey),
+        onToggleExpand: () =>
+            context.read<FileBrowserCubit>().toggleExpand(scenesKey),
+        // FEAT-038 — long-press offers to create a Scene N document for any
+        // story scene (from story.mdx's `# N` headings) that doesn't have one
+        // yet. Scene docs are otherwise only ever created as a side effect of
+        // asset extraction touching that scene number.
+        onLongPress: () => showCreateSceneSheet(
+          context,
+          projectSlug: projectSlug,
+          missingSceneNumbers: tree.missingSceneNumbers,
+        ),
       ),
-    ));
+    );
 
     if (expanded.contains(scenesKey)) {
       if (tree.scenes.isEmpty) {
         rows.add(_EmptyFolderRow(depth: 1, isDark: isDark));
       } else {
         for (final scene in tree.scenes) {
-          rows.add(FileBrowserRow(
-            label: 'Scene ${scene.sceneNumber}',
-            icon: scene.hasVideo ? LucideIcons.video : LucideIcons.film,
-            depth: 1,
-            isFolder: true,
-            isExpanded: expanded.contains(scene.id),
-            steps: [
-              scene.isGeneratingStoryboard
-                  ? GenerationStepState.running
-                  : (scene.hasStoryboard
-                      ? GenerationStepState.done
-                      : GenerationStepState.pending),
-              scene.isGeneratingVideo
-                  ? GenerationStepState.running
-                  : (scene.hasVideo
-                      ? GenerationStepState.done
-                      : GenerationStepState.pending),
-            ],
-            onTap: () async {
-              context.read<FileBrowserCubit>().toggleExpand(scene.id);
-              await context.push(_sceneDetailPath(scene.sceneNumber));
-              if (context.mounted) {
-                onReturnFromChild();
-              }
-            },
-            onToggleExpand: () =>
-                context.read<FileBrowserCubit>().toggleExpand(scene.id),
-            // FEAT-033 — long-press opens the Add Asset Sheet scoped to
-            // this scene (all three tabs, including Reference).
-            onLongPress: () => showAddAssetSheet(
-              context,
-              projectSlug: projectSlug,
-              scope: scene.sceneNumber,
-            ),
-          ));
-
-          if (expanded.contains(scene.id)) {
-            // Scene-local assets.
-            for (final asset in scene.assets) {
-              rows.add(FileBrowserRow(
-                label: asset.name,
-                icon: LucideIcons.image,
-                depth: 2,
-                isSelected: state.selectedId == asset.id,
-                badge: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    SourceBadge(source: asset.source),
-                    if (asset.source != 'extracted') const SizedBox(width: AppSpacing.s1),
-                    AssetReferenceBadge(
-                      assetName: asset.name,
-                      description: asset.description,
-                    ),
-                  ],
-                ),
-                steps: asset.isPassThrough
-                    ? null
-                    : [
-                        asset.isGeneratingPrompt
-                            ? GenerationStepState.running
-                            : (asset.hasPromptBody
-                                ? GenerationStepState.done
-                                : GenerationStepState.pending),
-                        asset.isGeneratingImage
-                            ? GenerationStepState.running
-                            : (asset.hasImage
-                                ? GenerationStepState.done
-                                : GenerationStepState.pending),
-                      ],
-                onTap: () async {
-                  context.read<FileBrowserCubit>().select(asset.id);
-                  await context.push(
-                    _sceneAssetEditorPath(scene.id, asset.id),
-                  );
-                  if (context.mounted) {
-                    onReturnFromChild();
-                  }
-                },
-                // FEAT-037 — long-press reveals a delete option.
-                onLongPress: () => confirmAndDeleteAssetRow(
-                  context,
-                  projectSlug: projectSlug,
-                  assetFirestorePath: 'scenes/${scene.id}/assets/${asset.id}',
-                  assetName: asset.name,
-                ),
-              ));
-            }
-
-            // ark.mdx (storyboard) — navigates to scene detail.
-            rows.add(FileBrowserRow(
-              label: 'ark.mdx',
-              icon: LucideIcons.scrollText,
-              depth: 2,
+          rows.add(
+            FileBrowserRow(
+              label: 'Scene ${scene.sceneNumber}',
+              icon: scene.hasVideo ? LucideIcons.video : LucideIcons.film,
+              depth: 1,
+              isFolder: true,
+              isExpanded: expanded.contains(scene.id),
+              steps: [
+                scene.isGeneratingStoryboard
+                    ? GenerationStepState.running
+                    : (scene.hasStoryboard
+                          ? GenerationStepState.done
+                          : GenerationStepState.pending),
+                scene.isGeneratingVideo
+                    ? GenerationStepState.running
+                    : (scene.hasVideo
+                          ? GenerationStepState.done
+                          : GenerationStepState.pending),
+              ],
               onTap: () async {
+                context.read<FileBrowserCubit>().toggleExpand(scene.id);
                 await context.push(_sceneDetailPath(scene.sceneNumber));
                 if (context.mounted) {
                   onReturnFromChild();
                 }
               },
-            ));
+              onToggleExpand: () =>
+                  context.read<FileBrowserCubit>().toggleExpand(scene.id),
+              // FEAT-033 — long-press opens the Add Asset Sheet scoped to
+              // this scene (all three tabs, including Reference).
+              onLongPress: () => showAddAssetSheet(
+                context,
+                projectSlug: projectSlug,
+                scope: scene.sceneNumber,
+              ),
+            ),
+          );
+
+          if (expanded.contains(scene.id)) {
+            // Scene-local assets.
+            for (final asset in scene.assets) {
+              rows.add(
+                FileBrowserRow(
+                  label: asset.name,
+                  icon: LucideIcons.image,
+                  depth: 2,
+                  isSelected: state.selectedId == asset.id,
+                  badge: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SourceBadge(source: asset.source),
+                      if (asset.source != 'extracted')
+                        const SizedBox(width: AppSpacing.s1),
+                      AssetReferenceBadge(
+                        assetName: asset.name,
+                        description: asset.description,
+                      ),
+                    ],
+                  ),
+                  steps: asset.isPassThrough
+                      ? null
+                      : [
+                          asset.isGeneratingPrompt
+                              ? GenerationStepState.running
+                              : (asset.hasPromptBody
+                                    ? GenerationStepState.done
+                                    : GenerationStepState.pending),
+                          asset.isGeneratingImage
+                              ? GenerationStepState.running
+                              : (asset.hasImage
+                                    ? GenerationStepState.done
+                                    : GenerationStepState.pending),
+                        ],
+                  onTap: () async {
+                    context.read<FileBrowserCubit>().select(asset.id);
+                    await context.push(
+                      _sceneAssetEditorPath(scene.id, asset.id),
+                    );
+                    if (context.mounted) {
+                      onReturnFromChild();
+                    }
+                  },
+                  // FEAT-037 — long-press reveals a delete option.
+                  onLongPress: () => confirmAndDeleteAssetRow(
+                    context,
+                    projectSlug: projectSlug,
+                    assetFirestorePath: 'scenes/${scene.id}/assets/${asset.id}',
+                    assetName: asset.name,
+                  ),
+                ),
+              );
+            }
+
+            // ark.mdx (storyboard) — navigates to scene detail.
+            rows.add(
+              FileBrowserRow(
+                label: 'ark.mdx',
+                icon: LucideIcons.scrollText,
+                depth: 2,
+                onTap: () async {
+                  await context.push(_sceneDetailPath(scene.sceneNumber));
+                  if (context.mounted) {
+                    onReturnFromChild();
+                  }
+                },
+              ),
+            );
 
             // video.mp4 (only shown once gcs_video_path is set by the worker).
             if (scene.hasVideo && scene.gcsVideoPath != null) {
-              rows.add(FileBrowserRow(
-                label: 'video.mp4',
-                icon: LucideIcons.video,
-                depth: 2,
-                onTap: () => openVideoPlayer(
-                  context,
-                  gcsPath: scene.gcsVideoPath!,
-                  title: 'Scene ${scene.sceneNumber}',
+              rows.add(
+                FileBrowserRow(
+                  label: 'video.mp4',
+                  icon: LucideIcons.video,
+                  depth: 2,
+                  onTap: () => openVideoPlayer(
+                    context,
+                    gcsPath: scene.gcsVideoPath!,
+                    title: 'Scene ${scene.sceneNumber}',
+                  ),
+                  onLongPress: () => showDownloadToGallerySheet(
+                    context,
+                    gcsPath: scene.gcsVideoPath!,
+                    fileNameHint:
+                        '${projectSlug}_scene_${scene.sceneNumber}.mp4',
+                  ),
                 ),
-                onLongPress: () => showDownloadToGallerySheet(
-                  context,
-                  gcsPath: scene.gcsVideoPath!,
-                  fileNameHint: '${projectSlug}_scene_${scene.sceneNumber}.mp4',
-                ),
-              ));
+              );
             }
           }
         }
@@ -526,13 +547,21 @@ class _TreeView extends StatelessWidget {
 
     return Stack(
       children: [
-        if (state.isExtracting) const Positioned(top: 0, left: 0, right: 0, child: LinearProgressIndicator()),
+        if (state.isExtracting)
+          const Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: LinearProgressIndicator(),
+          ),
         ListView(
           // Reserve space at the bottom so the floating "Extract Assets"
           // button (pinned via Positioned below) doesn't sit on top of /
           // block taps on the last row(s) of content.
           padding: tree.storyHasContent
-              ? const EdgeInsets.only(bottom: AppSizing.fileBrowserRow + AppSpacing.s6)
+              ? const EdgeInsets.only(
+                  bottom: AppSizing.fileBrowserRow + AppSpacing.s12,
+                )
               : EdgeInsets.zero,
           children: rows,
         ),
@@ -601,7 +630,8 @@ class _EmptyFolderRow extends StatelessWidget {
       height: AppSizing.fileBrowserRow,
       child: Padding(
         padding: EdgeInsets.only(
-          left: AppSpacing.s3 +
+          left:
+              AppSpacing.s3 +
               depth * AppSpacing.s4 +
               AppSizing.iconMd +
               AppSpacing.s2,
@@ -638,7 +668,9 @@ class _ExtractAssetsButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final primaryColor = isDark ? AppColors.primaryDark : AppColors.primaryLight;
+    final primaryColor = isDark
+        ? AppColors.primaryDark
+        : AppColors.primaryLight;
 
     return OutlinedButton.icon(
       onPressed: onTap,
@@ -646,9 +678,16 @@ class _ExtractAssetsButton extends StatelessWidget {
           ? SizedBox(
               width: 14,
               height: 14,
-              child: CircularProgressIndicator(strokeWidth: 1.5, color: primaryColor),
+              child: CircularProgressIndicator(
+                strokeWidth: 1.5,
+                color: primaryColor,
+              ),
             )
-          : Icon(LucideIcons.sparkles, size: AppSizing.iconSm, color: primaryColor),
+          : Icon(
+              LucideIcons.sparkles,
+              size: AppSizing.iconSm,
+              color: primaryColor,
+            ),
       label: Text(
         isExtracting ? 'Extracting...' : 'Extract Assets',
         style: AppTextStyles.body(context).copyWith(color: primaryColor),
@@ -721,10 +760,12 @@ class _StorageBanner extends StatelessWidget {
     }
 
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final chipBg =
-        isDark ? AppColors.surfaceRaisedDark : AppColors.surfaceRaisedLight;
-    final textColor =
-        isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight;
+    final chipBg = isDark
+        ? AppColors.surfaceRaisedDark
+        : AppColors.surfaceRaisedLight;
+    final textColor = isDark
+        ? AppColors.textSecondaryDark
+        : AppColors.textSecondaryLight;
 
     return Padding(
       padding: const EdgeInsets.symmetric(
@@ -803,7 +844,9 @@ class _SkeletonTree extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final base = isDark ? AppColors.surfaceRaisedDark : AppColors.surfaceRaisedLight;
+    final base = isDark
+        ? AppColors.surfaceRaisedDark
+        : AppColors.surfaceRaisedLight;
 
     return Column(
       children: List.generate(7, (i) {
@@ -845,6 +888,15 @@ Future<void> showCreateSceneSheet(
     // using gesture/button navigation, so "Create All" ends up sitting
     // under (and partially behind) the system nav bar.
     useSafeArea: true,
+    // Without this, a non-scroll-controlled bottom sheet caps its own
+    // height well below the full screen regardless of content — on a
+    // story with many missing scene numbers, the row list plus the
+    // "Create All" button no longer fit within that cap even with the
+    // inner SingleChildScrollView, since the sheet itself refused to grow.
+    // isScrollControlled lets the sheet size up to the full available
+    // height, with the SingleChildScrollView inside handling anything
+    // still too tall for that.
+    isScrollControlled: true,
     builder: (_) => _CreateSceneSheet(
       projectSlug: projectSlug,
       missingSceneNumbers: missingSceneNumbers,
@@ -882,9 +934,9 @@ class _CreateSceneSheetState extends State<_CreateSceneSheet> {
       await FirebaseFirestore.instance
           .doc('users/$_uid/projects/${widget.projectSlug}/scenes/$sceneNumber')
           .set({
-        'scene_number': sceneNumber,
-        'created_at': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
+            'scene_number': sceneNumber,
+            'created_at': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
       // Firestore listener adds the row to the tree automatically. Sheet
       // stays open so the user can create more than one in a row.
     } catch (e) {
@@ -911,79 +963,76 @@ class _CreateSceneSheetState extends State<_CreateSceneSheet> {
     final missing = widget.missingSceneNumbers;
 
     return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.all(AppSpacing.s4),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Create Scene', style: AppTextStyles.h3(context)),
-            const SizedBox(height: AppSpacing.s2),
-            if (missing.isEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: AppSpacing.s4),
-                child: Text(
-                  'Every scene in story.mdx already has a Scene entry.',
-                  style: AppTextStyles.body(context).copyWith(
+      child: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.s4),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Create Scene', style: AppTextStyles.h3(context)),
+              const SizedBox(height: AppSpacing.s2),
+              if (missing.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: AppSpacing.s4),
+                  child: Text(
+                    'Every scene in story.mdx already has a Scene entry.',
+                    style: AppTextStyles.body(context).copyWith(
+                      color: isDark
+                          ? AppColors.textSecondaryDark
+                          : AppColors.textSecondaryLight,
+                    ),
+                  ),
+                )
+              else ...[
+                Text(
+                  'These scene numbers exist in story.mdx but have not been '
+                  'created yet.',
+                  style: AppTextStyles.bodySmall(context).copyWith(
                     color: isDark
                         ? AppColors.textSecondaryDark
                         : AppColors.textSecondaryLight,
                   ),
                 ),
-              )
-            else ...[
-              Text(
-                'These scene numbers exist in story.mdx but have not been '
-                'created yet.',
-                style: AppTextStyles.bodySmall(context).copyWith(
-                  color: isDark
-                      ? AppColors.textSecondaryDark
-                      : AppColors.textSecondaryLight,
-                ),
-              ),
-              const SizedBox(height: AppSpacing.s3),
-              // The row list can be arbitrarily long (every scene number
-              // missing a doc — potentially 50+ for a long story), so it's
-              // capped and scrollable rather than left in the unbounded
-              // Column: unbounded meant the sheet's content (and the
-              // "Create All" button below it) simply overflowed past the
-              // screen with no way to scroll down to reach it.
-              ConstrainedBox(
-                constraints: BoxConstraints(
-                  maxHeight: MediaQuery.of(context).size.height * 0.5,
-                ),
-                child: Scrollbar(
-                  child: ListView(
-                    shrinkWrap: true,
-                    children: missing
-                        .map((n) => ListTile(
-                              contentPadding: EdgeInsets.zero,
-                              leading: const Icon(LucideIcons.film),
-                              title: Text('Scene $n'),
-                              trailing: _creating.contains(n)
-                                  ? const SizedBox(
-                                      width: 16,
-                                      height: 16,
-                                      child: CircularProgressIndicator(
-                                          strokeWidth: 2),
-                                    )
-                                  : const Icon(LucideIcons.plus),
-                              enabled: !_creating.contains(n),
-                              onTap: () => _create(n),
-                            ))
-                        .toList(),
+                const SizedBox(height: AppSpacing.s3),
+                // The row list can be arbitrarily long (every scene number
+                // missing a doc — potentially 50+ for a long story). A
+                // bounded inner ListView (previous approach) still overflowed
+                // because the outer Column (mainAxisSize.min) has no bounded
+                // height of its own inside the bottom sheet — its natural
+                // size (title + description + list + button) can still
+                // exceed what the sheet route allots, and mainAxisSize.min
+                // provides no scrolling, just an overflow error. Listing the
+                // rows directly as Column children, with the *whole* sheet
+                // wrapped in a SingleChildScrollView below, lets the sheet
+                // scroll as one unit whenever total content doesn't fit —
+                // "Create All" scrolls into view instead of overflowing.
+                ...missing.map(
+                  (n) => ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(LucideIcons.film),
+                    title: Text('Scene $n'),
+                    trailing: _creating.contains(n)
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(LucideIcons.plus),
+                    enabled: !_creating.contains(n),
+                    onTap: () => _create(n),
                   ),
                 ),
-              ),
-              if (missing.length > 1) ...[
-                const SizedBox(height: AppSpacing.s2),
-                ElevatedButton(
-                  onPressed: _creating.isEmpty ? _createAll : null,
-                  child: Text('Create All (${missing.length})'),
-                ),
+                if (missing.length > 1) ...[
+                  const SizedBox(height: AppSpacing.s2),
+                  ElevatedButton(
+                    onPressed: _creating.isEmpty ? _createAll : null,
+                    child: Text('Create All (${missing.length})'),
+                  ),
+                ],
               ],
             ],
-          ],
+          ),
         ),
       ),
     );
@@ -1023,7 +1072,13 @@ Future<void> confirmAndDeleteAssetRow(
   if (confirmed != true || !context.mounted) return;
 
   final apiClient = ArkMaskServices.of(context).apiClient;
-  await _deleteAssetRow(context, apiClient, projectSlug, assetFirestorePath, force: false);
+  await _deleteAssetRow(
+    context,
+    apiClient,
+    projectSlug,
+    assetFirestorePath,
+    force: false,
+  );
 }
 
 Future<void> _deleteAssetRow(
@@ -1060,7 +1115,13 @@ Future<void> _deleteAssetRow(
           TextButton(
             onPressed: () {
               Navigator.of(dialogContext).pop();
-              _deleteAssetRow(context, apiClient, projectSlug, assetFirestorePath, force: true);
+              _deleteAssetRow(
+                context,
+                apiClient,
+                projectSlug,
+                assetFirestorePath,
+                force: true,
+              );
             },
             child: const Text('Force Delete'),
           ),
@@ -1069,9 +1130,9 @@ Future<void> _deleteAssetRow(
     );
   } catch (e) {
     if (!context.mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Failed to delete asset: $e')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('Failed to delete asset: $e')));
   }
 }
 
