@@ -41,9 +41,12 @@ class StoryLoaded extends StoryState {
     this.generationSettings = const GenerationSettings(),
     this.isSaving = false,
     this.savedRecently = false,
-    this.isExtracting = false,
-    this.extractError,
-    this.hasExistingAssets = false,
+    this.isRefining = false,
+    this.refineError,
+    this.refinedStoryPreview,
+    this.refinedStoryGeneratedAt,
+    this.showExistingAssetsWarning = false,
+    this.showUnreviewedRerunWarning = false,
   });
 
   /// Ordered list of scenes parsed from `# N` headings.
@@ -59,17 +62,38 @@ class StoryLoaded extends StoryState {
   /// Briefly true after a save completes (drives "Saved ✓" indicator).
   final bool savedRecently;
 
-  /// True while the `/assets` API call and Firestore writes are running.
-  final bool isExtracting;
+  /// True while the `/refine-story` API call and worker job are running
+  /// (FEAT-038). Note: asset extraction (FEAT-009) no longer lives on this
+  /// screen — see FileBrowserCubit/FileBrowserState for that flow, which now
+  /// occupies the Project File Browser instead.
+  final bool isRefining;
 
-  /// Non-null when the last asset extraction attempt failed.
-  final String? extractError;
+  /// Non-null when the last `/refine-story` attempt failed. `'__credits__'`
+  /// signals a 402 credit-exhaustion response (shows the paywall dialog
+  /// instead of a plain error message).
+  final String? refineError;
 
-  /// True when Firestore already has asset documents for this project.
-  ///
-  /// When true the screen shows a confirmation dialog before re-extracting,
-  /// so the user must explicitly call `extractAssets(force: true)`.
-  final bool hasExistingAssets;
+  /// The project document's `refined_story_preview` field — non-null once a
+  /// `/refine-story` job completes and until the user Applies or Discards it
+  /// on the Refine Story Preview screen (or Discards directly from the
+  /// banner here).
+  final String? refinedStoryPreview;
+
+  /// The project document's `refined_story_generated_at` field, paired with
+  /// [refinedStoryPreview].
+  final DateTime? refinedStoryGeneratedAt;
+
+  /// True when "Refine Story" was tapped and the project already has
+  /// extracted assets or generated scenes/videos (R-027) — the screen shows
+  /// a warning confirmation dialog before proceeding; calling
+  /// `refineStory(force: true)` on confirm bypasses this check.
+  final bool showExistingAssetsWarning;
+
+  /// True when "Refine Story" was tapped again while a previous
+  /// `refined_story_preview` is still unreviewed — the screen shows a
+  /// confirmation before replacing it; calling `refineStory(force: true)`
+  /// on confirm bypasses this check.
+  final bool showUnreviewedRerunWarning;
 
   int get sceneCount => scenes.length;
 
@@ -78,23 +102,48 @@ class StoryLoaded extends StoryState {
     GenerationSettings? generationSettings,
     bool? isSaving,
     bool? savedRecently,
-    bool? isExtracting,
-    String? extractError,
-    bool clearExtractError = false,
-    bool? hasExistingAssets,
+    bool? isRefining,
+    String? refineError,
+    bool clearRefineError = false,
+    String? refinedStoryPreview,
+    bool clearRefinedStoryPreview = false,
+    DateTime? refinedStoryGeneratedAt,
+    bool showExistingAssetsWarning = false,
+    bool showUnreviewedRerunWarning = false,
   }) {
+    // The two warning flags are one-shot dialog triggers, not persisted
+    // state — every copyWith call defaults them back to false unless the
+    // caller explicitly sets one true for this exact emission (mirrors how
+    // the screen's BlocConsumer listener reacts to a single state change,
+    // then the cubit clears it on the very next emit).
     return StoryLoaded(
       scenes: scenes ?? this.scenes,
       generationSettings: generationSettings ?? this.generationSettings,
       isSaving: isSaving ?? this.isSaving,
       savedRecently: savedRecently ?? this.savedRecently,
-      isExtracting: isExtracting ?? this.isExtracting,
-      extractError: clearExtractError ? null : (extractError ?? this.extractError),
-      hasExistingAssets: hasExistingAssets ?? this.hasExistingAssets,
+      isRefining: isRefining ?? this.isRefining,
+      refineError: clearRefineError ? null : (refineError ?? this.refineError),
+      refinedStoryPreview: clearRefinedStoryPreview
+          ? null
+          : (refinedStoryPreview ?? this.refinedStoryPreview),
+      refinedStoryGeneratedAt:
+          clearRefinedStoryPreview ? null : (refinedStoryGeneratedAt ?? this.refinedStoryGeneratedAt),
+      showExistingAssetsWarning: showExistingAssetsWarning,
+      showUnreviewedRerunWarning: showUnreviewedRerunWarning,
     );
   }
 
   @override
-  List<Object?> get props =>
-      [scenes, generationSettings, isSaving, savedRecently, isExtracting, extractError, hasExistingAssets];
+  List<Object?> get props => [
+        scenes,
+        generationSettings,
+        isSaving,
+        savedRecently,
+        isRefining,
+        refineError,
+        refinedStoryPreview,
+        refinedStoryGeneratedAt,
+        showExistingAssetsWarning,
+        showUnreviewedRerunWarning,
+      ];
 }

@@ -2,6 +2,27 @@
 
 Analyze a story and produce a flat JSON array of all visual assets needed to realize it — characters, backgrounds, and objects — organized by scene.
 
+## Input Format
+
+You will always receive the full story text. If this is a **re-extraction** on a project that already has assets, you will also receive an `existing_assets` JSON block listing every asset already defined for this project:
+
+```json
+{
+  "story": "string — full story text, all scene blocks",
+  "existing_assets": [
+    {
+      "name": "string",
+      "type": "character" | "background" | "object",
+      "description": "string",
+      "scene_number": 0
+    }
+  ]
+}
+```
+
+- `existing_assets` is omitted or empty on a first-time extraction (no assets exist yet for this project). Treat that case exactly as documented below with no special handling.
+- When `existing_assets` is present and non-empty, every listed asset **already exists as a real, saved document** in the project — it is not a candidate entry in your output, it is ground truth you are extracting *against*. Read `## Existing-Assets Rules` below before producing output.
+
 ## Output Format
 
 Produce a single JSON array:
@@ -52,6 +73,17 @@ Produce a single JSON array:
 - `0` is the **root scene** — use it for assets that appear across multiple scenes and need a canonical definition. Define them once here; reference them in later scenes.
 - `1`, `2`, `3`, … correspond to numbered scenes in the story.
 - Assign each asset to the scene where it is *first introduced* if it's a root asset, or to the scene where it appears if it is scene-specific.
+
+## Existing-Assets Rules
+
+Apply these rules only when `existing_assets` is present and non-empty (a re-extraction):
+
+- **Never re-emit an existing asset.** Do not output an entry whose `name` matches (case-insensitively, ignoring the `@/scenes/{n}/` reference prefix) the `name` of any asset in `existing_assets`, at the same `scene_number`. This applies even for what would normally be a `description: ""` reference-reuse entry — an unmodified reuse of an asset that is already in `existing_assets` needs no new entry at all, because the real document already exists and nothing new needs to be written.
+- **Existing assets are immutable input, not editable output.** You are not being asked to redefine, correct, merge, or improve any asset in `existing_assets` — even if the story text now reads differently than the asset's stored `description`. Leave them alone entirely.
+- **Only extract what's missing.** Walk the story exactly as described in `## Extraction Process` below, but before adding an entry, check whether an equivalent asset (same identity, same `scene_number`) is already covered by `existing_assets`. Only output assets that are genuinely new or not yet represented — a character, background, or object the existing set does not already cover.
+- **New reference targets still resolve against existing assets.** A brand-new scene-specific entry may still reference an *existing* root or prior-scene asset as its source (e.g. a new derived-reference background that extends an already-existing workbench asset). Use the normal `@/scenes/{scene_number}/{name}` reference syntax pointing at the existing asset's `name` — this is fine and expected; it is not the same as re-emitting that existing asset.
+- **New variants of an existing asset are allowed.** If the story introduces a genuinely new, viewer-obvious visual change to an existing asset in a scene not already covered by `existing_assets` (per the "Variant discipline" rule above), output that as a new reference entry with a full description, following the normal variant rules — you are adding a new document, not touching the existing one.
+- **When in doubt, omit.** If you are unsure whether an asset is already covered by `existing_assets`, do not emit it. Under-extraction on a re-run is cheap to fix with a follow-up manual asset add (see the product's manual asset management flow); duplicate or near-duplicate documents are more costly to clean up.
 
 ## Extraction Process
 
@@ -146,3 +178,4 @@ Before outputting, verify:
 - [ ] `type` values are exactly `"character"`, `"background"`, or `"object"`.
 - [ ] `scene_number` values are non-negative integers.
 - [ ] Output is valid JSON wrapped in a ```json code block.
+- [ ] If `existing_assets` was provided: no output entry duplicates an asset already in `existing_assets` (same `name`/reference target and `scene_number`) — including as a `description: ""` reuse entry — and every entry in the output represents a genuinely new or previously-uncovered asset.

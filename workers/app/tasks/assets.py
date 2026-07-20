@@ -25,6 +25,47 @@ from app.services.asset_writer import write_extracted_assets
 logger = logging.getLogger(__name__)
 
 
+def _fetch_existing_assets(db, firebase_uid: str, project_slug: str) -> list[dict]:
+    """
+    Resolve every asset document already saved for this project — the
+    project-level `assets/` subcollection plus every scene's local
+    `scenes/{n}/assets/` subcollection — and shape each as
+    ``{name, type, description, scene_number}`` for the provider's
+    `existing_assets` input (see backend/instructions/asset-list-generation.md
+    "Input Format").
+
+    Mirrors the scan pattern already used by
+    app.services.asset_manage.find_dependent_assets. Returns an empty list on
+    a first-time extraction (no assets saved yet), which callers pass through
+    as-is — the provider treats empty/omitted existing_assets as a normal
+    first-time extraction.
+    """
+    project_path = f"users/{firebase_uid}/projects/{project_slug}"
+    existing: list[dict] = []
+
+    for doc in db.collection(f"{project_path}/assets").stream():
+        data = doc.to_dict() or {}
+        existing.append({
+            "name": data.get("name", ""),
+            "type": data.get("type", ""),
+            "description": data.get("description", ""),
+            "scene_number": data.get("scene_number", 0),
+        })
+
+    for scene_doc in db.collection(f"{project_path}/scenes").stream():
+        scene_n = scene_doc.id
+        for doc in db.collection(f"{project_path}/scenes/{scene_n}/assets").stream():
+            data = doc.to_dict() or {}
+            existing.append({
+                "name": data.get("name", ""),
+                "type": data.get("type", ""),
+                "description": data.get("description", ""),
+                "scene_number": data.get("scene_number", int(scene_n)),
+            })
+
+    return existing
+
+
 def _make_provider(provider_type: str, provider_key: str):
     match provider_type.lower():
         case "gemini":
@@ -56,7 +97,12 @@ def run(payload: dict) -> None:
 
     try:
         provider = _make_provider(provider_type, payload["provider_key"])
-        raw_assets = provider.generate_asset_list(payload["story"])
+        # FEAT-009 (incremental extraction) — resolve any assets already
+        # saved for this project and pass them as context so the model only
+        # extracts genuinely missing assets, never re-emitting (and thus
+        # never touching) existing documents' prompt_body/gcs_image_path.
+        existing_assets = _fetch_existing_assets(db, firebase_uid, project_slug)
+        raw_assets = provider.generate_asset_list(payload["story"], existing_assets)
 
         write_extracted_assets(db, firebase_uid, project_slug, raw_assets)
 

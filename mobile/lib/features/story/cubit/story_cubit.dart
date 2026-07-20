@@ -10,23 +10,27 @@ import '../../../core/jobs/jobs_cubit.dart';
 import '../../../core/models/models.dart';
 import 'story_state.dart';
 
-/// Cubit for the Story Editor Screen (FEAT-008, FEAT-009).
+/// Cubit for the Story Editor Screen (FEAT-008, FEAT-038).
 ///
 /// Responsibilities:
 /// - Subscribe to the Firestore project document and parse `story_content`
 ///   (a `# N` headed MDX string) into [StoryScene] blocks.
 /// - Track per-scene body edits and auto-save on a debounce timer.
-/// - Trigger `/assets` extraction (async job) and track completion via the
-///   job document's status field — the worker writes the extracted asset
-///   documents directly to Firestore (see app.services.asset_writer on the
-///   backend), so this cubit no longer parses or writes them itself.
+/// - Trigger `/refine-story` (async job) and track completion via the job
+///   document's status field — the worker writes the rewritten story to the
+///   project document's `refined_story_preview` field (never `story_content`
+///   directly), so this cubit just relays the Firestore listener's view of
+///   that field to the Refine Ready banner.
 ///
-/// [isExtracting] is derived live from [JobsCubit] (see
-/// [_syncExtractingFlag]) rather than a plain local flag, so returning to
-/// this screen mid-extraction correctly restores the indicator, and it
-/// clears even if the job resolves via FCM/poll while another screen is on
-/// top. The direct job-document listener below remains as a fast path while
-/// this screen happens to be open.
+/// Asset extraction (FEAT-009) no longer lives on this screen as of
+/// FEAT-038 — it moved to the Project File Browser (see
+/// `FileBrowserCubit.extractAssets`). This screen's former "Extract Assets"
+/// toolbar slot is now "Refine Story".
+///
+/// [isRefining] is derived live from [JobsCubit] (mirrors how extraction
+/// used to be tracked) rather than a plain local flag, so returning to this
+/// screen mid-refine correctly restores the indicator, and it clears even if
+/// the job resolves via FCM/poll while another screen is on top.
 class StoryCubit extends Cubit<StoryState> {
   StoryCubit({
     required this.projectSlug,
@@ -40,20 +44,20 @@ class StoryCubit extends Cubit<StoryState> {
 
   Timer? _saveTimer;
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _docSub;
-  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _assetsJobSub;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _refineJobSub;
   StreamSubscription<JobsState>? _jobsSub;
 
-  /// True while a project-level `/assets` extraction job is pending/running.
-  bool get _isExtracting => jobsCubit.activeJob(
-        type: 'assets',
+  /// True while a project-level `/refine-story` job is pending/running.
+  bool get _isRefining => jobsCubit.activeJob(
+        type: 'refine',
         projectId: projectSlug,
       ) != null;
 
-  /// Recomputes [StoryLoaded.isExtracting] from [jobsCubit] and re-emits.
-  void _syncExtractingFlag() {
+  /// Recomputes [StoryLoaded.isRefining] from [jobsCubit] and re-emits.
+  void _syncRefiningFlag() {
     final current = state;
     if (current is! StoryLoaded) return;
-    emit(current.copyWith(isExtracting: _isExtracting));
+    emit(current.copyWith(isRefining: _isRefining));
   }
 
   /// True while the user has uncommitted edits that should not be clobbered
@@ -74,24 +78,28 @@ class StoryCubit extends Cubit<StoryState> {
   CollectionReference<Map<String, dynamic>> get _globalAssetsCol =>
       _projectDoc.collection('assets');
 
+  CollectionReference<Map<String, dynamic>> get _scenesCol =>
+      _projectDoc.collection('scenes');
+
   DocumentReference<Map<String, dynamic>> _jobDoc(String jobId) =>
       FirebaseFirestore.instance.collection('users').doc(_uid).collection('jobs').doc(jobId);
 
   // ── Load ──────────────────────────────────────────────────────────────────
 
   /// Subscribes to the Firestore project document and emits [StoryLoaded] on
-  /// the first snapshot. Subsequent snapshots only update state when the user
-  /// is NOT mid-edit (to avoid clobbering in-flight changes).
+  /// the first snapshot. Subsequent snapshots only update scene text when the
+  /// user is NOT mid-edit (to avoid clobbering in-flight changes); the refine
+  /// preview fields and generation settings are always applied live.
   void load() {
     _docSub?.cancel();
     emit(const StoryLoading());
 
-    // Re-sync isExtracting on every job-state change — keeps the indicator
-    // correct even if extraction resolves via FCM/poll while this screen
-    // isn't mounted, and restores it correctly if the screen is re-created
-    // mid-extraction.
+    // Re-sync isRefining on every job-state change — keeps the indicator
+    // correct even if refine resolves via FCM/poll while this screen isn't
+    // mounted, and restores it correctly if the screen is re-created
+    // mid-refine.
     _jobsSub?.cancel();
-    _jobsSub = jobsCubit.stream.listen((_) => _syncExtractingFlag());
+    _jobsSub = jobsCubit.stream.listen((_) => _syncRefiningFlag());
 
     _docSub = _projectDoc.snapshots().listen(
       (snap) {
@@ -106,26 +114,36 @@ class StoryCubit extends Cubit<StoryState> {
             ? GenerationSettings.fromFirestore(settingsRaw)
             : const GenerationSettings();
 
+        final refinedPreview = data['refined_story_preview'] as String?;
+        final refinedAtTs = data['refined_story_generated_at'] as Timestamp?;
+
         if (state is StoryLoading) {
-          // First snapshot — always emit loaded state, checking whether an
-          // extraction job is already in flight (e.g. the user navigated
-          // away and back while it was running).
+          // First snapshot — always emit loaded state, checking whether a
+          // refine job is already in flight (e.g. the user navigated away
+          // and back while it was running).
           emit(StoryLoaded(
             scenes: scenes,
             generationSettings: settings,
-            isExtracting: _isExtracting,
+            isRefining: _isRefining,
+            refinedStoryPreview: refinedPreview,
+            refinedStoryGeneratedAt: refinedAtTs?.toDate(),
           ));
-        } else if (!_isEditing) {
-          // Subsequent remote update while the user is not typing.
+        } else {
           final current = state;
-          if (current is StoryLoaded) {
-            emit(current.copyWith(scenes: scenes, generationSettings: settings));
-          }
+          if (current is! StoryLoaded) return;
+          emit(current.copyWith(
+            // Scene text is only replaced when the user isn't mid-edit — same
+            // guard as before. Generation settings and the refine preview
+            // fields are always applied, since they're written by separate
+            // code paths (settings sheet / worker), never by this screen's
+            // own typing.
+            scenes: _isEditing ? current.scenes : scenes,
+            generationSettings: settings,
+            refinedStoryPreview: refinedPreview,
+            clearRefinedStoryPreview: refinedPreview == null,
+            refinedStoryGeneratedAt: refinedAtTs?.toDate(),
+          ));
         }
-        // If _isEditing is true we intentionally drop the remote snapshot so
-        // the user's in-progress text is not replaced by the last-saved version.
-        // Generation settings updates are applied even while editing since they
-        // are written by a separate code path.
       },
       onError: (Object e) => emit(StoryError(message: e.toString())),
     );
@@ -155,7 +173,7 @@ class StoryCubit extends Cubit<StoryState> {
         ..sort((a, b) => a.number.compareTo(b.number));
     }
 
-    emit(current.copyWith(scenes: updated, savedRecently: false, clearExtractError: true));
+    emit(current.copyWith(scenes: updated, savedRecently: false));
     _scheduleAutoSave();
   }
 
@@ -258,93 +276,110 @@ class StoryCubit extends Cubit<StoryState> {
     }
   }
 
-  // ── Asset extraction ──────────────────────────────────────────────────────
+  // ── Story refinement (FEAT-038) ───────────────────────────────────────────
 
-  /// Enqueues `/assets` extraction (async job) and tracks completion via the
-  /// job document's status field.
+  /// Enqueues `/refine-story` (async job) and tracks completion via the job
+  /// document's status field.
   ///
-  /// The worker writes the extracted asset documents directly to Firestore
-  /// (see backend/app/services/asset_writer.py) — this cubit no longer
-  /// parses the AI response or writes any documents itself. The existing
-  /// Firestore listeners elsewhere in the app (file browser, asset editor)
-  /// pick up the new documents automatically once they appear.
+  /// The worker writes the rewritten story to the project document's
+  /// `refined_story_preview` field — this cubit never touches `story_content`
+  /// itself as a result of this call; the existing Firestore listener above
+  /// picks up the preview field once the worker writes it.
   ///
-  /// Pass [force] = true to skip the existing-assets guard (the screen shows
-  /// a confirmation dialog when `state.hasExistingAssets == true` and calls
-  /// this method with `force: true` on user confirmation).
-  Future<void> extractAssets({bool force = false}) async {
+  /// Pass [force] = true to bypass both guard dialogs (existing
+  /// assets/scenes — R-027; and an already-unreviewed preview) after the
+  /// screen has shown the corresponding confirmation and the user confirmed.
+  Future<void> refineStory({bool force = false}) async {
     final current = state;
     if (current is! StoryLoaded) return;
+    if (current.sceneCount == 0) return; // button is disabled in this case
 
-    if (current.sceneCount == 0) {
-      emit(current.copyWith(
-          extractError: 'Write at least one scene before extracting assets.'));
-      return;
-    }
+    // Flush any pending debounce so the refine call reads the latest text —
+    // the backend itself re-reads story_content from Firestore, so this just
+    // ensures that read isn't stale by up to 1.5s.
+    _saveTimer?.cancel();
+    await _save();
 
     if (!force) {
-      // Check whether any asset documents already exist in Firestore.
-      final existing = await _globalAssetsCol.limit(1).get();
-      if (existing.docs.isNotEmpty) {
-        // Signal the screen to show a confirmation dialog.
-        emit(current.copyWith(hasExistingAssets: true));
+      if (current.refinedStoryPreview != null) {
+        emit(current.copyWith(showUnreviewedRerunWarning: true));
+        return;
+      }
+      if (await _hasExistingAssetsOrScenes()) {
+        emit(current.copyWith(showExistingAssetsWarning: true));
         return;
       }
     }
 
-    // Flush any pending debounce before sending content to the API.
-    _saveTimer?.cancel();
-    await _save();
-
     final s = state;
     if (s is! StoryLoaded) return;
-    emit(s.copyWith(isExtracting: true, clearExtractError: true, hasExistingAssets: false));
+    emit(s.copyWith(clearRefineError: true));
 
     try {
-      final storyContent = _serializeScenes(s.scenes);
-      final jobId = await apiClient.extractAssets(
-        projectSlug: projectSlug,
-        storyContent: storyContent,
-      );
+      final jobId = await apiClient.refineStory(projectSlug: projectSlug);
 
       await jobsCubit.enqueue(JobRegistryEntry(
         jobId: jobId,
-        type: 'assets',
+        type: 'refine',
         projectId: projectSlug,
         status: 'pending',
         createdAt: DateTime.now(),
       ));
 
-      _listenForAssetsJobCompletion(jobId);
-      // isExtracting stays true — cleared via jobsCubit once the worker
-      // finishes (success or failed), either through the fast-path listener
-      // below or through FCM/poll if this screen is no longer mounted.
+      _listenForRefineJobCompletion(jobId);
+      // isRefining stays derived from jobsCubit — no explicit "start"
+      // emission needed; _syncRefiningFlag picks it up on the next
+      // jobsCubit state change (which `enqueue` above triggers).
     } on ApiInsufficientCredits {
-      emit((state as StoryLoaded)
-          .copyWith(isExtracting: false, extractError: '__credits__'));
+      emit((state as StoryLoaded).copyWith(refineError: '__credits__'));
     } on ApiError catch (e) {
-      emit((state as StoryLoaded)
-          .copyWith(isExtracting: false, extractError: _apiErrorMessage(e)));
+      emit((state as StoryLoaded).copyWith(refineError: _apiErrorMessage(e)));
     } catch (e) {
-      emit((state as StoryLoaded)
-          .copyWith(isExtracting: false, extractError: e.toString()));
+      emit((state as StoryLoaded).copyWith(refineError: e.toString()));
     }
   }
 
+  /// True if the project already has any extracted assets (global or
+  /// scene-local) or any scene with a generated storyboard/video — the
+  /// condition that triggers the R-027 "scene numbering may change" warning
+  /// before a refine request is sent.
+  Future<bool> _hasExistingAssetsOrScenes() async {
+    final globalAssets = await _globalAssetsCol.limit(1).get();
+    if (globalAssets.docs.isNotEmpty) return true;
+
+    // Any scenes/{n} document existing at all implies extraction has
+    // touched this project (scene docs are otherwise only created manually
+    // or by /assets — see FileBrowserCubit._CreateSceneSheet) — checked
+    // together with each scene's own storyboard/video fields and any
+    // scene-local asset documents to cover the full "assets or generated
+    // scenes/videos" condition from FEAT-038's acceptance criteria without
+    // an expensive per-scene subcollection fan-out query.
+    final scenes = await _scenesCol.get();
+    for (final doc in scenes.docs) {
+      final data = doc.data();
+      if ((data['storyboard_body'] as String?)?.isNotEmpty == true) return true;
+      if (data['gcs_video_path'] != null) return true;
+      final sceneAssets = await doc.reference.collection('assets').limit(1).get();
+      if (sceneAssets.docs.isNotEmpty) return true;
+    }
+    return false;
+  }
+
   /// Listens to the job document for [jobId] until it reaches a terminal
-  /// state (success/failed), then clears [isExtracting] and updates the job
-  /// registry. There's no single Firestore field to watch for this job type
-  /// (extraction creates multiple new documents), unlike image/video/merge
-  /// which each have one field to watch — so this cubit watches the job
-  /// document directly instead.
-  void _listenForAssetsJobCompletion(String jobId) {
-    _assetsJobSub?.cancel();
-    _assetsJobSub = _jobDoc(jobId).snapshots().listen((snap) {
+  /// state (success/failed), then clears [isRefining] and updates the job
+  /// registry. There's no single Firestore field to watch for "job started"
+  /// on this job type the way image/video/merge jobs do — the field it
+  /// writes (`refined_story_preview`) is already covered by the project doc
+  /// listener in [load], so this listener exists purely to surface failures
+  /// and resolve the job registry promptly.
+  void _listenForRefineJobCompletion(String jobId) {
+    _refineJobSub?.cancel();
+    _refineJobSub = _jobDoc(jobId).snapshots().listen((snap) {
       final jobStatus = snap.data()?['status'] as String?;
       if (jobStatus != 'success' && jobStatus != 'failed') return;
 
-      _assetsJobSub?.cancel();
-      _assetsJobSub = null;
+      _refineJobSub?.cancel();
+      _refineJobSub = null;
 
       jobsCubit.resolve(jobId, jobStatus!);
 
@@ -353,18 +388,35 @@ class StoryCubit extends Cubit<StoryState> {
       if (jobStatus == 'failed') {
         final errorMessage = snap.data()?['error_message'] as String?;
         emit(current.copyWith(
-          isExtracting: false,
-          extractError: errorMessage ?? 'Asset extraction failed.',
+          isRefining: false,
+          refineError: errorMessage ?? 'Story refinement failed.',
         ));
       } else {
-        emit(current.copyWith(isExtracting: false));
+        emit(current.copyWith(isRefining: false));
       }
     });
   }
 
-  void clearExtractError() {
+  void clearRefineError() {
     final s = state;
-    if (s is StoryLoaded) emit(s.copyWith(clearExtractError: true));
+    if (s is StoryLoaded) emit(s.copyWith(clearRefineError: true));
+  }
+
+  /// Writes `null` to `refined_story_preview` (and its timestamp) directly —
+  /// used by the Refine Ready banner's "Discard" action. `story_content` is
+  /// not touched. The Refine Story Preview screen (Screen 8a) performs this
+  /// same write itself rather than going through this cubit, since it isn't
+  /// guaranteed to be mounted while that screen is open.
+  Future<void> discardRefinedPreview() async {
+    try {
+      await _projectDoc.update({
+        'refined_story_preview': null,
+        'refined_story_generated_at': null,
+        'updated_at': FieldValue.serverTimestamp(),
+      });
+    } catch (_) {
+      // Non-fatal — banner stays visible and the user can retry.
+    }
   }
 
   // ── Generation settings ───────────────────────────────────────────────────
@@ -372,8 +424,8 @@ class StoryCubit extends Cubit<StoryState> {
   /// Persist updated [settings] to the Firestore project document and optimistically
   /// update the local state.
   ///
-  /// The backend reads these values when `/image-prompt` and `/video-prompt` are
-  /// called — the mobile request bodies are unchanged.
+  /// The backend reads these values when `/image-prompt`, `/video-prompt`,
+  /// and `/refine-story` are called — the mobile request bodies are unchanged.
   Future<void> updateGenerationSettings(GenerationSettings settings) async {
     final current = state;
     if (current is! StoryLoaded) return;
@@ -449,7 +501,7 @@ class StoryCubit extends Cubit<StoryState> {
   Future<void> close() {
     _saveTimer?.cancel();
     _docSub?.cancel();
-    _assetsJobSub?.cancel();
+    _refineJobSub?.cancel();
     _jobsSub?.cancel();
     return super.close();
   }

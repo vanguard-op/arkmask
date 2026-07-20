@@ -94,6 +94,7 @@ CREDIT_COSTS: dict[str, int] = {
     "/video": 20,
     "/merge": 5,
     "/image-describe": 1,
+    "/refine-story": 5,
 }
 
 # ── Request / Response schemas (endpoint-local) ───────────────────────────────
@@ -110,6 +111,17 @@ class ImageEnqueueRequest(BaseModel):
     project_slug: str
     asset_path: str
     conditioning_gcs_path: str | None = None
+
+
+class RefineStoryCloudRequest(BaseModel):
+    """
+    Story-refinement request (FEAT-038). `story_content`, `generation_settings`,
+    and existing character asset names are all resolved server-side from
+    Firestore — the client only identifies *which* project, mirroring
+    VideoPromptCloudRequest's "client doesn't assemble the payload" pattern.
+    See backend/instructions/refine-story-generation.md "Input Format".
+    """
+    project_slug: str
 
 
 class VideoPromptCloudRequest(BaseModel):
@@ -372,6 +384,128 @@ async def extract_assets(
             send_fcm_notification(_get_fcm_token(firebase_uid), {
                 "job_id": job_id,
                 "type": "assets",
+                "project_id": body.project_slug,
+                "status": "failed",
+            })
+
+    asyncio.create_task(_run())
+    return VideoEnqueueResponse(job_id=job_id)
+
+
+# ── POST /refine-story (FEAT-038) ───────────────────────────────────────────────
+
+def _known_character_names(firebase_uid: str, project_slug: str) -> list[str]:
+    """Names of already-extracted `type: "character"` assets for this project.
+
+    Only the project's global `assets/` subcollection is consulted — mirrors
+    the "if asset extraction has already run for this project" condition in
+    FEAT-038. Kept in sync with workers/app/tasks/refine_story.py's identical
+    helper (the API and workers are separate deployable images with no shared
+    installable package — see AGENTS.md "Existing Backend Prototype").
+    """
+    names: list[str] = []
+    project_path = f"users/{firebase_uid}/projects/{project_slug}"
+    for doc in _firestore_client().collection(f"{project_path}/assets").stream():
+        data = doc.to_dict() or {}
+        if data.get("type") == "character":
+            name = data.get("name") or doc.id
+            if name and not name.startswith("@"):
+                names.append(name)
+    return names
+
+
+@router.post("/refine-story", response_model=VideoEnqueueResponse)
+async def refine_story(
+    body: RefineStoryCloudRequest,
+    user: UserProfile = Depends(get_current_user),
+    provider: AIProvider = Depends(get_ai_provider),
+    x_provider_type: str = Header(..., alias="X-Provider-Type"),
+    x_provider_key: str = Header(..., alias="X-Provider-Key"),
+) -> VideoEnqueueResponse:
+    """
+    Enqueue a full-story rewrite (FEAT-038). Returns job_id immediately.
+
+    `story_content`, `generation_settings`, and (if extraction has already
+    run) existing character asset names are all resolved server-side from
+    Firestore — the client sends only `{project_slug}`. On completion, the
+    worker writes the rewritten story to the project document's
+    `refined_story_preview` field (never to `story_content` directly — see
+    docs/ArkMask/risk_log.md R-026/R-027/R-028 for why this is preview-gated
+    rather than auto-applied).
+
+    On Cloud Run, dispatches to the workers service via Cloud Tasks (see
+    workers/app/tasks/refine_story.py). Locally (no Cloud Tasks configured),
+    runs inline via asyncio as a dev-only fallback, same pattern as /assets.
+    Credits deducted: 5 (on terminal success only).
+    """
+    firebase_uid = user.firebase_uid
+    _check_credits(user, "/refine-story")
+    job_id = _create_job(firebase_uid, "refine", body.project_slug)
+    pname = _provider_name(provider)
+
+    if get_settings().cloud_tasks_configured:
+        cloud_tasks.enqueue_job("refine", {
+            "firebase_uid": firebase_uid,
+            "job_id": job_id,
+            "project_slug": body.project_slug,
+            "provider_type": x_provider_type,
+            "provider_key": x_provider_key,
+        })
+        return VideoEnqueueResponse(job_id=job_id)
+
+    # ── Local dev fallback: run inline instead of dispatching to Cloud Tasks ──
+    async def _run():
+        try:
+            _update_job(firebase_uid, job_id, "running")
+
+            project_ref = _firestore_client().document(
+                f"users/{firebase_uid}/projects/{body.project_slug}"
+            )
+            project_doc = project_ref.get()
+            if not project_doc.exists:
+                raise ValueError(f"Project not found: {body.project_slug}")
+            project_data = project_doc.to_dict() or {}
+
+            story_content: str = project_data.get("story_content") or ""
+            gen_settings: dict = project_data.get("generation_settings") or {}
+            _default_art_style = "painterly illustration with clean lines and rich color"
+            art_style: str = gen_settings.get("art_style") or _default_art_style
+            video_subtitles: bool = bool(gen_settings.get("video_subtitles", False))
+            known_names = _known_character_names(firebase_uid, body.project_slug)
+
+            refined_story = await asyncio.to_thread(
+                provider.generate_refine_story,
+                story_content,
+                art_style=art_style,
+                video_subtitles=video_subtitles,
+                known_character_names=known_names,
+            )
+
+            project_ref.set(
+                {
+                    "refined_story_preview": refined_story,
+                    "refined_story_generated_at": SERVER_TIMESTAMP,
+                    "updated_at": SERVER_TIMESTAMP,
+                },
+                merge=True,
+            )
+
+            _deduct_credits(firebase_uid, "/refine-story", pname, CREDIT_COSTS["/refine-story"])
+            _update_job(firebase_uid, job_id, "success")
+            send_fcm_notification(_get_fcm_token(firebase_uid), {
+                "job_id": job_id,
+                "type": "refine",
+                "project_id": body.project_slug,
+                "status": "completed",
+            })
+            logger.info("Refine-story job complete: job_id=%s", job_id)
+        except Exception as e:
+            logger.error("Refine-story job failed: job_id=%s error=%s", job_id, e, exc_info=True)
+            _update_job(firebase_uid, job_id, "failed", error_message=str(e)[:1024])
+            _deduct_credits(firebase_uid, "/refine-story", pname, 0, "refunded")
+            send_fcm_notification(_get_fcm_token(firebase_uid), {
+                "job_id": job_id,
+                "type": "refine",
                 "project_id": body.project_slug,
                 "status": "failed",
             })

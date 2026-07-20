@@ -35,6 +35,7 @@ _QUEUE_BY_JOB_TYPE = {
     "assets": "cloud_tasks_text_queue",
     "image_prompt": "cloud_tasks_text_queue",
     "video_prompt": "cloud_tasks_text_queue",
+    "refine": "cloud_tasks_text_queue",
 }
 
 
@@ -44,8 +45,8 @@ def enqueue_job(job_type: str, payload: dict) -> None:
 
     Args:
         job_type: One of "image", "video", "merge", "assets", "image_prompt",
-            "video_prompt" — selects both the queue and the workers endpoint
-            (`/tasks/{job_type}`).
+            "video_prompt", "refine" — selects both the queue and the workers
+            endpoint (`/tasks/{job_type}`).
         payload: JSON-serializable dict forwarded as the task's HTTP body.
             Must include everything the worker needs to run the job
             (firebase_uid, job_id, provider credentials, GCS paths, etc.) —

@@ -193,6 +193,24 @@ class ArkMaskApiClient {
     return (response.data as Map<String, dynamic>)['job_id'] as String;
   }
 
+  /// POST /refine-story — enqueue a full-story AI rewrite (FEAT-038).
+  ///
+  /// Identifies the project only — `story_content`, `generation_settings`,
+  /// and any already-extracted character asset names are all resolved
+  /// server-side from Firestore (see `backend/app/routers/generation.py`).
+  /// The worker writes its result to the project document's
+  /// `refined_story_preview` field, never to `story_content` directly. The
+  /// app's Firestore listener on the project document fires when that field
+  /// is set — see [StoryCubit] and its Refine Ready banner handling.
+  Future<String> refineStory({required String projectSlug}) async {
+    final response = await _execute(
+      () => _dio.post('\refine-story', data: {
+        'project_slug': projectSlug,
+      }),
+    );
+    return (response.data as Map<String, dynamic>)['job_id'] as String;
+  }
+
   /// POST /image-prompt — enqueue image prompt generation for a single asset
   /// (async job).
   ///

@@ -17,6 +17,7 @@ import '../../../core/utils/formatters.dart' show formatBytes;
 import '../../../core/utils/video_download.dart';
 import '../../../core/utils/video_player_nav.dart';
 import '../../assets/widgets/add_asset_sheet.dart';
+import '../../billing/widgets/credits_exhausted_dialog.dart';
 import '../cubit/file_browser_cubit.dart';
 import '../cubit/file_browser_state.dart';
 import '../widgets/file_browser_row.dart';
@@ -92,6 +93,7 @@ class _ProjectFileBrowserScreenState extends State<ProjectFileBrowserScreen> {
     return BlocProvider(
       create: (_) => FileBrowserCubit(
         jobsCubit: ArkMaskServices.of(context).jobsCubit,
+        apiClient: ArkMaskServices.of(context).apiClient,
       )..load(widget.projectSlug),
       child: _FileBrowserView(
         projectSlug: widget.projectSlug,
@@ -124,7 +126,31 @@ class _FileBrowserView extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
-    return BlocBuilder<FileBrowserCubit, FileBrowserState>(
+    return BlocConsumer<FileBrowserCubit, FileBrowserState>(
+      listener: (context, state) {
+        if (state is FileBrowserLoaded && state.extractError != null) {
+          if (state.extractError == '__credits__') {
+            showCreditsExhaustedDialog(context);
+          } else {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(state.extractError!),
+                action: SnackBarAction(
+                  label: 'Retry',
+                  onPressed: () => context.read<FileBrowserCubit>().extractAssets(),
+                ),
+              ),
+            );
+          }
+          context.read<FileBrowserCubit>().clearExtractError();
+        }
+
+        // When existing asset documents are detected, show a confirmation
+        // dialog before proceeding with re-extraction (FEAT-009).
+        if (state is FileBrowserLoaded && state.hasExistingAssets) {
+          _showReExtractDialog(context);
+        }
+      },
       builder: (context, state) {
         // Use the display name from Firestore for the AppBar title when loaded.
         final title = state is FileBrowserLoaded
@@ -500,23 +526,22 @@ class _TreeView extends StatelessWidget {
 
     return Stack(
       children: [
+        if (state.isExtracting) const Positioned(top: 0, left: 0, right: 0, child: LinearProgressIndicator()),
         ListView(children: rows),
         // ── Extract Assets CTA (blank project with story content) ──────────
+        // Sole entry point for asset extraction as of FEAT-038 — triggers
+        // /assets directly rather than navigating to the Story Editor (whose
+        // former "Extract Assets" toolbar slot is now "Refine Story").
         if (tree.isBlank && tree.storyHasContent)
           Positioned(
             left: AppSpacing.s4,
             right: AppSpacing.s4,
             bottom: AppSpacing.s6,
             child: _ExtractAssetsButton(
-              onTap: () async {
-                await context.push(Routes.storyEditor.replaceFirst(
-                  ':projectName',
-                  Uri.encodeComponent(projectSlug),
-                ));
-                if (context.mounted) {
-                  onReturnFromChild();
-                }
-              },
+              isExtracting: state.isExtracting,
+              onTap: state.isExtracting
+                  ? null
+                  : () => context.read<FileBrowserCubit>().extractAssets(),
               isDark: isDark,
             ),
           ),
@@ -581,10 +606,15 @@ class _EmptyFolderRow extends StatelessWidget {
 /// "Extract Assets" button pinned above the safe area for blank projects
 /// that already have story content.
 class _ExtractAssetsButton extends StatelessWidget {
-  const _ExtractAssetsButton({required this.onTap, required this.isDark});
+  const _ExtractAssetsButton({
+    required this.onTap,
+    required this.isDark,
+    this.isExtracting = false,
+  });
 
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
   final bool isDark;
+  final bool isExtracting;
 
   @override
   Widget build(BuildContext context) {
@@ -592,9 +622,15 @@ class _ExtractAssetsButton extends StatelessWidget {
 
     return OutlinedButton.icon(
       onPressed: onTap,
-      icon: Icon(LucideIcons.sparkles, size: AppSizing.iconSm, color: primaryColor),
+      icon: isExtracting
+          ? SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(strokeWidth: 1.5, color: primaryColor),
+            )
+          : Icon(LucideIcons.sparkles, size: AppSizing.iconSm, color: primaryColor),
       label: Text(
-        'Extract Assets',
+        isExtracting ? 'Extracting...' : 'Extract Assets',
         style: AppTextStyles.body(context).copyWith(color: primaryColor),
       ),
       style: OutlinedButton.styleFrom(
@@ -607,6 +643,37 @@ class _ExtractAssetsButton extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Shows a confirmation dialog when the project already has Firestore asset
+/// documents. The user must explicitly confirm before re-extraction
+/// overwrites them. Calls `extractAssets(force: true)` on confirmation.
+/// Mirrors the Story Editor's identical dialog before extraction moved here
+/// (FEAT-038).
+void _showReExtractDialog(BuildContext context) {
+  showDialog<bool>(
+    context: context,
+    builder: (_) => AlertDialog(
+      title: const Text('Re-extract assets?'),
+      content: const Text(
+        'Existing asset documents without generated images will be recreated.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('Re-extract'),
+        ),
+      ],
+    ),
+  ).then((confirmed) {
+    if (confirmed == true && context.mounted) {
+      context.read<FileBrowserCubit>().extractAssets(force: true);
+    }
+  });
 }
 
 // ── Storage banner (FEAT-027) ─────────────────────────────────────────────────

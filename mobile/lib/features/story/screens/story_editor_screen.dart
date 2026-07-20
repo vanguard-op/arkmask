@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:lucide_flutter/lucide_flutter.dart';
 
 import '../../../app.dart';
+import '../../../core/router/routes.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
@@ -12,11 +13,14 @@ import '../cubit/story_cubit.dart';
 import '../cubit/story_state.dart';
 import '../widgets/generation_settings_sheet.dart';
 
-/// Story Editor Screen — FEAT-008, FEAT-009.
+/// Story Editor Screen — FEAT-008, FEAT-038.
 ///
 /// Displays `story.mdx` as a list of numbered scene blocks (one `TextField` per
-/// scene). Auto-saves after 1.5 s of idle typing. An "Extract Assets" action
-/// in the AppBar and keyboard toolbar sends the story to `/assets`.
+/// scene). Auto-saves after 1.5 s of idle typing. A "Refine Story" action in
+/// the AppBar and keyboard toolbar sends the story to `/refine-story`
+/// (FEAT-038) — this occupies the slot the "Extract Assets" action used to,
+/// since extraction (FEAT-009) is now triggered exclusively from the Project
+/// File Browser.
 class StoryEditorScreen extends StatelessWidget {
   const StoryEditorScreen({super.key, required this.projectName});
 
@@ -45,27 +49,33 @@ class _StoryEditorView extends StatelessWidget {
   Widget build(BuildContext context) {
     return BlocConsumer<StoryCubit, StoryState>(
       listener: (context, state) {
-        if (state is StoryLoaded && state.extractError != null) {
-          if (state.extractError == '__credits__') {
+        if (state is StoryLoaded && state.refineError != null) {
+          if (state.refineError == '__credits__') {
             showCreditsExhaustedDialog(context);
           } else {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: Text(state.extractError!),
+                content: Text(state.refineError!),
                 action: SnackBarAction(
                   label: 'Retry',
-                  onPressed: () => context.read<StoryCubit>().extractAssets(),
+                  onPressed: () => context.read<StoryCubit>().refineStory(),
                 ),
               ),
             );
           }
-          context.read<StoryCubit>().clearExtractError();
+          context.read<StoryCubit>().clearRefineError();
         }
 
-        // When existing asset documents are detected, show a confirmation
-        // dialog before proceeding with re-extraction.
-        if (state is StoryLoaded && state.hasExistingAssets) {
-          _showReExtractDialog(context);
+        // R-027 — scene numbering may change and could invalidate existing
+        // assets/storyboards/videos; warn, don't block.
+        if (state is StoryLoaded && state.showExistingAssetsWarning) {
+          _showExistingAssetsWarningDialog(context);
+        }
+
+        // A previous refined_story_preview is still unreviewed — warn that
+        // re-running will replace it once the new job completes.
+        if (state is StoryLoaded && state.showUnreviewedRerunWarning) {
+          _showUnreviewedRerunDialog(context);
         }
       },
       builder: (context, state) {
@@ -81,9 +91,9 @@ class _StoryEditorView extends StatelessWidget {
                   message: message,
                   onRetry: () => context.read<StoryCubit>().load(),
                 ),
-              StoryLoaded() => _SceneList(state: state),
+              StoryLoaded() => _SceneList(state: state, projectName: projectName),
             },
-            floatingActionButton: state is StoryLoaded && !state.isExtracting
+            floatingActionButton: state is StoryLoaded
                 ? _AddSceneFab(
                     onPressed: () => context.read<StoryCubit>().addScene(),
                   )
@@ -142,37 +152,32 @@ class _StoryAppBar extends StatelessWidget implements PreferredSizeWidget {
             tooltip: 'Generation Settings',
             onPressed: () => showGenerationSettingsSheet(context),
           ),
-        // Extract Assets button (Generate variant)
+        // Refine Story button (Generate variant, FEAT-038 — occupies the
+        // slot the "Extract Assets" button previously used).
         if (loaded != null)
-          _ExtractButton(
-            enabled: loaded.sceneCount >= 1 && !loaded.isExtracting,
-            isExtracting: loaded.isExtracting,
+          _RefineButton(
+            enabled: loaded.sceneCount >= 1 && !loaded.isRefining,
+            isRefining: loaded.isRefining,
             primaryColor: primaryColor,
-            onPressed: () => _onExtractTapped(context, loaded),
+            onPressed: () => context.read<StoryCubit>().refineStory(),
           ),
         const SizedBox(width: AppSpacing.s3),
       ],
     );
   }
-
-  Future<void> _onExtractTapped(BuildContext context, StoryLoaded state) async {
-    // The cubit checks Firestore for existing assets. If any are found it emits
-    // hasExistingAssets = true, which triggers _showReExtractDialog via the
-    // BlocConsumer listener. Otherwise it proceeds with extraction.
-    context.read<StoryCubit>().extractAssets();
-  }
 }
 
-/// Shows a confirmation dialog when the project already has Firestore asset
-/// documents. The user must explicitly confirm before re-extraction overwrites
-/// them. Calls `extractAssets(force: true)` on confirmation.
-void _showReExtractDialog(BuildContext context) {
+/// Shows a warning confirmation before refining a story that already has
+/// extracted assets or generated scenes/videos (R-027) — scene numbering may
+/// change and invalidate them. Warns, does not block.
+void _showExistingAssetsWarningDialog(BuildContext context) {
   showDialog<bool>(
     context: context,
     builder: (_) => AlertDialog(
-      title: const Text('Re-extract assets?'),
+      title: const Text('Refine story?'),
       content: const Text(
-        'Existing asset documents without generated images will be recreated.',
+        'Refining your story may change scene numbering and could invalidate '
+        'assets, storyboards, or videos already generated for specific scenes.',
       ),
       actions: [
         TextButton(
@@ -181,13 +186,43 @@ void _showReExtractDialog(BuildContext context) {
         ),
         TextButton(
           onPressed: () => Navigator.of(context).pop(true),
-          child: const Text('Re-extract'),
+          child: const Text('Continue'),
         ),
       ],
     ),
   ).then((confirmed) {
     if (confirmed == true && context.mounted) {
-      context.read<StoryCubit>().extractAssets(force: true);
+      context.read<StoryCubit>().refineStory(force: true);
+    }
+  });
+}
+
+/// Shows a confirmation before re-running "Refine Story" while a previous
+/// `refined_story_preview` is still unreviewed — proceeding replaces it once
+/// the new job completes.
+void _showUnreviewedRerunDialog(BuildContext context) {
+  showDialog<bool>(
+    context: context,
+    builder: (_) => AlertDialog(
+      title: const Text('Replace unreviewed refine?'),
+      content: const Text(
+        'You have an unreviewed refined story. Refining again will replace it '
+        'once complete.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('Continue'),
+        ),
+      ],
+    ),
+  ).then((confirmed) {
+    if (confirmed == true && context.mounted) {
+      context.read<StoryCubit>().refineStory(force: true);
     }
   });
 }
@@ -245,16 +280,18 @@ class _SaveIndicator extends StatelessWidget {
   }
 }
 
-class _ExtractButton extends StatelessWidget {
-  const _ExtractButton({
+/// "Refine Story" button (FEAT-038) — occupies the AppBar slot the "Extract
+/// Assets" button previously used. Amber-outlined Generate variant.
+class _RefineButton extends StatelessWidget {
+  const _RefineButton({
     required this.enabled,
-    required this.isExtracting,
+    required this.isRefining,
     required this.primaryColor,
     required this.onPressed,
   });
 
   final bool enabled;
-  final bool isExtracting;
+  final bool isRefining;
   final Color primaryColor;
   final VoidCallback onPressed;
 
@@ -262,7 +299,7 @@ class _ExtractButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return OutlinedButton.icon(
       onPressed: enabled ? onPressed : null,
-      icon: isExtracting
+      icon: isRefining
           ? SizedBox(
               width: 12,
               height: 12,
@@ -273,7 +310,7 @@ class _ExtractButton extends StatelessWidget {
             )
           : Icon(LucideIcons.sparkles, size: AppSizing.iconSm, color: primaryColor),
       label: Text(
-        'Extract Assets',
+        'Refine Story',
         style: AppTextStyles.bodySmall(context).copyWith(color: primaryColor),
       ),
       style: OutlinedButton.styleFrom(
@@ -293,22 +330,26 @@ class _ExtractButton extends StatelessWidget {
 // ── Scene list ────────────────────────────────────────────────────────────────
 
 class _SceneList extends StatelessWidget {
-  const _SceneList({required this.state});
+  const _SceneList({required this.state, required this.projectName});
 
   final StoryLoaded state;
+  final String projectName;
 
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
-        // Extraction progress bar
-        if (state.isExtracting)
+        // Refine job progress bar — the editor stays fully read/write while
+        // this runs (FEAT-038 acceptance: "the editor remains
+        // read/write-accessible").
+        if (state.isRefining)
           LinearProgressIndicator(
             backgroundColor: Colors.transparent,
             color: Theme.of(context).brightness == Brightness.dark
                 ? AppColors.primaryDark
                 : AppColors.primaryLight,
           ),
+        if (state.refinedStoryPreview != null) _RefineReadyBanner(projectName: projectName),
         Expanded(
           child: SingleChildScrollView(
             padding: const EdgeInsets.only(
@@ -332,7 +373,6 @@ class _SceneList extends StatelessWidget {
                         scene: entry.value,
                         sceneIndex: entry.key,
                         totalScenes: state.scenes.length,
-                        isReadOnly: state.isExtracting,
                         onBodyChanged: (body) => context
                             .read<StoryCubit>()
                             .onSceneBodyChanged(entry.value.number, body),
@@ -342,6 +382,66 @@ class _SceneList extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// "A refined version of your story is ready to review." banner (FEAT-038)
+/// shown when the project document's `refined_story_preview` field is
+/// non-null. "Review" pushes the Refine Story Preview Screen (Screen 8a);
+/// "Discard" writes `refined_story_preview = null` directly.
+class _RefineReadyBanner extends StatelessWidget {
+  const _RefineReadyBanner({required this.projectName});
+
+  final String projectName;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final primaryColor = isDark ? AppColors.primaryDark : AppColors.primaryLight;
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(
+        AppSpacing.s4,
+        AppSpacing.s3,
+        AppSpacing.s4,
+        0,
+      ),
+      padding: const EdgeInsets.all(AppSpacing.s4),
+      decoration: BoxDecoration(
+        color: isDark ? AppColors.surfaceOverlayDark : AppColors.surfaceOverlayLight,
+        borderRadius: BorderRadius.circular(AppSizing.radiusMd),
+        border: Border(left: BorderSide(color: primaryColor, width: 3)),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              'A refined version of your story is ready to review.',
+              style: AppTextStyles.bodySmall(context),
+            ),
+          ),
+          TextButton(
+            onPressed: () => context.read<StoryCubit>().discardRefinedPreview(),
+            child: Text(
+              'Discard',
+              style: AppTextStyles.bodySmall(context).copyWith(
+                color: isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight,
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: () => context.push(Routes.refineStoryPreview.replaceFirst(
+              ':projectName',
+              Uri.encodeComponent(projectName),
+            )),
+            child: Text(
+              'Review',
+              style: AppTextStyles.bodySmall(context).copyWith(color: primaryColor),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -357,7 +457,6 @@ class _SceneBlock extends StatefulWidget {
     required this.sceneIndex,
     required this.totalScenes,
     required this.onBodyChanged,
-    this.isReadOnly = false,
   });
 
   final StoryScene scene;
@@ -366,7 +465,6 @@ class _SceneBlock extends StatefulWidget {
   /// Total scene count — needed to disable delete when only 1 scene remains.
   final int totalScenes;
   final ValueChanged<String> onBodyChanged;
-  final bool isReadOnly;
 
   @override
   State<_SceneBlock> createState() => _SceneBlockState();
@@ -490,7 +588,7 @@ class _SceneBlockState extends State<_SceneBlock>
 
               // The chip is the long-press target. It expands to show actions.
               GestureDetector(
-                onLongPress: widget.isReadOnly ? null : _toggleActions,
+                onLongPress: _toggleActions,
                 child: AnimatedSwitcher(
                   duration: const Duration(milliseconds: 180),
                   switchInCurve: Curves.easeOut,
@@ -594,7 +692,6 @@ class _SceneBlockState extends State<_SceneBlock>
           // ── Scene body text field ────────────────────────────────────────
           TextField(
             controller: _controller,
-            enabled: !widget.isReadOnly,
             maxLines: null,
             keyboardType: TextInputType.multiline,
             style: AppTextStyles.bodyLarge(context),

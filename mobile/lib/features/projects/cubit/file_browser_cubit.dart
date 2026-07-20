@@ -4,6 +4,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../../../core/api/api_error.dart';
+import '../../../core/api/ark_mask_api_client.dart';
 import '../../../core/jobs/jobs_cubit.dart';
 import '../../../core/models/models.dart';
 import '../../../core/models/project_tree.dart';
@@ -36,21 +38,44 @@ import 'file_browser_state.dart';
 /// The cubit merges all sources into a single [ProjectTree] via [_rebuild]
 /// and emits [FileBrowserLoaded]. All subscriptions are cancelled in [close].
 class FileBrowserCubit extends Cubit<FileBrowserState> {
-  FileBrowserCubit({required this.jobsCubit}) : super(const FileBrowserLoading());
+  FileBrowserCubit({required this.jobsCubit, required this.apiClient})
+      : super(const FileBrowserLoading());
 
   final JobsCubit jobsCubit;
+
+  /// Used for `/assets` extraction (FEAT-009) — as of FEAT-038 this is the
+  /// sole entry point for asset extraction in the app (the Story Editor no
+  /// longer offers it). Mirrors the pattern StoryCubit used to own.
+  final ArkMaskApiClient apiClient;
 
   // ── Subscriptions ───────────────────────────────────────────────────────────
 
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _projectSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _globalAssetsSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _scenesSub;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _assetsJobSub;
 
   /// Per-scene asset subscriptions keyed by scene Firestore doc ID.
   final Map<String, StreamSubscription<QuerySnapshot<Map<String, dynamic>>>>
       _sceneAssetSubs = {};
 
   StreamSubscription<JobsState>? _jobsSub;
+
+  // ── Extraction UI state ──────────────────────────────────────────────────
+  //
+  // Kept as cubit-lifetime fields (not solely derived from `state`) for the
+  // same reason as _expandedIds/_selectedId below — _rebuild() re-emits on
+  // every Firestore snapshot and must not silently clear an in-flight
+  // extraction's UI state.
+  String? _extractError;
+  bool _hasExistingAssets = false;
+
+  /// True while a project-level `/assets` extraction job is pending/running
+  /// — derived live from [jobsCubit] (same pattern StoryCubit used to own),
+  /// so returning to this screen mid-extraction restores the indicator
+  /// correctly even if the job resolves via FCM/poll while elsewhere.
+  bool get _isExtracting => _projectSlug != null &&
+      jobsCubit.activeJob(type: 'assets', projectId: _projectSlug!) != null;
 
   // ── Cached Firestore state ───────────────────────────────────────────────────
 
@@ -309,8 +334,129 @@ class FileBrowserCubit extends Cubit<FileBrowserState> {
       tree: tree,
       expandedIds: Set.of(_expandedIds),
       selectedId: _selectedId,
+      isExtracting: _isExtracting,
+      extractError: _extractError,
+      hasExistingAssets: _hasExistingAssets,
     ));
   }
+
+  // ── Asset extraction (FEAT-009, sole entry point as of FEAT-038) ────────
+
+  /// Enqueues `/assets` extraction (async job) and tracks completion via the
+  /// job document's status field — mirrors StoryCubit.extractAssets, which
+  /// used to own this before the Extract Assets action moved here.
+  ///
+  /// Pass [force] = true to skip the existing-assets guard (the screen shows
+  /// a confirmation dialog when `state.hasExistingAssets == true` and calls
+  /// this method with `force: true` on user confirmation).
+  Future<void> extractAssets({bool force = false}) async {
+    final current = state;
+    if (current is! FileBrowserLoaded) return;
+    final slug = _projectSlug;
+    final uid = _uid;
+    if (slug == null || uid == null) return;
+
+    if (!current.tree.storyHasContent) {
+      emit(current.copyWith(
+          extractError: 'Write at least one scene before extracting assets.'));
+      return;
+    }
+
+    if (!force) {
+      final existing = await FirebaseFirestore.instance
+          .collection('users/$uid/projects/$slug/assets')
+          .limit(1)
+          .get();
+      if (existing.docs.isNotEmpty) {
+        _hasExistingAssets = true;
+        emit(current.copyWith(hasExistingAssets: true));
+        return;
+      }
+    }
+
+    _extractError = null;
+    _hasExistingAssets = false;
+    emit(current.copyWith(
+      isExtracting: true,
+      clearExtractError: true,
+      hasExistingAssets: false,
+    ));
+
+    try {
+      final storyContent = _projectSnap?.data()?['story_content'] as String? ?? '';
+      final jobId = await apiClient.extractAssets(
+        projectSlug: slug,
+        storyContent: storyContent,
+      );
+
+      await jobsCubit.enqueue(JobRegistryEntry(
+        jobId: jobId,
+        type: 'assets',
+        projectId: slug,
+        status: 'pending',
+        createdAt: DateTime.now(),
+      ));
+
+      _listenForAssetsJobCompletion(jobId);
+      // isExtracting is derived live from jobsCubit — no explicit clear
+      // needed here; _rebuild()/the jobsCubit stream listener below both
+      // re-emit once the job resolves.
+    } on ApiInsufficientCredits {
+      _extractError = '__credits__';
+      _rebuild();
+    } on ApiError catch (e) {
+      _extractError = _apiErrorMessage(e);
+      _rebuild();
+    } catch (e) {
+      _extractError = e.toString();
+      _rebuild();
+    }
+  }
+
+  /// Listens to the job document for [jobId] until it reaches a terminal
+  /// state (success/failed), then resolves it in the job registry and
+  /// surfaces any failure message. There's no single Firestore field to
+  /// watch for this job type (extraction creates multiple new documents) —
+  /// see StoryCubit's identical rationale before this moved here.
+  void _listenForAssetsJobCompletion(String jobId) {
+    final uid = _uid;
+    if (uid == null) return;
+    _assetsJobSub?.cancel();
+    _assetsJobSub = FirebaseFirestore.instance
+        .doc('users/$uid/jobs/$jobId')
+        .snapshots()
+        .listen((snap) {
+      final jobStatus = snap.data()?['status'] as String?;
+      if (jobStatus != 'success' && jobStatus != 'failed') return;
+
+      _assetsJobSub?.cancel();
+      _assetsJobSub = null;
+
+      jobsCubit.resolve(jobId, jobStatus!);
+
+      if (jobStatus == 'failed') {
+        _extractError =
+            snap.data()?['error_message'] as String? ?? 'Asset extraction failed.';
+      }
+      _rebuild();
+    });
+  }
+
+  void clearExtractError() {
+    if (state is! FileBrowserLoaded) return;
+    _extractError = null;
+    _rebuild();
+  }
+
+  static String _apiErrorMessage(ApiError e) => switch (e) {
+        ApiConflict(:final message) => message,
+        ApiValidationError(:final detail) => detail,
+        ApiServerError(:final message) => message,
+        ApiNetworkError(:final message) => message,
+        ApiUnknownError(:final message) => message,
+        ApiInsufficientCredits() => 'Insufficient credits',
+        ApiUnauthorized() => 'Unauthorized',
+      };
 
   /// True when a job of [type] is pending/running for the given routing
   /// context — mirrors the matching scheme used by AssetEditorCubit /
@@ -380,6 +526,7 @@ class FileBrowserCubit extends Cubit<FileBrowserState> {
     _globalAssetsSub?.cancel();
     _scenesSub?.cancel();
     _jobsSub?.cancel();
+    _assetsJobSub?.cancel();
     for (final sub in _sceneAssetSubs.values) {
       sub.cancel();
     }

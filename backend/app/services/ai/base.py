@@ -90,6 +90,11 @@ class AIProvider(ABC):
     # FEAT-034 — vision-model call that turns an uploaded image into a text
     # description usable as a normal asset `description` field.
     IMAGE_DESCRIPTION_PROMPT: str = (INSTRUCTIONS_DIR / "image-description-generation.md").read_text(encoding="utf-8")
+    # FEAT-038 — full-story rewrite for video-generation clarity (scene
+    # splitting, continuity, explicit dialogue attribution, fully-specified
+    # action/staging). Plain-text in, plain-text out — see
+    # backend/instructions/refine-story-generation.md.
+    REFINE_STORY_PROMPT: str = (INSTRUCTIONS_DIR / "refine-story-generation.md").read_text(encoding="utf-8")
 
     def __init__(self, api_key: str):
         """
@@ -100,8 +105,21 @@ class AIProvider(ABC):
         self._api_key = api_key
 
     @abstractmethod
-    def generate_asset_list(self, story: str) -> list[dict]:
-        """Return a list of asset dicts matching the AssetsResponse schema."""
+    def generate_asset_list(self, story: str, existing_assets: list[dict] | None = None) -> list[dict]:
+        """Return a list of asset dicts matching the AssetsResponse schema.
+
+        Args:
+            story: The full current `story_content` value.
+            existing_assets: Assets already saved for this project (resolved
+                server-side from Firestore by the caller — see
+                workers/app/tasks/assets.py::run), each shaped as
+                ``{name, type, description, scene_number}``. ``None`` or an
+                empty list on a first-time extraction. When present, per
+                backend/instructions/asset-list-generation.md "Input Format"
+                / "Existing-Assets Rules", the model must never re-emit an
+                asset already covered here — only genuinely missing assets
+                are returned.
+        """
 
     @abstractmethod
     def generate_image_prompt(
@@ -154,6 +172,34 @@ class AIProvider(ABC):
                 "Continuity Inference": whether the new scene picks up directly from
                 the last shot or is a hard cut is decided from THIS scene's own
                 `scene_text`/`assets`, not defaulted from the presence of this field.
+        """
+
+    @abstractmethod
+    def generate_refine_story(
+        self,
+        story: str,
+        art_style: str = "painterly illustration with clean lines and rich color",
+        video_subtitles: bool = False,
+        known_character_names: list[str] | None = None,
+    ) -> str:
+        """Return the full rewritten story text (FEAT-038, `POST /refine-story`).
+
+        Plain text in, plain text out — no JSON wrapper on either side. See
+        backend/instructions/refine-story-generation.md "Input Format" /
+        "Output". The caller writes the result to the project document's
+        `refined_story_preview` field; `story_content` is never touched here.
+
+        Args:
+            story: The full current `story_content` value (scene-segmented,
+                `# N` headings).
+            art_style: The project's `generation_settings.art_style` —
+                informational only, not applied to scene content by this call.
+            video_subtitles: The project's `generation_settings.video_subtitles`
+                — controls whether existing `【】` subtitle syntax is preserved.
+            known_character_names: Names of already-extracted character assets
+                for this project (resolved server-side from Firestore), so the
+                rewrite keeps `@` asset references resolvable downstream. Empty
+                or ``None`` when no prior extraction has run.
         """
 
     @abstractmethod

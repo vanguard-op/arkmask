@@ -27,7 +27,7 @@ from typing import Callable
 
 from fastapi import FastAPI, HTTPException, Request
 
-from app.tasks import assets, image, image_prompt, merge, video, video_prompt
+from app.tasks import assets, image, image_prompt, merge, refine_story, video, video_prompt
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -70,3 +70,4 @@ app.add_api_route("/tasks/merge", _make_handler("merge", merge.run), methods=["P
 app.add_api_route("/tasks/assets", _make_handler("assets", assets.run), methods=["POST"])
 app.add_api_route("/tasks/image_prompt", _make_handler("image_prompt", image_prompt.run), methods=["POST"])
 app.add_api_route("/tasks/video_prompt", _make_handler("video_prompt", video_prompt.run), methods=["POST"])
+app.add_api_route("/tasks/refine", _make_handler("refine", refine_story.run), methods=["POST"])

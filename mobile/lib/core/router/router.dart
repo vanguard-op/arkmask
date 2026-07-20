@@ -16,6 +16,7 @@ import '../../features/billing/screens/upgrade_screen.dart';
 import '../../features/settings/screens/settings_screen.dart';
 import '../../features/usage/screens/usage_screen.dart';
 import '../../features/scene/screens/scene_detail_screen.dart';
+import '../../features/story/screens/refine_story_preview_screen.dart';
 import '../../features/story/screens/story_editor_screen.dart';
 import '../storage/secure_storage_service.dart';
 import 'routes.dart';
@@ -118,6 +119,15 @@ GoRouter buildRouter({
             state.pathParameters['projectName'] ?? '',
           );
           return StoryEditorScreen(projectName: projectName);
+        },
+      ),
+      GoRoute(
+        path: Routes.refineStoryPreview,
+        builder: (context, state) {
+          final projectName = Uri.decodeComponent(
+            state.pathParameters['projectName'] ?? '',
+          );
+          return RefineStoryPreviewScreen(projectSlug: projectName);
         },
       ),
       GoRoute(

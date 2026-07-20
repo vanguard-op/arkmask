@@ -53,6 +53,10 @@ abstract final class Routes {
   // ── Editor screens (Phase 2+) — declared here as stubs for router skeleton ─
 
   static const String storyEditor = '/project/:projectName/story';
+
+  /// Refine Story Preview Screen (Screen 8a, FEAT-038) — review/apply/discard
+  /// a `/refine-story` result before it replaces `story_content`.
+  static const String refineStoryPreview = '/project/:projectName/story/refine-preview';
   static const String assetEditor = '/project/:projectName/asset/:assetPath';
   static const String sceneDetail = '/project/:projectName/scene/:sceneId';
   static const String videoEditor = '/project/:projectName/editor';

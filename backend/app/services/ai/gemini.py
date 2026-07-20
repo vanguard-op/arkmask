@@ -148,8 +148,16 @@ class GeminiProvider(AIProvider):
 
     # ── AI pipeline methods ───────────────────────────────────────────────────
 
-    def generate_asset_list(self, story: str) -> list[dict]:
-        text = self._text_interact(self.ASSET_LIST_PROMPT, story)
+    def generate_asset_list(self, story: str, existing_assets: list[dict] | None = None) -> list[dict]:
+        # JSON-wrap the payload per asset-list-generation.md "Input Format"
+        # — existing_assets is omitted (left as an empty list) on a
+        # first-time extraction, matching the "omitted or empty" language in
+        # the instruction file.
+        payload = json.dumps({
+            "story": story,
+            "existing_assets": existing_assets or [],
+        })
+        text = self._text_interact(self.ASSET_LIST_PROMPT, payload)
         return json.loads(_extract_json(text))
 
     def generate_image_prompt(
@@ -167,6 +175,24 @@ class GeminiProvider(AIProvider):
             "art_style": art_style,
         })
         return self._text_interact(self.IMAGE_PROMPT, payload)
+
+    def generate_refine_story(
+        self,
+        story: str,
+        art_style: str = "painterly illustration with clean lines and rich color",
+        video_subtitles: bool = False,
+        known_character_names: list[str] | None = None,
+    ) -> str:
+        # Plain-text output (the story rewrite itself) — unlike
+        # generate_asset_list, no JSON extraction is applied to the response;
+        # see refine-story-generation.md "Output".
+        payload = json.dumps({
+            "story": story,
+            "art_style": art_style,
+            "video_subtitles": video_subtitles,
+            "known_character_names": known_character_names or [],
+        })
+        return self._text_interact(self.REFINE_STORY_PROMPT, payload)
 
     def generate_video_prompt(
         self,
