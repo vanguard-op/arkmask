@@ -13,21 +13,27 @@ import 'core/jobs/jobs_cubit.dart';
 import 'core/messaging/fcm_service.dart';
 import 'core/router/router.dart';
 import 'core/storage/secure_storage_service.dart';
+import 'core/theme/app_colors.dart';
 import 'core/theme/app_theme.dart';
 
-/// Baseline system UI style for the app root.
+/// Baseline system UI style for the app root — the system navigation bar
+/// takes the app's own solid dark surface color (instead of the OS default
+/// black) and its divider is hidden so it blends into the Scaffold
+/// background seamlessly. themeMode is pinned to ThemeMode.dark app-wide
+/// (see below), so this is hardcoded to the dark surface token rather than
+/// switching on Theme.of(context).
 ///
-/// systemNavigationBarColor is deliberately Colors.transparent, NOT an
-/// opaque surface token: the app runs in SystemUiMode.edgeToEdge (see
-/// main.dart), where Flutter draws content full-bleed behind the system
-/// bars by design and Android then paints the navigation bar as an overlay
-/// on top using whatever color is set here. An earlier version of this set
-/// an opaque surface color, which — combined with edge-to-edge — painted a
-/// solid bar that visually covered the bottom sliver of on-screen content
-/// instead of blending with it. Transparent lets the app's own
-/// scaffoldBackgroundColor (which already matches this token) show through
-/// underneath instead, giving the same "background-colored bar" look
-/// without an opaque layer sitting on top of the UI.
+/// A solid, opaque color is safe here (rather than transparent) because the
+/// app's own MaterialApp.router `builder` wraps every screen in a
+/// bottom-only SafeArea — content is guaranteed to reserve space above the
+/// navigation bar and never render underneath it, so there's nothing for an
+/// opaque bar to cover. (An opaque color without that reservation is what
+/// caused an earlier regression where the bar visually covered the bottom
+/// of on-screen content; going fully transparent to work around that then
+/// surfaced Android's automatic contrast-enforcement scrim — a translucent
+/// black overlay Android draws behind a transparent bar's icons for
+/// legibility — which looked like an unwanted black bar. Reserving the
+/// space up front and keeping the bar solid avoids both problems.)
 ///
 /// Screens that need a different style while they're on top (e.g.
 /// [VideoPlayerScreen]'s black fullscreen player) wrap themselves in their
@@ -38,7 +44,7 @@ const _rootSystemUiOverlayStyle = SystemUiOverlayStyle(
   statusBarColor: Colors.transparent,
   statusBarIconBrightness: Brightness.light,
   statusBarBrightness: Brightness.dark,
-  systemNavigationBarColor: Colors.transparent,
+  systemNavigationBarColor: AppColors.surfaceBaseDark,
   systemNavigationBarIconBrightness: Brightness.light,
   systemNavigationBarDividerColor: Colors.transparent,
 );
@@ -159,6 +165,30 @@ class _ArkMaskAppState extends State<ArkMaskApp> with WidgetsBindingObserver {
             // Dark mode is the primary experience per branding.md.
             themeMode: ThemeMode.dark,
             routerConfig: _routerWrapper.router,
+            // Global bottom-only SafeArea — the app runs edge-to-edge (see
+            // main.dart / MainActivity.kt), which on modern Android cannot
+            // be turned off: content is always eligible to draw underneath
+            // the system bars, by OS design. Individual screens using their
+            // own SafeArea/padding for specific pinned buttons is not
+            // enough — plain scrollable content (e.g. a ListView's last
+            // card) has nothing pushing it up, so it renders directly under
+            // the 3-button nav bar's icons. Wrapping every route's screen
+            // here guarantees no content is ever occluded by the bottom
+            // system bar, app-wide, without relying on each screen to
+            // remember to handle it. Only `bottom` is applied — the top
+            // inset (status bar) and sides are left to whichever screens
+            // want to render edge-to-edge there. Safe to nest: Flutter's
+            // SafeArea consumes the padding it applies from the MediaQuery
+            // data passed to descendants, so any screen-local SafeArea
+            // further down the tree sees zero bottom inset left and is a
+            // harmless no-op rather than double-padding.
+            builder: (context, child) => SafeArea(
+              top: false,
+              left: false,
+              right: false,
+              bottom: true,
+              child: child ?? const SizedBox.shrink(),
+            ),
           ),
         ),
       ),
