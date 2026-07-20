@@ -146,7 +146,9 @@ class _RegistrationViewState extends State<_RegistrationView> {
                               ),
                             ),
                             TextButton(
-                              onPressed: () => context.go(Routes.login),
+                              // push, not go — see login_screen.dart's
+                              // matching link for why.
+                              onPressed: () => context.push(Routes.login),
                               child: const Text('Log in'),
                             ),
                           ],
@@ -243,7 +245,9 @@ class _RegistrationViewState extends State<_RegistrationView> {
                     // ── Log in link ───────────────────────────────────────────
                     Center(
                       child: TextButton(
-                        onPressed: () => context.go(Routes.login),
+                        // push, not go — see login_screen.dart's matching
+                        // link for why.
+                        onPressed: () => context.push(Routes.login),
                         child: RichText(
                           text: TextSpan(
                             text: 'Already have an account? ',

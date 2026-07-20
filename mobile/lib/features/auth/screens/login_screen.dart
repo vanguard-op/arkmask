@@ -237,7 +237,10 @@ class _LoginViewState extends State<_LoginView> {
                     // ── Create account link ───────────────────────────────────
                     Center(
                       child: TextButton(
-                        onPressed: () => context.go(Routes.register),
+                        // push, not go — go replaces the whole stack, which
+                        // left nothing for the AppBar back button to pop
+                        // back to after switching between Login and Signup.
+                        onPressed: () => context.push(Routes.register),
                         child: RichText(
                           text: TextSpan(
                             text: "Don't have an account? ",
