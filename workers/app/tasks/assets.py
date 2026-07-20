@@ -104,7 +104,9 @@ def run(payload: dict) -> None:
         existing_assets = _fetch_existing_assets(db, firebase_uid, project_slug)
         raw_assets = provider.generate_asset_list(payload["story"], existing_assets)
 
-        write_extracted_assets(db, firebase_uid, project_slug, raw_assets)
+        write_extracted_assets(
+            db, firebase_uid, project_slug, raw_assets, story=payload["story"]
+        )
 
         deduct_credits(db, firebase_uid, "assets", provider_type)
         update_job(db, firebase_uid, job_id, "success")

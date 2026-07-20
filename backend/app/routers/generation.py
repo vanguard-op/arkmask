@@ -367,7 +367,9 @@ async def extract_assets(
         try:
             _update_job(firebase_uid, job_id, "running")
             raw = await asyncio.to_thread(provider.generate_asset_list, body.story)
-            write_extracted_assets(_firestore_client(), firebase_uid, body.project_slug, raw)
+            write_extracted_assets(
+                _firestore_client(), firebase_uid, body.project_slug, raw, story=body.story
+            )
             _deduct_credits(firebase_uid, "/assets", pname, CREDIT_COSTS["/assets"])
             _update_job(firebase_uid, job_id, "success")
             send_fcm_notification(_get_fcm_token(firebase_uid), {

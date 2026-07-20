@@ -28,11 +28,28 @@ def _slugify(name: str) -> str:
     return re.sub(r"\s+", "-", stripped)
 
 
+def _count_story_scenes(raw: str) -> int:
+    """
+    Mirrors the Flutter app's FileBrowserCubit._countStoryScenes exactly —
+    same heading pattern, same "highest number wins" logic (story scenes are
+    always sequentially re-indexed 1..N on save, per StoryCubit._reindex).
+    Returns 0 for empty content, 1 for content with no `# N` headings at all
+    (an unheaded single scene), otherwise the highest heading number found.
+    """
+    if not raw.strip():
+        return 0
+    matches = re.findall(r"^# (\d+)\s*$", raw, flags=re.MULTILINE)
+    if not matches:
+        return 1
+    return max(int(n) for n in matches)
+
+
 def write_extracted_assets(
     db,
     firebase_uid: str,
     project_slug: str,
     raw_assets: list[dict],
+    story: str = "",
 ) -> None:
     """
     Batch-write extracted asset documents to Firestore.
@@ -45,12 +62,28 @@ def write_extracted_assets(
         raw_assets: List of dicts matching the AssetItem schema —
             {name, type, scene_number, description} — as returned by
             AIProvider.generate_asset_list().
+        story: Full story text this extraction ran against. Used to backfill
+            scene documents the model didn't emit any asset for at all (see
+            below) — pass "" to skip that backfill (e.g. call sites that
+            don't have the story text handy).
 
     Global assets (scene_number == 0) go to the project-level `assets`
     subcollection. Scene-local assets go under
     `scenes/{scene_number}/assets/{slug}`. Parent scene documents are
     created with merge semantics so existing scene data (storyboard,
     video path) is never overwritten.
+
+    On a long story, the model is instructed to emit at least a reused-
+    background reference for every scene (see
+    backend/instructions/asset-list-generation.md's quality checklist), but
+    in practice it sometimes skips that boilerplate entry for scattered
+    scenes as the output grows — those scenes then never get a `scenes/{n}`
+    document and silently disappear from the file browser, even though
+    nothing was truncated. To make the tree robust to that omission
+    regardless of cause, every scene number 1..N found in [story] (via the
+    same `# N` heading parse the app itself uses) always gets its document
+    created here, not just the scene numbers the model actually returned
+    assets for.
     """
     project_path = f"users/{firebase_uid}/projects/{project_slug}"
     batch = db.batch()
@@ -76,6 +109,10 @@ def write_extracted_assets(
                 f"{project_path}/scenes/{asset['scene_number']}/assets/{slug}"
             )
         batch.set(ref, data)
+
+    # Backfill every scene the story actually contains, not just the ones
+    # the model returned assets for (see docstring above).
+    scene_numbers.update(range(1, _count_story_scenes(story) + 1))
 
     # Ensure parent scene documents exist without overwriting existing content.
     for n in scene_numbers:
