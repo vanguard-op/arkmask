@@ -187,12 +187,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     // the root region's style the instant this screen is popped, so no
     // manual restore is needed here (only the SystemUiMode toggle above is
     // this screen's own responsibility, since that's a real OS mode change
-    // rather than a region style).
+    // rather than a region style). systemNavigationBarColor is transparent,
+    // not opaque black, for the same reason as the root style in app.dart —
+    // in edge-to-edge mode an opaque color paints an overlay on top of
+    // content instead of blending with it. The Scaffold's own black
+    // background already shows through identically.
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: const SystemUiOverlayStyle(
         statusBarColor: Colors.transparent,
         statusBarIconBrightness: Brightness.light,
-        systemNavigationBarColor: Colors.black,
+        systemNavigationBarColor: Colors.transparent,
         systemNavigationBarIconBrightness: Brightness.light,
         systemNavigationBarDividerColor: Colors.transparent,
       ),

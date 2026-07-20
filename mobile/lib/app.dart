@@ -13,28 +13,32 @@ import 'core/jobs/jobs_cubit.dart';
 import 'core/messaging/fcm_service.dart';
 import 'core/router/router.dart';
 import 'core/storage/secure_storage_service.dart';
-import 'core/theme/app_colors.dart';
 import 'core/theme/app_theme.dart';
 
-/// Baseline system UI style for the app root — the system navigation bar
-/// takes the app's own dark surface color (instead of the OS default black,
-/// which read as a jarring mismatched bar) and its divider is hidden so it
-/// blends into the Scaffold background seamlessly. themeMode is pinned to
-/// ThemeMode.dark app-wide (see below), so this is hardcoded to the dark
-/// surface token rather than switching on Theme.of(context).
+/// Baseline system UI style for the app root.
+///
+/// systemNavigationBarColor is deliberately Colors.transparent, NOT an
+/// opaque surface token: the app runs in SystemUiMode.edgeToEdge (see
+/// main.dart), where Flutter draws content full-bleed behind the system
+/// bars by design and Android then paints the navigation bar as an overlay
+/// on top using whatever color is set here. An earlier version of this set
+/// an opaque surface color, which — combined with edge-to-edge — painted a
+/// solid bar that visually covered the bottom sliver of on-screen content
+/// instead of blending with it. Transparent lets the app's own
+/// scaffoldBackgroundColor (which already matches this token) show through
+/// underneath instead, giving the same "background-colored bar" look
+/// without an opaque layer sitting on top of the UI.
 ///
 /// Screens that need a different style while they're on top (e.g.
 /// [VideoPlayerScreen]'s black fullscreen player) wrap themselves in their
 /// own nested AnnotatedRegion — Flutter automatically reverts to this root
 /// region's style the instant that screen is popped, no manual restore
-/// needed (this is what was missing before: nothing ever established this
-/// baseline, so restoring "edgeToEdge" mode after the player closed left the
-/// navigation bar in an undefined, sometimes content-overlapping state).
+/// needed.
 const _rootSystemUiOverlayStyle = SystemUiOverlayStyle(
   statusBarColor: Colors.transparent,
   statusBarIconBrightness: Brightness.light,
   statusBarBrightness: Brightness.dark,
-  systemNavigationBarColor: AppColors.surfaceBaseDark,
+  systemNavigationBarColor: Colors.transparent,
   systemNavigationBarIconBrightness: Brightness.light,
   systemNavigationBarDividerColor: Colors.transparent,
 );
