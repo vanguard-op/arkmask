@@ -24,7 +24,7 @@ Generate a text prompt for the Ark video generation API (Seedance 2.0 model) tha
   - `name` — the asset's identifier (e.g. `"elias"`, `"clockwork_emporium"`, `"chronosphere"`)
   - `prompt` — the image generation prompt used to create this reference image; read it to understand the asset's visual appearance and type
 - `art_style` — the project-level visual rendering style. Always use this value verbatim in the closing block. If absent or empty, default to `painterly illustration with warm tones`.
-- `subtitles` — when `"disabled"`, include the subtitle-free constraint in the closing block. When `"enabled"`, omit it (the user may use `【】` in scene descriptions to specify dialogue subtitles).
+- `subtitles` — when `"disabled"`, include the subtitle-free constraint in the closing block and do not emit `【】` anywhere. When `"enabled"`, do **not** assume `scene` already uses `【】` or any other special marker for dialogue — it almost never will. Instead, read `scene` for spoken dialogue in whatever form it naturally appears (straight or curly quotes, an unquoted speech tag like `Felix whispers, ...` or `she says ...`, an em-dash line, or `【】` if the writer happened to use it) and extract it yourself. See Step 6's "Subtitle Extraction" for exactly how to turn what you find into `【】` text in the output — this is a required part of Step 6 whenever `subtitles: "enabled"` and a shot contains spoken dialogue, not an optional pass-through of pre-formatted input.
 - `previous_scene_prompt` — the complete generated video prompt (this same construction process's own output) for the immediately preceding scene, or an empty string `""` when this is the first scene, or the previous scene has no generated prompt yet. Read for continuity inference only — see "Continuity Inference" below. An empty value requires no special handling: it simply means there is nothing to continue from, so build the scene as its own opening shot.
 
 The reference images are provided to the Seedance model in the **same order** as the `assets` list. The asset at index 0 becomes **Image 1**, index 1 becomes **Image 2**, and so on. Always use these `Image N` identifiers in the prompt — never reference an asset by its `name` alone without binding it to its image number.
@@ -149,7 +149,16 @@ Break the `scene` into numbered shots: **Shot 1 / Shot 2 / Shot 3**... in chrono
 1. **Camera** — one movement or framing type only (see vocabulary below). Never mix push + pull + pan in the same shot; this causes instability.
 2. **Subject action** — specific body parts (hands, legs, head, shoulders, back), with range, speed, and force. Never say "he feels sad" — externalize it physically (see emotion table below).
 3. **Spatial position** — where the subject is within the scene.
-4. **Audio** — dialogue in `{}`, ambient sound effects in `<>`, background music in `（）`.
+4. **Audio** — dialogue in `{}`, ambient sound effects in `<>`, background music in `（）`, and — only when `subtitles: "enabled"` and this shot contains spoken dialogue — matching on-screen subtitle text in `【】` (see "Subtitle Extraction" below).
+
+**Subtitle Extraction** (only applies when `subtitles: "enabled"`):
+
+- For each shot, first decide whether `scene` actually gives this shot spoken dialogue — a line attributed to a character, in any form: quoted text (`"..."`, `'...'`, `"..."` curly quotes), an unquoted speech tag (`Felix whispers, keep this safe`, `she says it's time to go`), a line already wrapped in `【】`, or any other way the writer signals someone is speaking. Narration, internal thought not spoken aloud, and action description are not dialogue — do not invent a subtitle for a shot that has none.
+- When a shot does contain dialogue, put the spoken words in `{}` exactly as the audio direction always requires, then immediately follow with the same line's on-screen text wrapped in `【】`. The two should carry the same words — `【】` is the subtitle rendering of the same line placed in `{}`, not a separate summary or a stage direction.
+- Strip attribution and formatting artifacts when extracting into `【】` — drop dialogue tags (`Felix whispers,`, `she says`), surrounding quote marks, and any narration mixed into the same sentence. Keep only the words actually spoken. E.g. `Felix whispers, "Keep this safe, my son."` → `{Keep this safe, my son.}【Keep this safe, my son.】`.
+- If a shot's dialogue spans more than one sentence, keep it as one `{}`/`【】` pair per shot (do not split a single character's continuous line across `【】` tags within the same shot) — split across separate shots instead if the shot sequence already breaks the line up that way.
+- Preserve the dialogue's original language — do not translate it. This mirrors the existing "language of dialogue must be consistent" rule above.
+- A shot with no spoken dialogue gets no `【】` at all, `subtitles: "enabled"` or not — only `<>` ambient sound and/or `（）` music where relevant.
 
 **Camera vocabulary** (use these terms directly):
 
@@ -223,7 +232,7 @@ Never output a duration outside 2–15. If the computed estimate exceeds 15, eit
 [Subject definition block — one line per character, ordered most-important first]
 [Background scene reference]
 
-Shot 1: [One camera movement/framing]. [Character name] [action — body part, speed, range]. [Spatial position in scene]. [Audio: dialogue in {}, SFX in <>, music in （）]
+Shot 1: [One camera movement/framing]. [Character name] [action — body part, speed, range]. [Spatial position in scene]. [Audio: dialogue in {}, SFX in <>, music in （）, and — only if subtitles == "enabled" and this shot has spoken dialogue — the same line's on-screen text in 【】 immediately after the {} dialogue]
 
 Shot 2: [One camera movement/framing]. [Character name] [action]. [Position]. [Audio]
 
@@ -277,3 +286,25 @@ Shot 3: Fixed close-up on **Elias**'s face. He slowly turns his head toward the 
 Painterly illustration style with warm amber and dark wood tones, rich textural detail. High-definition, cinematic texture, natural colors. Soft warm lamp-light with gentle shadows. The character's face and body proportions remain consistent throughout without deformation. Movements are natural and smooth, with no stutter or flicker. Keep it subtitle-free. Avoid generating any text or subtitles. Do not generate a watermark. Do not generate a logo.
 
 --duration 11
+
+---
+
+## Subtitle Extraction Example (`subtitles: "enabled"`)
+
+Note `scene` below has no `【】` anywhere — dialogue is written as ordinary prose with an unquoted speech tag (`Felix whispers, "..."`). This is the normal case; do not wait for `【】` to already be present before extracting it.
+
+**Input (relevant fields only):**
+```json
+{
+  "scene": "One quiet evening, Felix calls young Mike over to his cot. Felix's rough, calloused hands reach into his pocket, pulling out a small, slightly rusted metallic flash drive. Felix places the flash drive into Mike's open palm. Felix whispers, \"Keep this safe, my son. I have nothing of wealth to give you. But my forefathers passed this down to me. They said that in thirty years' time, this flash drive will be a key to success. Nobody in our bloodline has ever understood what is inside it. Just keep it safe.\"",
+  "subtitles": "enabled"
+}
+```
+
+**Relevant shot output** (dialogue is long enough to reasonably split across two shots — each shot still carries only its own portion in matching `{}`/`【】` pairs, never the full line repeated in both):
+
+Shot 2: Fixed close-up on **Felix**'s weathered hand pressing the small rusted flash drive into **Mike**'s open palm. {Keep this safe, my son. I have nothing of wealth to give you.}【Keep this safe, my son. I have nothing of wealth to give you.】
+
+Shot 3: Medium close-up on **Felix**'s face, eyes steady on **Mike**. {But my forefathers passed this down to me. They said that in thirty years' time, this flash drive will be a key to success. Nobody in our bloodline has ever understood what is inside it. Just keep it safe.}【But my forefathers passed this down to me. They said that in thirty years' time, this flash drive will be a key to success. Nobody in our bloodline has ever understood what is inside it. Just keep it safe.】
+
+Note what was dropped going from `scene` into `{}`/`【】`: the `Felix whispers,` speech tag and the surrounding straight quotes — only the words actually spoken remain.
