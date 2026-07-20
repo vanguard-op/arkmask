@@ -25,25 +25,39 @@ class UsageEvent extends Equatable {
   /// Credit cost for this event (from monetization.md cost schedule).
   final int costCredits;
 
-  /// Human-readable label for the event type.
+  /// Canonical, hyphen/underscore-and-slash-insensitive form of [type].
   ///
-  /// [type] holds the raw API endpoint (e.g. "/image-prompt") as written by
-  /// `_deduct_credits` in backend/app/routers/generation.py, so the leading
-  /// slash is stripped before matching.
-  String get typeLabel {
-    final key = type.startsWith('/') ? type.substring(1) : type;
-    return switch (key) {
-      'image-prompt' => 'Image Prompt',
-      'image' => 'Image Generation',
-      'video-prompt' => 'Storyboard',
-      'video' => 'Video Generation',
-      'assets' => 'Asset Extraction',
-      'refine-story' => 'Refine Story',
-      'merge' => 'Video Merge',
-      'image-describe' => 'Image Description',
-      _ => key,
-    };
+  /// Usage events are written by two different code paths that don't agree
+  /// on naming:
+  ///  - backend/app/routers/generation.py's synchronous fallback (used when
+  ///    Cloud Tasks isn't configured, e.g. local dev) writes hyphenated,
+  ///    slash-prefixed endpoints: "/image-prompt", "/video-prompt",
+  ///    "/refine-story".
+  ///  - workers/app/jobs.py's `deduct_credits` (the production path, called
+  ///    from the Cloud Tasks task handlers) writes `f"/{job_type}"` where
+  ///    `job_type` uses underscores and drops "-story": "/image_prompt",
+  ///    "/video_prompt", "/refine".
+  /// Normalizing to a single underscore-based, slash-free key lets one
+  /// switch statement handle events from either path.
+  String get normalizedType {
+    var key = type.startsWith('/') ? type.substring(1) : type;
+    key = key.replaceAll('-', '_');
+    if (key == 'refine_story') key = 'refine';
+    return key;
   }
+
+  /// Human-readable label for the event type.
+  String get typeLabel => switch (normalizedType) {
+        'image_prompt' => 'Image Prompt',
+        'image' => 'Image Generation',
+        'video_prompt' => 'Storyboard',
+        'video' => 'Video Generation',
+        'assets' => 'Asset Extraction',
+        'refine' => 'Refine Story',
+        'merge' => 'Video Merge',
+        'image_describe' => 'Image Description',
+        _ => normalizedType,
+      };
 
   // Backend's GET /usage (UsageEventResponse in app/schemas/auth.py) returns
   // `endpoint` and `credits_deducted` — not `type`/`id`/`cost_credits`. Those
@@ -88,7 +102,7 @@ class UsageLoaded extends UsageState {
 
   List<UsageEvent> get filteredEvents => filterType == null
       ? allEvents
-      : allEvents.where((e) => e.type == filterType).toList();
+      : allEvents.where((e) => e.normalizedType == filterType).toList();
 
   int get totalCostCredits =>
       filteredEvents.fold(0, (sum, e) => sum + e.costCredits);

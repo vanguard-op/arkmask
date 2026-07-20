@@ -96,16 +96,17 @@ class _FilterBar extends StatelessWidget {
   const _FilterBar({required this.currentFilter});
   final String? currentFilter;
 
-  // Keys match the raw `endpoint` values written by _deduct_credits in
-  // backend/app/routers/generation.py (leading slash included) — these are
-  // what UsageEvent.type now holds directly from the API response.
+  // Keys match UsageEvent.normalizedType (slash-free, underscore form) —
+  // see the doc comment there for why raw `endpoint` values can't be keyed
+  // on directly (two backend code paths disagree on hyphen/underscore and
+  // "refine" vs "refine-story").
   static const _labels = <String?, String>{
     null: 'All',
-    '/image-prompt': 'Image Prompt',
-    '/image': 'Image',
-    '/video-prompt': 'Storyboard',
-    '/video': 'Video',
-    '/refine-story': 'Refine',
+    'image_prompt': 'Image Prompt',
+    'image': 'Image',
+    'video_prompt': 'Storyboard',
+    'video': 'Video',
+    'refine': 'Refine',
   };
 
   @override
@@ -218,7 +219,7 @@ class _EventRow extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.only(top: 2, right: AppSpacing.s3),
             child: Icon(
-              _iconFor(event.type),
+              _iconFor(event.normalizedType),
               size: AppSizing.iconSm,
               color: textSecondary,
             ),
@@ -256,14 +257,14 @@ class _EventRow extends StatelessWidget {
   }
 
   IconData _iconFor(String type) => switch (type) {
-        '/image-prompt' => LucideIcons.pencil,
-        '/image' => LucideIcons.image,
-        '/video-prompt' => LucideIcons.fileText,
-        '/video' => LucideIcons.film,
-        '/assets' => LucideIcons.plus,
-        '/refine-story' => LucideIcons.fileText,
-        '/merge' => LucideIcons.film,
-        '/image-describe' => LucideIcons.image,
+        'image_prompt' => LucideIcons.pencil,
+        'image' => LucideIcons.image,
+        'video_prompt' => LucideIcons.fileText,
+        'video' => LucideIcons.film,
+        'assets' => LucideIcons.plus,
+        'refine' => LucideIcons.fileText,
+        'merge' => LucideIcons.film,
+        'image_describe' => LucideIcons.image,
         _ => LucideIcons.zap,
       };
 
