@@ -96,12 +96,15 @@ class _FilterBar extends StatelessWidget {
   const _FilterBar({required this.currentFilter});
   final String? currentFilter;
 
+  // Keys match the raw `endpoint` values written by _deduct_credits in
+  // backend/app/routers/generation.py (leading slash included) — these are
+  // what UsageEvent.type now holds directly from the API response.
   static const _labels = <String?, String>{
     null: 'All',
-    'image-prompt': 'Prompt',
-    'image': 'Image',
-    'video-prompt': 'Storyboard',
-    'video': 'Video',
+    '/image-prompt': 'Prompt',
+    '/image': 'Image',
+    '/video-prompt': 'Storyboard',
+    '/video': 'Video',
   };
 
   @override
@@ -179,7 +182,7 @@ class _TotalCostBanner extends StatelessWidget {
           ),
           const Spacer(),
           Text(
-            '${formatCredits(totalCredits)} cr',
+            formatCredits(totalCredits),
             style: AppTextStyles.body(context).copyWith(
               fontWeight: FontWeight.w600,
             ),
@@ -252,10 +255,14 @@ class _EventRow extends StatelessWidget {
   }
 
   IconData _iconFor(String type) => switch (type) {
-        'image-prompt' => LucideIcons.pencil,
-        'image' => LucideIcons.image,
-        'video-prompt' => LucideIcons.fileText,
-        'video' => LucideIcons.film,
+        '/image-prompt' => LucideIcons.pencil,
+        '/image' => LucideIcons.image,
+        '/video-prompt' => LucideIcons.fileText,
+        '/video' => LucideIcons.film,
+        '/assets' => LucideIcons.plus,
+        '/refine-story' => LucideIcons.fileText,
+        '/merge' => LucideIcons.film,
+        '/image-describe' => LucideIcons.image,
         _ => LucideIcons.zap,
       };
 

@@ -26,22 +26,39 @@ class UsageEvent extends Equatable {
   final int costCredits;
 
   /// Human-readable label for the event type.
-  String get typeLabel => switch (type) {
-        'image-prompt' => 'Image Prompt',
-        'image' => 'Image Generation',
-        'video-prompt' => 'Storyboard',
-        'video' => 'Video Generation',
-        _ => type,
-      };
+  ///
+  /// [type] holds the raw API endpoint (e.g. "/image-prompt") as written by
+  /// `_deduct_credits` in backend/app/routers/generation.py, so the leading
+  /// slash is stripped before matching.
+  String get typeLabel {
+    final key = type.startsWith('/') ? type.substring(1) : type;
+    return switch (key) {
+      'image-prompt' => 'Image Prompt',
+      'image' => 'Image Generation',
+      'video-prompt' => 'Storyboard',
+      'video' => 'Video Generation',
+      'assets' => 'Asset Extraction',
+      'refine-story' => 'Refine Story',
+      'merge' => 'Video Merge',
+      'image-describe' => 'Image Description',
+      _ => key,
+    };
+  }
 
+  // Backend's GET /usage (UsageEventResponse in app/schemas/auth.py) returns
+  // `endpoint` and `credits_deducted` — not `type`/`id`/`cost_credits`. Those
+  // mismatched keys meant every field silently fell back to its default
+  // (empty string / 0), which is why every event showed "0 cr" and the type
+  // label came out blank/unmapped. There's also no `id` field in the
+  // backend response, so events are keyed by endpoint+timestamp instead.
   factory UsageEvent.fromJson(Map<String, dynamic> json) => UsageEvent(
-        id: json['id']?.toString() ?? '',
-        type: json['type'] as String? ?? '',
+        id: '${json['endpoint']}-${json['timestamp']}',
+        type: json['endpoint'] as String? ?? '',
         provider: json['provider'] as String? ?? '',
         timestamp: json['timestamp'] != null
             ? DateTime.tryParse(json['timestamp'] as String) ?? DateTime.now()
             : DateTime.now(),
-        costCredits: (json['cost_credits'] as num?)?.toInt() ?? 0,
+        costCredits: (json['credits_deducted'] as num?)?.toInt() ?? 0,
       );
 
   @override
