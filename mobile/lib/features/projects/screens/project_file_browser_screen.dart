@@ -527,7 +527,15 @@ class _TreeView extends StatelessWidget {
     return Stack(
       children: [
         if (state.isExtracting) const Positioned(top: 0, left: 0, right: 0, child: LinearProgressIndicator()),
-        ListView(children: rows),
+        ListView(
+          // Reserve space at the bottom so the floating "Extract Assets"
+          // button (pinned via Positioned below) doesn't sit on top of /
+          // block taps on the last row(s) of content.
+          padding: tree.storyHasContent
+              ? const EdgeInsets.only(bottom: AppSizing.fileBrowserRow + AppSpacing.s6)
+              : EdgeInsets.zero,
+          children: rows,
+        ),
         // ── Extract Assets CTA (any project with story content) ────────────
         // Sole entry point for asset extraction as of FEAT-038 — triggers
         // /assets directly rather than navigating to the Story Editor (whose
@@ -928,20 +936,39 @@ class _CreateSceneSheetState extends State<_CreateSceneSheet> {
                 ),
               ),
               const SizedBox(height: AppSpacing.s3),
-              ...missing.map((n) => ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: const Icon(LucideIcons.film),
-                    title: Text('Scene $n'),
-                    trailing: _creating.contains(n)
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(LucideIcons.plus),
-                    enabled: !_creating.contains(n),
-                    onTap: () => _create(n),
-                  )),
+              // The row list can be arbitrarily long (every scene number
+              // missing a doc — potentially 50+ for a long story), so it's
+              // capped and scrollable rather than left in the unbounded
+              // Column: unbounded meant the sheet's content (and the
+              // "Create All" button below it) simply overflowed past the
+              // screen with no way to scroll down to reach it.
+              ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.of(context).size.height * 0.5,
+                ),
+                child: Scrollbar(
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: missing
+                        .map((n) => ListTile(
+                              contentPadding: EdgeInsets.zero,
+                              leading: const Icon(LucideIcons.film),
+                              title: Text('Scene $n'),
+                              trailing: _creating.contains(n)
+                                  ? const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2),
+                                    )
+                                  : const Icon(LucideIcons.plus),
+                              enabled: !_creating.contains(n),
+                              onTap: () => _create(n),
+                            ))
+                        .toList(),
+                  ),
+                ),
+              ),
               if (missing.length > 1) ...[
                 const SizedBox(height: AppSpacing.s2),
                 ElevatedButton(

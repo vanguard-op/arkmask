@@ -167,9 +167,13 @@ class BytePlusProvider(AIProvider):
     # of prose) can run past that default before finishing — the response
     # gets cut off mid-generation with no closing ``` fence, which
     # _extract_json can't recover (there's genuinely no valid JSON to find,
-    # since the array itself is incomplete). 8192 gives ample headroom for
-    # even large asset lists while staying well under typical model ceilings.
-    _CHAT_MAX_TOKENS = 8192
+    # since the array itself is incomplete). 8192 was enough headroom for
+    # small/medium stories, but a ~50-scene story with a large asset list
+    # (characters + props + locations, each with a prose description) can
+    # produce a JSON array well past that ceiling and gets truncated the
+    # same way. 32768 gives a large enough ceiling for that scale while
+    # staying at/under typical Doubao/Seed text model context ceilings.
+    _CHAT_MAX_TOKENS = 32768
 
     def _chat(self, system_prompt: str, content: str) -> str:
         """Single-turn chat completion via Doubao/Seed text model.
