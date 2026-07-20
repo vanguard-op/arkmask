@@ -204,7 +204,7 @@ class ArkMaskApiClient {
   /// is set — see [StoryCubit] and its Refine Ready banner handling.
   Future<String> refineStory({required String projectSlug}) async {
     final response = await _execute(
-      () => _dio.post('\refine-story', data: {
+      () => _dio.post('/refine-story', data: {
         'project_slug': projectSlug,
       }),
     );
