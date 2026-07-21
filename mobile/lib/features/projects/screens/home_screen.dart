@@ -82,8 +82,10 @@ class _HomeViewState extends State<_HomeView> {
           // The Firestore listener in ProjectsCubit automatically adds the new
           // project to the list — no manual refresh call needed.
           context.push(
-            Routes.projectBrowser
-                .replaceFirst(':projectName', Uri.encodeComponent(slug)),
+            Routes.projectBrowser.replaceFirst(
+              ':projectName',
+              Uri.encodeComponent(slug),
+            ),
           );
         },
       ),
@@ -97,10 +99,7 @@ class _HomeViewState extends State<_HomeView> {
         return Scaffold(
           appBar: AppBar(
             automaticallyImplyLeading: false,
-            title: Text(
-              'ArkMask',
-              style: AppTextStyles.h2(context),
-            ),
+            title: Text('ArkMask', style: AppTextStyles.h2(context)),
             actions: [
               _CreditPill(state: state),
               const SizedBox(width: AppSpacing.s2),
@@ -119,9 +118,10 @@ class _HomeViewState extends State<_HomeView> {
           body: switch (state) {
             ProjectsLoading() => const _SkeletonList(),
             ProjectsError(:final message) => _ErrorView(message: message),
-            ProjectsLoaded() => state.projects.isEmpty
-                ? const _EmptyState()
-                : _ProjectList(state: state),
+            ProjectsLoaded() =>
+              state.projects.isEmpty
+                  ? const _EmptyState()
+                  : _ProjectList(state: state),
           },
         );
       },
@@ -147,22 +147,29 @@ class _CreditPill extends StatelessWidget {
 
     Color textColor;
     if (balance == null) {
-      textColor =
-          isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight;
+      textColor = isDark
+          ? AppColors.textSecondaryDark
+          : AppColors.textSecondaryLight;
     } else if (balance == 0) {
       textColor = isDark ? AppColors.errorDark : AppColors.errorLight;
     } else {
       final fraction = tier != null ? balance / tier.monthlyCredits : 1.0;
       textColor = fraction <= 0.2
           ? (isDark ? AppColors.warningDark : AppColors.warningLight)
-          : (isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight);
+          : (isDark
+                ? AppColors.textSecondaryDark
+                : AppColors.textSecondaryLight);
     }
 
     return Container(
       padding: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.s3, vertical: AppSpacing.s1),
+        horizontal: AppSpacing.s3,
+        vertical: AppSpacing.s1,
+      ),
       decoration: BoxDecoration(
-        color: isDark ? AppColors.primarySubtleDark : AppColors.primarySubtleLight,
+        color: isDark
+            ? AppColors.primarySubtleDark
+            : AppColors.primarySubtleLight,
         borderRadius: BorderRadius.circular(AppSizing.radiusFull),
       ),
       child: Text(
@@ -186,17 +193,18 @@ class _ProjectList extends StatelessWidget {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-                content: Text('Rename failed: ${state.renameError}')),
+            SnackBar(content: Text('Rename failed: ${state.renameError}')),
           );
         }
       });
     }
 
     return ListView.separated(
-      padding: const EdgeInsets.symmetric(
-        horizontal: AppSpacing.s4,
-        vertical: AppSpacing.s4,
+      padding: const EdgeInsets.only(
+        left: AppSpacing.s4,
+        right: AppSpacing.s4,
+        top: AppSpacing.s4,
+        bottom: 92, // product card + some spacing
       ),
       itemCount: state.projects.length,
       separatorBuilder: (_, _) => const SizedBox(height: AppSpacing.s3),
@@ -216,8 +224,9 @@ class _ProjectList extends StatelessWidget {
           ),
           onDeleteConfirmed: () =>
               context.read<ProjectsCubit>().deleteProject(project.slug),
-          onRenameConfirmed: (newName) =>
-              context.read<ProjectsCubit>().renameProject(project.slug, newName),
+          onRenameConfirmed: (newName) => context
+              .read<ProjectsCubit>()
+              .renameProject(project.slug, newName),
         );
       },
     );
@@ -232,7 +241,9 @@ class _EmptyState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final primaryColor = isDark ? AppColors.primaryDark : AppColors.primaryLight;
+    final primaryColor = isDark
+        ? AppColors.primaryDark
+        : AppColors.primaryLight;
 
     return Center(
       child: Padding(
@@ -321,8 +332,9 @@ class _SkeletonCardState extends State<_SkeletonCard>
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final base =
-        isDark ? AppColors.surfaceRaisedDark : AppColors.surfaceRaisedLight;
+    final base = isDark
+        ? AppColors.surfaceRaisedDark
+        : AppColors.surfaceRaisedLight;
 
     return AnimatedBuilder(
       animation: _anim,

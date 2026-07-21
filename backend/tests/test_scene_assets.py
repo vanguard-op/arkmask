@@ -98,8 +98,17 @@ def test_parse_scene_text_handles_none_and_empty():
 # ── resolve_scene_assets ─────────────────────────────────────────────────────
 
 def _fs_with_scene_and_globals(scene_docs: list[_FakeDoc], global_docs: list[_FakeDoc]) -> _FakeFirestore:
+    # Also register each doc under its individual document path — needed by
+    # resolve_asset_ref_chain (app.services.asset_ref), which reads a `ref`
+    # target via `db.document(path).get()`, not `db.collection(...).stream()`.
+    documents = {
+        f"users/u1/projects/p1/assets/{d.id}": d._data for d in global_docs
+    }
+    documents.update({
+        f"users/u1/projects/p1/scenes/2/assets/{d.id}": d._data for d in scene_docs
+    })
     return _FakeFirestore(
-        documents={},
+        documents=documents,
         collections={
             "users/u1/projects/p1/assets": global_docs,
             "users/u1/projects/p1/scenes/2/assets": scene_docs,
@@ -119,34 +128,35 @@ def test_resolve_scene_assets_orders_background_before_character_before_object()
 
 
 def test_resolve_scene_assets_pass_through_resolves_to_global_asset():
-    # Root ("scene 0") assets live in the project-level `assets` collection —
-    # a "@/scenes/0/..." reference resolves there.
+    # Global (scope 0) assets live in the project-level `assets` collection —
+    # a `ref: "assets/hero"` resolves there.
     global_docs = [
-        _FakeDoc("hero", {"name": "hero", "type": "character", "prompt_body": "the real hero prompt", "gcs_image_path": "u1/p1/hero.png"}),
+        _FakeDoc("hero", {"name": "hero", "type": "character", "ref": None, "prompt_body": "the real hero prompt", "gcs_image_path": "u1/p1/hero.png"}),
     ]
     scene_docs = [
-        # Pass-through: empty description, @-prefixed name referencing the global asset.
-        _FakeDoc("ref1", {"name": "@/scenes/0/hero", "description": "", "type": None, "prompt_body": None, "gcs_image_path": None}),
+        # Pass-through: empty description, `ref` pointing at the global asset.
+        _FakeDoc("ref1", {"name": "Hero", "ref": "assets/hero", "description": "", "type": None, "prompt_body": None, "gcs_image_path": None}),
     ]
     db = _fs_with_scene_and_globals(scene_docs, global_docs)
     resolved = resolve_scene_assets(db, "u1", "p1", 2)
 
     assert len(resolved) == 1
     asset = resolved[0]
-    # Name stays the scene-local reference name, but prompt/image/type come
-    # from the referenced global asset — never the (empty) scene-local fields.
-    assert asset.name == "@/scenes/0/hero"
+    # Name stays the referencing document's own display name, but
+    # prompt/image/type come from the referenced (terminal) asset — never
+    # the (empty) scene-local fields.
+    assert asset.name == "Hero"
     assert asset.prompt == "the real hero prompt"
     assert asset.gcs_image_path == "u1/p1/hero.png"
     assert asset.type == "character"
 
 
-def test_resolve_scene_assets_pass_through_case_insensitive_and_missing_global():
+def test_resolve_scene_assets_pass_through_missing_ref_target_resolves_empty():
     scene_docs = [
-        _FakeDoc("ref1", {"name": "@/scenes/0/Hero", "description": ""}),
+        _FakeDoc("ref1", {"name": "Hero", "ref": "assets/hero", "description": ""}),
     ]
     global_docs = [
-        _FakeDoc("hero", {"name": "hero", "type": "character", "prompt_body": "hero prompt", "gcs_image_path": "u1/p1/hero.png"}),
+        _FakeDoc("hero", {"name": "hero", "type": "character", "ref": None, "prompt_body": "hero prompt", "gcs_image_path": "u1/p1/hero.png"}),
     ]
     db = _fs_with_scene_and_globals(scene_docs, global_docs)
     resolved = resolve_scene_assets(db, "u1", "p1", 2)
@@ -164,26 +174,22 @@ def test_resolve_scene_assets_pass_through_resolves_to_non_root_source_scene():
     # (e.g. scene 5) is never copied into the project-level `assets`
     # collection — only scene_number == 0 assets are (see
     # app.services.asset_writer.write_extracted_assets). A later scene's
-    # pass-through reference into that scene must resolve against scene 5's
-    # own `assets` subcollection, not the project-level one, or it will
-    # always appear "missing" even after scene 5's asset image is generated.
+    # pass-through `ref` into that scene must resolve against scene 5's own
+    # `assets` subcollection, not the project-level one.
     db = _FakeFirestore(
-        documents={},
+        documents={
+            "users/u1/projects/p1/scenes/5/assets/hero": {
+                "name": "hero",
+                "type": "character",
+                "ref": None,
+                "prompt_body": "scene 5 hero prompt",
+                "gcs_image_path": "u1/p1/scene5-hero.png",
+            },
+        },
         collections={
             "users/u1/projects/p1/assets": [],  # no root assets at all
-            "users/u1/projects/p1/scenes/5/assets": [
-                _FakeDoc(
-                    "hero",
-                    {
-                        "name": "hero",
-                        "type": "character",
-                        "prompt_body": "scene 5 hero prompt",
-                        "gcs_image_path": "u1/p1/scene5-hero.png",
-                    },
-                ),
-            ],
             "users/u1/projects/p1/scenes/6/assets": [
-                _FakeDoc("ref1", {"name": "@/scenes/5/hero", "description": ""}),
+                _FakeDoc("ref1", {"name": "Hero", "ref": "scenes/5/assets/hero", "description": ""}),
             ],
         },
     )
@@ -191,10 +197,69 @@ def test_resolve_scene_assets_pass_through_resolves_to_non_root_source_scene():
 
     assert len(resolved) == 1
     asset = resolved[0]
-    assert asset.name == "@/scenes/5/hero"
+    assert asset.name == "Hero"
     assert asset.prompt == "scene 5 hero prompt"
     assert asset.gcs_image_path == "u1/p1/scene5-hero.png"
     assert asset.type == "character"
+
+
+def test_resolve_scene_assets_variant_uses_own_fields_not_terminal_regardless_of_chain_depth():
+    # ref chain: variant --ref--> mid --ref--> root (root has ref=None).
+    # description is non-empty on the referencing doc -> variant -> uses its
+    # OWN prompt/image/type, never the terminal's, no matter the hop count.
+    db = _FakeFirestore(
+        documents={
+            "users/u1/projects/p1/assets/root": {
+                "name": "root", "type": "character", "ref": None,
+                "prompt_body": "root prompt", "gcs_image_path": "u1/p1/root.png",
+            },
+            "users/u1/projects/p1/scenes/2/assets/mid": {
+                "name": "mid", "type": "character", "ref": "assets/root",
+                "description": "", "prompt_body": None, "gcs_image_path": None,
+            },
+        },
+        collections={
+            "users/u1/projects/p1/scenes/3/assets": [
+                _FakeDoc("variant1", {
+                    "name": "Variant", "ref": "scenes/2/assets/mid",
+                    "description": "wearing a different coat",
+                    "type": "character",
+                    "prompt_body": "variant's own prompt",
+                    "gcs_image_path": "u1/p1/variant.png",
+                }),
+            ],
+        },
+    )
+    resolved = resolve_scene_assets(db, "u1", "p1", 3)
+
+    assert len(resolved) == 1
+    asset = resolved[0]
+    assert asset.name == "Variant"
+    assert asset.prompt == "variant's own prompt"
+    assert asset.gcs_image_path == "u1/p1/variant.png"
+
+
+def test_resolve_scene_assets_broken_ref_chain_resolves_unready_not_raise():
+    # A cyclic ref chain must not crash scene resolution — it resolves to an
+    # "unready" asset (no prompt/image), which naturally fails
+    # assets_ready_for_storyboard's gate.
+    a = {"name": "A", "ref": "scenes/1/assets/b", "description": ""}
+    b = {"name": "B", "ref": "scenes/1/assets/a", "description": ""}
+    db = _FakeFirestore(
+        documents={
+            "users/u1/projects/p1/scenes/1/assets/a": a,
+            "users/u1/projects/p1/scenes/1/assets/b": b,
+        },
+        collections={
+            "users/u1/projects/p1/scenes/1/assets": [
+                _FakeDoc("a", a),
+            ],
+        },
+    )
+    resolved = resolve_scene_assets(db, "u1", "p1", 1)
+    assert len(resolved) == 1
+    assert resolved[0].prompt == ""
+    assert resolved[0].gcs_image_path is None
 
 
 # ── assets_ready_for_storyboard ──────────────────────────────────────────────

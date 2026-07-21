@@ -18,8 +18,19 @@ class AssetsRequest(BaseModel):
     story: str
 
 
+class AssetRef(BaseModel):
+    """Immediate reference target named by the AI extraction contract — see
+    backend/instructions/asset-list-generation.md "Field Rules: ref". Names
+    the source asset by its own (scene_number, name), not by slug/path; the
+    slug/asset_path resolution happens in app.services.asset_writer."""
+
+    scene_number: int = Field(..., ge=0)
+    name: str
+
+
 class AssetItem(BaseModel):
     name: str
+    ref: AssetRef | None = None
     type: AssetTypeEnum
     scene_number: int = Field(..., ge=0)
     description: str
@@ -128,6 +139,7 @@ class AssetsDeleteResponse(BaseModel):
 class AssetDependent(BaseModel):
     asset_path: str
     name: str
+    ref: str
 
 
 class AssetsDeleteConflictResponse(BaseModel):

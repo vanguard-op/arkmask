@@ -208,6 +208,7 @@ class _TextTabState extends State<_TextTab> {
       }
       await ref.set({
         'name': name,
+        'ref': null,
         'type': _type.value,
         'description': description,
         'prompt_body': null,
@@ -292,10 +293,13 @@ class _ReferenceTabState extends State<_ReferenceTab> {
   String? _error;
   bool _saving = false;
   final _descController = TextEditingController();
+  final _nameController = TextEditingController();
+  _ReferenceCandidate? _selectedCandidate;
 
   @override
   void dispose() {
     _descController.dispose();
+    _nameController.dispose();
     super.dispose();
   }
 
@@ -305,20 +309,22 @@ class _ReferenceTabState extends State<_ReferenceTab> {
   }
 
   /// Loads every candidate asset — global `assets/` plus every scene's
-  /// `assets/` subcollection — excluding assets whose own `name` already
-  /// starts with `@` (no chained references, FEAT-036).
+  /// `assets/` subcollection.
+  ///
+  /// Chained references (an asset that is itself already a reference, i.e.
+  /// has a non-null `ref`) are now allowed as reference sources (FEAT-013
+  /// recursive resolution supports multi-hop chains) — the old exclusion of
+  /// `@`-prefixed names no longer applies since `name` is display-label-only.
   Future<List<_ReferenceCandidate>> _loadCandidates() async {
     final fs = FirebaseFirestore.instance;
     final candidates = <_ReferenceCandidate>[];
 
     final globalDocs = await fs.collection('$_projectPath/assets').get();
     for (final doc in globalDocs.docs) {
-      final name = doc.data()['name'] as String? ?? doc.id;
-      if (name.startsWith('@')) continue;
       candidates.add(_ReferenceCandidate(
         scope: 0,
         slug: doc.id,
-        name: name,
+        name: doc.data()['name'] as String? ?? doc.id,
         type: doc.data()['type'] as String? ?? 'character',
         gcsImagePath: doc.data()['gcs_image_path'] as String?,
       ));
@@ -330,12 +336,10 @@ class _ReferenceTabState extends State<_ReferenceTab> {
       final assetDocs =
           await fs.collection('$_projectPath/scenes/${sceneDoc.id}/assets').get();
       for (final doc in assetDocs.docs) {
-        final name = doc.data()['name'] as String? ?? doc.id;
-        if (name.startsWith('@')) continue;
         candidates.add(_ReferenceCandidate(
           scope: sceneNum,
           slug: doc.id,
-          name: name,
+          name: doc.data()['name'] as String? ?? doc.id,
           type: doc.data()['type'] as String? ?? 'character',
           gcsImagePath: doc.data()['gcs_image_path'] as String?,
         ));
@@ -344,14 +348,36 @@ class _ReferenceTabState extends State<_ReferenceTab> {
     return candidates;
   }
 
-  Future<void> _select(_ReferenceCandidate candidate) async {
-    final referenceName = '@/scenes/${candidate.scope}/${candidate.slug}';
+  /// Selecting a candidate pre-fills the (independently editable) name field
+  /// with the source's own name — the user may rename the new reference
+  /// document freely before saving (FEAT-013/FEAT-036: `name` and `ref` are
+  /// fully independent fields).
+  void _pickCandidate(_ReferenceCandidate candidate) {
+    setState(() {
+      _selectedCandidate = candidate;
+      _nameController.text = candidate.name;
+    });
+  }
+
+  Future<void> _save() async {
+    final candidate = _selectedCandidate;
+    if (candidate == null) return;
+    final name = _nameController.text.trim();
+    if (name.isEmpty) {
+      setState(() => _error = 'Name is required.');
+      return;
+    }
+
+    // `ref` is the canonical relative asset_path of the source asset — see
+    // docs/ArkMask/schema.md "Global Asset Document". Scope 0 (global) uses
+    // 'assets/<slug>'; any other scope uses 'scenes/<scope>/assets/<slug>'.
+    final ref = candidate.scope == 0
+        ? 'assets/${candidate.slug}'
+        : 'scenes/${candidate.scope}/assets/${candidate.slug}';
     final description = _descController.text.trim();
-    // A duplicate reference is a warning, not a block (FEAT-036) — the slug
-    // for the new doc is derived from the referenced name plus a short
-    // discriminator so two variants of the same source can coexist.
-    final newSlug =
-        '${candidate.slug}-ref-${DateTime.now().millisecondsSinceEpoch % 100000}';
+    final newSlug = slugifyAssetName(name).isNotEmpty
+        ? '${slugifyAssetName(name)}-ref-${DateTime.now().millisecondsSinceEpoch % 100000}'
+        : '${candidate.slug}-ref-${DateTime.now().millisecondsSinceEpoch % 100000}';
 
     setState(() {
       _saving = true;
@@ -360,7 +386,8 @@ class _ReferenceTabState extends State<_ReferenceTab> {
 
     try {
       await FirebaseFirestore.instance.doc('${widget.collectionPath}/$newSlug').set({
-        'name': referenceName,
+        'name': name,
+        'ref': ref,
         'type': candidate.type,
         'description': description,
         'prompt_body': null,
@@ -382,32 +409,73 @@ class _ReferenceTabState extends State<_ReferenceTab> {
 
   @override
   Widget build(BuildContext context) {
+    if (_selectedCandidate != null) {
+      // ── Step 2: confirm/edit name + description for the picked source ──
+      final candidate = _selectedCandidate!;
+      return ListView(
+        controller: widget.scrollController,
+        padding: const EdgeInsets.all(AppSpacing.s4),
+        children: [
+          Row(
+            children: [
+              Icon(_iconForType(candidate.type)),
+              const SizedBox(width: AppSpacing.s2),
+              Expanded(
+                child: Text(
+                  'Referencing "${candidate.name}"',
+                  style: AppTextStyles.body(context),
+                ),
+              ),
+              TextButton(
+                onPressed:
+                    _saving ? null : () => setState(() => _selectedCandidate = null),
+                child: const Text('Change'),
+              ),
+            ],
+          ),
+          const SizedBox(height: AppSpacing.s3),
+          TextField(
+            controller: _nameController,
+            decoration: const InputDecoration(labelText: 'Name'),
+          ),
+          const SizedBox(height: AppSpacing.s3),
+          TextField(
+            controller: _descController,
+            maxLines: 4,
+            decoration: const InputDecoration(
+              labelText: 'Description (optional — leave blank for pass-through)',
+            ),
+          ),
+          if (_error != null) ...[
+            const SizedBox(height: AppSpacing.s2),
+            Text(_error!, style: TextStyle(color: Colors.red.shade400)),
+          ],
+          const SizedBox(height: AppSpacing.s4),
+          ElevatedButton(
+            onPressed: _saving ? null : _save,
+            child: _saving
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Text('Save'),
+          ),
+        ],
+      );
+    }
+
+    // ── Step 1: search and pick a source asset ──────────────────────────
     return Column(
       children: [
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: AppSpacing.s4),
-          child: Column(
-            children: [
-              TextField(
-                decoration: const InputDecoration(
-                  labelText: 'Search assets',
-                  prefixIcon: Icon(LucideIcons.search),
-                ),
-                onChanged: (v) => setState(() => _query = v.toLowerCase()),
-              ),
-              const SizedBox(height: AppSpacing.s2),
-              TextField(
-                controller: _descController,
-                decoration: const InputDecoration(
-                  labelText: 'Description (optional — leave blank for pass-through)',
-                ),
-              ),
-              if (_error != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: AppSpacing.s2),
-                  child: Text(_error!, style: TextStyle(color: Colors.red.shade400)),
-                ),
-            ],
+          child: TextField(
+            decoration: const InputDecoration(
+              labelText: 'Search assets',
+              prefixIcon: Icon(LucideIcons.search),
+            ),
+            onChanged: (v) => setState(() => _query = v.toLowerCase()),
           ),
         ),
         Expanded(
@@ -432,8 +500,7 @@ class _ReferenceTabState extends State<_ReferenceTab> {
                     leading: Icon(_iconForType(c.type)),
                     title: Text(c.name),
                     subtitle: Text(c.type),
-                    enabled: !_saving,
-                    onTap: () => _select(c),
+                    onTap: () => _pickCandidate(c),
                   );
                 },
               );
@@ -616,6 +683,7 @@ class _ImageTabState extends State<_ImageTab> {
         // (image.png was the direct upload target), so just write the doc.
         await docRef.set({
           'name': name,
+          'ref': null,
           'type': _type.value,
           'description': description,
           'prompt_body': null,
@@ -632,6 +700,7 @@ class _ImageTabState extends State<_ImageTab> {
         // photo as the conditioning reference (FEAT-034).
         await docRef.set({
           'name': name,
+          'ref': null,
           'type': _type.value,
           'description': description,
           'prompt_body': null,

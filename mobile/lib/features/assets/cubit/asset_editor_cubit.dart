@@ -7,6 +7,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../core/api/api_error.dart';
 import '../../../core/api/ark_mask_api_client.dart';
 import '../../../core/jobs/jobs_cubit.dart';
+import '../../../core/models/asset_ref_resolver.dart';
 import '../../../core/models/models.dart';
 import 'asset_editor_state.dart';
 
@@ -107,6 +108,7 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
     final newGcsImagePath = data['gcs_image_path'] as String?;
     final newPromptBody = data['prompt_body'] as String?;
     final name = data['name'] as String? ?? snap.id;
+    final ref = data['ref'] as String?;
     final current = state;
 
     // When the worker has written gcs_image_path / prompt_body, resolve the
@@ -140,6 +142,7 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
       name: name,
       type: AssetType.fromString(data['type'] as String? ?? 'character'),
       description: data['description'] as String? ?? '',
+      ref: ref,
       promptBody: newPromptBody,
       gcsImagePath: newGcsImagePath,
       isGlobal: isGlobal,
@@ -154,7 +157,49 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
       source: data['source'] as String? ?? 'extracted',
       styleAdapted: data['style_adapted'] as bool? ?? false,
       originalUploadGcsPath: data['original_upload_gcs_path'] as String?,
+      // Preserved until the next chain check resolves (see below) — avoids a
+      // one-frame flash back to "no error" on every unrelated snapshot.
+      refChainError: current is AssetEditorLoaded ? current.refChainError : null,
     ));
+
+    // FEAT-013 "not ready" state: a reference asset's `ref` chain may be
+    // cyclic or excessively deep (malformed/race-written data — see
+    // core/models/asset_ref_resolver.dart). Checked async, off the
+    // synchronous snapshot handler, since it may require several more
+    // Firestore reads to walk the chain.
+    if (ref != null) {
+      _checkRefChainHealth(ref);
+    }
+  }
+
+  /// Walks this asset's own `ref` chain purely to detect a cycle/depth-cap
+  /// error — the resolved terminal value itself isn't needed here (that's
+  /// only used for image-generation conditioning, see
+  /// [_resolveConditioningGcsPath]). Sets [AssetEditorLoaded.refChainError]
+  /// with the exact FEAT-013 inline error text on failure; clears it on
+  /// success.
+  Future<void> _checkRefChainHealth(String ref) async {
+    final uid = _uid;
+    if (uid == null) return;
+    try {
+      await resolveAssetRefChain(
+        uid: uid,
+        projectSlug: projectSlug,
+        startAssetPath: ref,
+      );
+      final current = state;
+      if (current is AssetEditorLoaded && current.refChainError != null) {
+        emit(current.copyWith(clearRefChainError: true));
+      }
+    } on AssetRefCycleException {
+      final current = state;
+      if (current is AssetEditorLoaded) {
+        emit(current.copyWith(
+          refChainError:
+              'Reference cycle detected — this asset\'s reference chain is broken.',
+        ));
+      }
+    }
   }
 
   /// Recomputes [AssetEditorLoaded.isGeneratingPrompt] /
@@ -303,8 +348,9 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
   /// Calls POST /image to enqueue an async image generation job.
   ///
   /// Resolves a conditioning GCS path for two cases:
-  ///  - Variant assets (name starts with `@`): reads the referenced asset
-  ///    document once from Firestore to get its `gcs_image_path`.
+  ///  - Variant assets ([AssetEditorLoaded.ref] non-null): recursively
+  ///    resolves the `ref` chain to the terminal asset's `gcs_image_path`
+  ///    (FEAT-013 — see core/models/asset_ref_resolver.dart).
   ///  - Manually-created style-adapted assets (FEAT-034): uses the
   ///    originally uploaded photo (`original_upload_gcs_path`) as the
   ///    reference so the image model actually has the source photo to adapt
@@ -322,8 +368,8 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
     // asset's image; style-adapted manual assets reference their own
     // originally uploaded photo. These are mutually exclusive in practice.
     String? conditioningGcsPath;
-    if (s.name.startsWith('@')) {
-      conditioningGcsPath = await _resolveConditioningGcsPath(s.name);
+    if (s.ref != null) {
+      conditioningGcsPath = await _resolveConditioningGcsPath(s.ref!);
     } else if (s.styleAdapted && s.originalUploadGcsPath != null) {
       conditioningGcsPath = s.originalUploadGcsPath;
     }
@@ -374,32 +420,26 @@ class AssetEditorCubit extends Cubit<AssetEditorState> {
     }
   }
 
-  /// Resolves the GCS image path of the referenced asset for variant assets.
-  ///
-  /// The [name] field uses the format `@/scenes/0/{assetId}` (references a
-  /// global asset) or `@/scenes/N/{assetId}` (references a scene-local asset
-  /// in scene N). Scene number 0 maps to the global `assets/` collection.
-  Future<String?> _resolveConditioningGcsPath(String name) async {
+  /// Resolves the GCS image path of the referenced (terminal) asset for a
+  /// variant, recursively following [ref]'s chain (FEAT-013) — see
+  /// core/models/asset_ref_resolver.dart. Follows the same graph-walk
+  /// resolution as the backend's app.services.asset_ref, so this always
+  /// agrees with what the server would resolve for the same asset.
+  Future<String?> _resolveConditioningGcsPath(String ref) async {
+    final uid = _uid;
+    if (uid == null) return null;
     try {
-      // Example: "@/scenes/0/hero" or "@/scenes/2/dragon"
-      final parts = name.split('/');
-      // Expected: ['@', 'scenes', '<sceneNum>', '<assetId>']
-      if (parts.length < 4) return null;
-      final sceneNum = int.tryParse(parts[2]);
-      final assetId = parts[3];
-
-      final String refSubPath;
-      if (sceneNum == null || sceneNum == 0) {
-        // Scene 0 → global asset collection
-        refSubPath = 'assets/$assetId';
-      } else {
-        refSubPath = 'scenes/$sceneNum/assets/$assetId';
-      }
-
-      final refPath = 'users/$_uid/projects/$projectSlug/$refSubPath';
-      final refSnap = await FirebaseFirestore.instance.doc(refPath).get();
-      if (!refSnap.exists) return null;
-      return refSnap.data()?['gcs_image_path'] as String?;
+      final resolved = await resolveAssetRefChain(
+        uid: uid,
+        projectSlug: projectSlug,
+        startAssetPath: ref,
+      );
+      if (!resolved.exists) return null;
+      return resolved.data?['gcs_image_path'] as String?;
+    } on AssetRefCycleException {
+      // Surfaced separately via _checkRefChainHealth's refChainError — here
+      // we just proceed without conditioning rather than blocking generation.
+      return null;
     } catch (_) {
       // If resolution fails, proceed without conditioning — image is still
       // generated, just without the reference style input.

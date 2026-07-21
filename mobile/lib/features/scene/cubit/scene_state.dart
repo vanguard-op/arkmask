@@ -13,6 +13,7 @@ class SceneAsset extends Equatable {
     required this.name,
     required this.type,
     required this.description,
+    this.ref,
     this.promptBody,
     this.gcsImagePath,
     this.isPassThrough = false,
@@ -21,11 +22,17 @@ class SceneAsset extends Equatable {
   /// Firestore document ID.
   final String id;
 
-  /// Raw name from Firestore (may start with `@/scenes/N/` for pass-throughs).
+  /// Display label from Firestore `name` field (FEAT-013: no longer
+  /// overloaded with reference syntax — see [SceneCubit]'s `ref`-based
+  /// pass-through resolution).
   final String name;
 
   final AssetType type;
   final String description;
+
+  /// From Firestore `ref` field (FEAT-013). Non-null means this asset
+  /// references another one.
+  final String? ref;
 
   /// Generated image prompt text. Null until the backend writes it.
   final String? promptBody;
@@ -38,9 +45,9 @@ class SceneAsset extends Equatable {
   /// global asset with the same base name.
   final bool isPassThrough;
 
-  /// Short display name — strips the `@/scenes/N/` prefix for references.
-  String get displayName =>
-      name.contains('/') ? name.split('/').last : name;
+  /// Display name — [name] is already a plain display label (FEAT-013), so
+  /// this is a passthrough kept for API stability of existing callers.
+  String get displayName => name;
 
   @override
   List<Object?> get props => [
@@ -48,6 +55,7 @@ class SceneAsset extends Equatable {
         name,
         type,
         description,
+        ref,
         promptBody,
         gcsImagePath,
         isPassThrough,

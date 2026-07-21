@@ -10,21 +10,28 @@ already covered by the existing /media/upload-url, /image-describe,
 
 This module covers what the client genuinely cannot do itself: deleting an
 asset (FEAT-037), which requires GCS delete credentials the client does not
-have, and — before deleting — scanning the project for other assets that
-reference the one being deleted via the `@` naming convention (FEAT-013),
-so a delete never silently creates a dangling reference (docs/ArkMask/
-risk_log.md R-025) unless the caller explicitly forces it.
+have, and — before deleting — scanning the project for other assets whose
+`ref` field chain resolves through the one being deleted (FEAT-013), so a
+delete never silently creates a dangling reference (docs/ArkMask/
+risk_log.md R-025) unless the caller explicitly forces it. The dependents
+scan is transitive: an asset that references another asset that in turn
+references the one being deleted is still a dependent, not just direct
+referencers (docs/ArkMask/risk_log.md R-029).
 """
 
 import re
 from dataclasses import dataclass
 
+from app.services.asset_ref import ref_chain_paths
+
 
 @dataclass
 class Dependent:
-    """A single asset document that references the asset being deleted."""
+    """A single asset document whose `ref` chain resolves through the asset
+    being deleted, directly or transitively."""
     asset_path: str
     name: str
+    ref: str
 
 
 def parse_asset_path(asset_path: str) -> tuple[int, str]:
@@ -35,8 +42,7 @@ def parse_asset_path(asset_path: str) -> tuple[int, str]:
         'assets/palace'            -> (0, 'palace')
         'scenes/2/assets/shade'    -> (2, 'shade')
 
-    Scope 0 means a global asset (matches the '@/scenes/0/<name>' reference
-    convention from FEAT-013/schema.md). Raises ValueError for any path that
+    Scope 0 means a global asset. Raises ValueError for any path that
     doesn't match one of the two expected shapes.
     """
     global_match = re.fullmatch(r"assets/([^/]+)", asset_path)
@@ -50,42 +56,47 @@ def parse_asset_path(asset_path: str) -> tuple[int, str]:
     raise ValueError(f"Unrecognised asset_path shape: {asset_path!r}")
 
 
-def reference_name_for(asset_path: str) -> str:
-    """Return the '@/scenes/{scope}/{slug}' reference string that other
-    asset documents would use to point at the asset at `asset_path`."""
-    scope, slug = parse_asset_path(asset_path)
-    return f"@/scenes/{scope}/{slug}"
+def build_asset_path(scope: int, slug: str) -> str:
+    """Inverse of `parse_asset_path`: (scope, slug) -> relative asset_path."""
+    return f"assets/{slug}" if scope == 0 else f"scenes/{scope}/assets/{slug}"
 
 
 def find_dependent_assets(db, firebase_uid: str, project_slug: str, asset_path: str) -> list[Dependent]:
     """
     Scan every asset document in the project (global + every scene) for a
-    `name` field that references `asset_path` via the `@` naming convention.
+    `ref` chain that resolves through `asset_path`, directly or transitively.
 
     Used by DELETE /assets to block a delete that would otherwise leave a
     pass-through/variant reference pointing at a missing document (FEAT-037,
-    risk_log.md R-025).
+    risk_log.md R-025/R-029).
     """
-    target_ref = reference_name_for(asset_path)
     project_path = f"users/{firebase_uid}/projects/{project_slug}"
-
     dependents: list[Dependent] = []
+
+    def _check(doc, dependent_path: str) -> None:
+        data = doc.to_dict() or {}
+        ref = data.get("ref")
+        if not ref:
+            return
+        # Walk the candidate's own ref chain (not raising on cycles — a
+        # candidate with a malformed chain of its own just isn't found to be
+        # a dependent of THIS asset unless the target appears before the
+        # cycle/depth cutoff).
+        chain = ref_chain_paths(db, project_path, ref)
+        if asset_path in chain:
+            dependents.append(
+                Dependent(asset_path=dependent_path, name=data.get("name", ""), ref=ref)
+            )
 
     # Global assets/ subcollection.
     for doc in db.collection(f"{project_path}/assets").stream():
-        data = doc.to_dict() or {}
-        if data.get("name") == target_ref:
-            dependents.append(Dependent(asset_path=f"assets/{doc.id}", name=data.get("name", "")))
+        _check(doc, f"assets/{doc.id}")
 
     # Every scene's local assets/ subcollection.
     for scene_doc in db.collection(f"{project_path}/scenes").stream():
         scene_n = scene_doc.id
         for doc in db.collection(f"{project_path}/scenes/{scene_n}/assets").stream():
-            data = doc.to_dict() or {}
-            if data.get("name") == target_ref:
-                dependents.append(
-                    Dependent(asset_path=f"scenes/{scene_n}/assets/{doc.id}", name=data.get("name", ""))
-                )
+            _check(doc, f"scenes/{scene_n}/assets/{doc.id}")
 
     return dependents
 

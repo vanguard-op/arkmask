@@ -47,16 +47,21 @@ final class ApiUnknownError extends ApiError {
 }
 
 /// A single dependent asset returned by `DELETE /assets`'s 409 response
-/// (FEAT-037) — another asset in the project references the one being
-/// deleted via the `@` naming convention.
+/// (FEAT-037) — another asset in the project has a `ref` chain (FEAT-013)
+/// that resolves through the one being deleted, directly or transitively.
 class AssetDependent {
-  AssetDependent({required this.assetPath, required this.name});
+  AssetDependent({required this.assetPath, required this.name, required this.ref});
 
   /// Relative path of the dependent asset, e.g. `scenes/3/assets/shade-variant`.
   final String assetPath;
 
-  /// The dependent's own `name` field, e.g. `@/scenes/0/shade`.
+  /// The dependent's own `name` field (display label only), e.g. `Shade (moody variant)`.
   final String name;
+
+  /// The dependent's own `ref` field — the asset_path it points to directly
+  /// (may be the asset being deleted, or another asset further along the
+  /// chain that ultimately resolves to it).
+  final String? ref;
 }
 
 /// Thrown by [ArkMaskApiClient.deleteAsset] when the backend blocks the

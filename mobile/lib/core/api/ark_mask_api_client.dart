@@ -470,10 +470,10 @@ class ArkMaskApiClient {
   ///
   /// [assetFirestorePath] is the relative asset path, e.g. `assets/palace`
   /// or `scenes/2/assets/shade`. When [force] is false (default) and other
-  /// assets reference this one via the `@` naming convention, throws
-  /// [AssetDeleteBlockedException] listing the dependents instead of
-  /// deleting — the caller should show them to the user and offer a
-  /// force-delete retry.
+  /// assets' `ref` chains resolve through this one (FEAT-013), directly or
+  /// transitively, throws [AssetDeleteBlockedException] listing the
+  /// dependents instead of deleting — the caller should show them to the
+  /// user and offer a force-delete retry.
   Future<void> deleteAsset({
     required String projectSlug,
     required String assetFirestorePath,
@@ -497,6 +497,7 @@ class ArkMaskApiClient {
               .map((d) => AssetDependent(
                     assetPath: (d as Map)['asset_path'] as String,
                     name: d['name'] as String,
+                    ref: d['ref'] as String?,
                   ))
               .toList(),
         );

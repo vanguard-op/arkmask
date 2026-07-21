@@ -1241,10 +1241,11 @@ def delete_asset(
     original.<ext> if present).
 
     Blocks the delete (HTTP 409, listing dependents) if any other asset in
-    the project references this one via the `@` naming convention (FEAT-013)
-    — unless `force` is set, in which case the delete proceeds regardless
-    and any dependent reference is left dangling (see docs/ArkMask/risk_log.md
-    R-025; the UI strongly discourages this path).
+    the project has a `ref` field whose chain resolves through this one
+    (FEAT-013), directly or transitively — unless `force` is set, in which
+    case the delete proceeds regardless and any dependent reference is left
+    dangling (see docs/ArkMask/risk_log.md R-025/R-029; the UI strongly
+    discourages this path).
     """
     firebase_uid = user.firebase_uid
     db = _firestore_client()
@@ -1261,7 +1262,9 @@ def delete_asset(
                 status_code=409,
                 content={
                     "dependents": [
-                        AssetDependent(asset_path=d.asset_path, name=d.name).model_dump()
+                        AssetDependent(
+                            asset_path=d.asset_path, name=d.name, ref=d.ref
+                        ).model_dump()
                         for d in dependents
                     ]
                 },

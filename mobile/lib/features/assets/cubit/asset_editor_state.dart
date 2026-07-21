@@ -28,6 +28,7 @@ class AssetEditorLoaded extends AssetEditorState {
     required this.type,
     required this.description,
     required this.isGlobal,
+    this.ref,
     this.promptBody,
     this.gcsImagePath,
     this.isSaving = false,
@@ -40,6 +41,7 @@ class AssetEditorLoaded extends AssetEditorState {
     this.deleteBlockedBy,
     this.styleAdapted = false,
     this.originalUploadGcsPath,
+    this.refChainError,
   });
 
   /// Firestore document ID for this asset (the last path segment).
@@ -53,6 +55,12 @@ class AssetEditorLoaded extends AssetEditorState {
 
   /// From Firestore `description` field. User-editable.
   final String description;
+
+  /// From Firestore `ref` field (FEAT-013). Non-null means this asset
+  /// references another one (`'assets/<slug>'` or
+  /// `'scenes/<N>/assets/<slug>'`) — replaces the old
+  /// `"@/scenes/N/<name>"` `name`-string convention.
+  final String? ref;
 
   /// From Firestore `prompt_body` field. Null until generated. User-editable.
   final String? promptBody;
@@ -106,11 +114,17 @@ class AssetEditorLoaded extends AssetEditorState {
   /// for every other asset source.
   final String? originalUploadGcsPath;
 
-  /// True when [name] is a reference into another asset
-  /// (`@/scenes/{n}/{baseName}`), as opposed to a brand-new, independent
-  /// scene-local asset with its own plain name. Only reference assets ever
-  /// show the reference-indicator banner — see [isPassThrough]/[isVariant].
-  bool get isReference => !isGlobal && name.startsWith('@');
+  /// Set when following this asset's own `ref` chain (see
+  /// core/models/asset_ref_resolver.dart) hit a cycle or exceeded the max
+  /// hop depth — the "not ready" state (FEAT-013). Exact text: "Reference
+  /// cycle detected — this asset's reference chain is broken."
+  final String? refChainError;
+
+  /// True when [ref] is non-null — this asset references another one,
+  /// as opposed to a brand-new, independent asset with its own plain name.
+  /// Only reference assets ever show the reference-indicator banner — see
+  /// [isPassThrough]/[isVariant].
+  bool get isReference => ref != null;
 
   /// A scene-local reference asset with an empty description uses the
   /// referenced asset's image as-is and does not need its own prompt or
@@ -133,6 +147,7 @@ class AssetEditorLoaded extends AssetEditorState {
     String? name,
     AssetType? type,
     String? description,
+    String? ref,
     String? promptBody,
     String? gcsImagePath,
     bool? isGlobal,
@@ -150,12 +165,15 @@ class AssetEditorLoaded extends AssetEditorState {
     bool clearDeleteBlockedBy = false,
     bool? styleAdapted,
     String? originalUploadGcsPath,
+    String? refChainError,
+    bool clearRefChainError = false,
   }) {
     return AssetEditorLoaded(
       assetId: assetId ?? this.assetId,
       name: name ?? this.name,
       type: type ?? this.type,
       description: description ?? this.description,
+      ref: ref ?? this.ref,
       promptBody: promptBody ?? this.promptBody,
       gcsImagePath: clearGcsImagePath ? null : (gcsImagePath ?? this.gcsImagePath),
       isGlobal: isGlobal ?? this.isGlobal,
@@ -170,6 +188,8 @@ class AssetEditorLoaded extends AssetEditorState {
           clearDeleteBlockedBy ? null : (deleteBlockedBy ?? this.deleteBlockedBy),
       styleAdapted: styleAdapted ?? this.styleAdapted,
       originalUploadGcsPath: originalUploadGcsPath ?? this.originalUploadGcsPath,
+      refChainError:
+          clearRefChainError ? null : (refChainError ?? this.refChainError),
     );
   }
 
@@ -179,6 +199,7 @@ class AssetEditorLoaded extends AssetEditorState {
         name,
         type,
         description,
+        ref,
         promptBody,
         gcsImagePath,
         isGlobal,
@@ -192,5 +213,6 @@ class AssetEditorLoaded extends AssetEditorState {
         deleteBlockedBy,
         styleAdapted,
         originalUploadGcsPath,
+        refChainError,
       ];
 }

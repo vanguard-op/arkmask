@@ -28,6 +28,34 @@ def _slugify(name: str) -> str:
     return re.sub(r"\s+", "-", stripped)
 
 
+def _extract_ai_ref(asset: dict) -> tuple[int, str] | None:
+    """Reads the AI extraction contract's `ref` field off a raw asset dict.
+
+    Per `backend/instructions/asset-list-generation.md`, the model now emits
+    a structured `ref: {"scene_number": N, "name": "<source_name>"} | null`
+    field directly alongside a `name` that is always a plain display label —
+    no more `"@/scenes/N/base"` string encoding to parse out of `name`. This
+    keeps the model-output contract and the Firestore schema's own `name`/
+    `ref` split (docs/ArkMask/schema.md "Global Asset Document") in lockstep,
+    so this function is now a straight, validated read instead of a regex
+    parse.
+
+    Returns `None` if `ref` is null/absent — i.e. this is a brand-new,
+    independent asset.
+    """
+    ref = asset.get("ref")
+    if not ref:
+        return None
+    scene_number = ref.get("scene_number")
+    ref_name = ref.get("name")
+    if scene_number is None or not ref_name:
+        return None
+    try:
+        return int(scene_number), ref_name
+    except (TypeError, ValueError):
+        return None
+
+
 def _count_story_scenes(raw: str) -> int:
     """
     Mirrors the Flutter app's FileBrowserCubit._countStoryScenes exactly —
@@ -60,7 +88,8 @@ def write_extracted_assets(
         firebase_uid: Owning user's Firebase UID.
         project_slug: Immutable project slug.
         raw_assets: List of dicts matching the AssetItem schema —
-            {name, type, scene_number, description} — as returned by
+            {name, ref, type, scene_number, description}, where `ref` is
+            `{"scene_number": int, "name": str} | None` — as returned by
             AIProvider.generate_asset_list().
         story: Full story text this extraction ran against. Used to backfill
             scene documents the model didn't emit any asset for at all (see
@@ -89,10 +118,59 @@ def write_extracted_assets(
     batch = db.batch()
     scene_numbers: set[int] = set()
 
+    # ── Build a (scope, lower(display_name)) -> slug lookup ────────────────
+    #
+    # A `ref` in this batch (e.g. {"scene_number": 0, "name": "elias"}) names
+    # its source by display name, not slug — and that source may be (a) an
+    # asset already persisted from a previous extraction run, or (b) a
+    # sibling asset being written in this very batch. Both must resolve to
+    # the same slug the source asset actually gets, so the `ref` path we
+    # write is a valid asset_path.
+    name_to_slug: dict[tuple[int, str], str] = {}
+    involved_scopes = {0} | {
+        (_extract_ai_ref(a) or (a["scene_number"],))[0]
+        for a in raw_assets
+    } | {a["scene_number"] for a in raw_assets}
+    for scope in involved_scopes:
+        coll_path = (
+            f"{project_path}/assets"
+            if scope == 0
+            else f"{project_path}/scenes/{scope}/assets"
+        )
+        for doc in db.collection(coll_path).stream():
+            existing = doc.to_dict() or {}
+            existing_name = existing.get("name") or doc.id
+            name_to_slug[(scope, existing_name.lower())] = doc.id
+
+    # Register this batch's own (as-yet-unwritten) display names too, so a
+    # reference to a sibling extracted in the SAME call resolves even though
+    # that sibling isn't in Firestore yet.
     for asset in raw_assets:
-        slug = _slugify(asset["name"])
+        name_to_slug[(asset["scene_number"], asset["name"].lower())] = _slugify(asset["name"])
+
+    for asset in raw_assets:
+        ai_ref = _extract_ai_ref(asset)
+        display_name = asset["name"]
+        slug = _slugify(display_name)
+
+        ref_path: str | None = None
+        if ai_ref is not None:
+            ref_scope, ref_base_name = ai_ref
+            ref_slug = name_to_slug.get(
+                (ref_scope, ref_base_name.lower()), _slugify(ref_base_name)
+            )
+            ref_path = (
+                f"assets/{ref_slug}"
+                if ref_scope == 0
+                else f"scenes/{ref_scope}/assets/{ref_slug}"
+            )
+
         data = {
-            "name": asset["name"],
+            # `name` is now display-label-only, always taken as-is from the
+            # model's own `name` field (schema.md) — the reference
+            # relationship, if any, lives entirely in `ref` below.
+            "name": display_name,
+            "ref": ref_path,
             "type": asset["type"],
             "description": asset["description"],
             "prompt_body": None,
@@ -102,13 +180,13 @@ def write_extracted_assets(
         }
 
         if asset["scene_number"] == 0:
-            ref = db.document(f"{project_path}/assets/{slug}")
+            doc_ref = db.document(f"{project_path}/assets/{slug}")
         else:
             scene_numbers.add(asset["scene_number"])
-            ref = db.document(
+            doc_ref = db.document(
                 f"{project_path}/scenes/{asset['scene_number']}/assets/{slug}"
             )
-        batch.set(ref, data)
+        batch.set(doc_ref, data)
 
     # Backfill every scene the story actually contains, not just the ones
     # the model returned assets for (see docstring above).

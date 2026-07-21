@@ -258,6 +258,15 @@ class _TreeView extends StatelessWidget {
             Uri.encodeComponent('scenes/$sceneFirestoreId/assets/$assetId'),
           );
 
+  /// Route to the asset editor for an arbitrary `ref` target — [ref] is
+  /// already a relative asset_path (`'assets/<slug>'` or
+  /// `'scenes/<N>/assets/<slug>'`, see docs/ArkMask/schema.md), so it can be
+  /// used directly as the `:assetPath` route param (FEAT-013 one-hop
+  /// pass-through navigation).
+  String _assetEditorPathForRef(String ref) => Routes.assetEditor
+      .replaceFirst(':projectName', Uri.encodeComponent(projectSlug))
+      .replaceFirst(':assetPath', Uri.encodeComponent(ref));
+
   String _sceneDetailPath(int sceneNumber) => Routes.sceneDetail
       .replaceFirst(':projectName', Uri.encodeComponent(projectSlug))
       .replaceFirst(':sceneId', sceneNumber.toString());
@@ -465,7 +474,7 @@ class _TreeView extends StatelessWidget {
                       if (asset.source != 'extracted')
                         const SizedBox(width: AppSpacing.s1),
                       AssetReferenceBadge(
-                        assetName: asset.name,
+                        ref: asset.ref,
                         description: asset.description,
                       ),
                     ],
@@ -486,9 +495,16 @@ class _TreeView extends StatelessWidget {
                         ],
                   onTap: () async {
                     context.read<FileBrowserCubit>().select(asset.id);
-                    await context.push(
-                      _sceneAssetEditorPath(scene.id, asset.id),
-                    );
+                    // A pass-through reference asset (FEAT-013) navigates ONE
+                    // hop via its own `ref` field rather than jumping
+                    // straight to the fully-resolved terminal asset — this
+                    // mirrors how the reference chain is meant to be
+                    // explored (each hop is its own editable document), and
+                    // keeps behavior correct even for a multi-hop chain.
+                    final path = asset.isPassThrough && asset.ref != null
+                        ? _assetEditorPathForRef(asset.ref!)
+                        : _sceneAssetEditorPath(scene.id, asset.id);
+                    await context.push(path);
                     if (context.mounted) {
                       onReturnFromChild();
                     }

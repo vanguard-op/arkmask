@@ -279,6 +279,14 @@ class _LoadedBody extends StatelessWidget {
               // through to the "Generating variant" label.
               if (state.isReference) _ReferenceIndicatorBanner(state: state),
 
+              // ── "Not ready" cycle-error banner (FEAT-013) ────────────────
+              // Shown whenever this asset's own `ref` chain is cyclic or
+              // exceeds the max hop depth — the referencing document itself
+              // still exists and is otherwise editable, but its reference
+              // cannot be resolved to a terminal asset.
+              if (state.refChainError != null)
+                _RefChainErrorBanner(message: state.refChainError!),
+
               // ── Frontmatter card ────────────────────────────────────────
               _FrontmatterCard(state: state),
 
@@ -362,6 +370,44 @@ class _ReferenceIndicatorBanner extends StatelessWidget {
                     ? primaryColor
                     : (isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight),
               ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Inline "not ready" cycle-error banner (FEAT-013) — shown when this
+/// asset's own `ref` chain is cyclic or exceeds the max hop depth (see
+/// core/models/asset_ref_resolver.dart and AssetEditorCubit._checkRefChainHealth).
+class _RefChainErrorBanner extends StatelessWidget {
+  const _RefChainErrorBanner({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Container(
+      margin: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.s4,
+        vertical: AppSpacing.s2,
+      ),
+      padding: const EdgeInsets.all(AppSpacing.s3),
+      decoration: BoxDecoration(
+        color: Colors.red.withValues(alpha: isDark ? 0.16 : 0.08),
+        borderRadius: BorderRadius.circular(AppSizing.radiusMd),
+        border: Border.all(color: Colors.red.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        children: [
+          Icon(LucideIcons.alertCircle, size: AppSizing.iconSm, color: Colors.red.shade400),
+          const SizedBox(width: AppSpacing.s2),
+          Expanded(
+            child: Text(
+              message,
+              style: AppTextStyles.bodySmall(context).copyWith(color: Colors.red.shade400),
             ),
           ),
         ],

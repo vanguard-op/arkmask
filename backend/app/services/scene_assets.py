@@ -31,6 +31,7 @@ import re
 from dataclasses import dataclass
 
 from app.services.ai.base import AssetPromptInput
+from app.services.asset_ref import ReferenceChainError, resolve_asset_ref_chain
 
 _DEFAULT_ART_STYLE = "painterly illustration with clean lines and rich color"
 
@@ -145,32 +146,6 @@ def get_previous_scene_prompt(db, uid: str, project_slug: str, scene_index: int)
     return (doc.to_dict() or {}).get("storyboard_body") or ""
 
 
-@dataclass(frozen=True)
-class _AssetReference:
-    """Parsed form of a pass-through reference name (`@/scenes/N/{base_name}`)."""
-
-    scene_number: int
-    base_name: str
-
-
-def _parse_reference(name: str) -> _AssetReference | None:
-    """`"@/scenes/2/hero"` -> `_AssetReference(2, "hero")`.
-
-    Mirrors SceneCubit._parseReference. Returns `None` if `name` is not a
-    `@/scenes/N/...` reference.
-    """
-    if not name.startswith("@"):
-        return None
-    parts = [p for p in name[1:].split("/") if p]
-    if len(parts) < 3 or parts[0] != "scenes":
-        return None
-    try:
-        scene_number = int(parts[1])
-    except ValueError:
-        return None
-    return _AssetReference(scene_number=scene_number, base_name=parts[-1])
-
-
 def _type_priority(asset_type: str | None) -> int:
     return _TYPE_PRIORITY.get(asset_type or "", 3)
 
@@ -178,74 +153,67 @@ def _type_priority(asset_type: str | None) -> int:
 def resolve_scene_assets(db, uid: str, project_slug: str, scene_index: int) -> list[ResolvedAsset]:
     """Resolve this scene's ordered reference assets.
 
-    Mirrors SceneCubit._rebuildState() in the Flutter app exactly:
-      1. Read this scene's local assets (`scenes/{n}/assets`) and the
-         project's global assets (`assets/`).
-      2. A pass-through scene asset (description empty) delegates to the
-         global asset with the matching base name — using ITS prompt,
-         image, and type, not the scene-local document's own (empty) fields.
+    For each scene-local asset document (`scenes/{scene_index}/assets`):
+      1. If `ref` is null, the asset is independent — use its own
+         `prompt_body`/`gcs_image_path`/`type` directly.
+      2. If `ref` is non-null, recursively follow the `ref` chain (see
+         app.services.asset_ref.resolve_asset_ref_chain) to the terminal
+         asset — this replaces the old `"@/scenes/N/<name>"` string
+         convention, so resolution is a graph walk over current Firestore
+         state and is NOT scene-number- or creation-order-dependent (a scene
+         N asset may validly reference a scene N-p asset that itself
+         references scene N-q, p > q, or even a later scene).
+         - pass-through (this doc's own `description` is empty): use the
+           *terminal* asset's prompt/image/type.
+         - variant (this doc's own `description` is non-empty): use this
+           doc's OWN prompt/image/type — description/pass-through-vs-variant
+           status is decided only on the referencing document, never on the
+           terminal one, no matter how many hops the chain has.
       3. Sort background -> character -> object, stable within a type (the
          order scene-local asset documents were read in is preserved).
 
-    Only scene-local asset documents produce rows — a global asset that is
-    never referenced by a scene-local pass-through document does not appear
-    in this scene's resolved list, matching the existing Dart behaviour.
-
-    A pass-through reference's *source* scene matters: only scene_number == 0
-    ("root") assets are written to the project-level `assets` collection (see
-    app.services.asset_writer.write_extracted_assets) — every other scene
-    number's assets live solely under that scene's own `scenes/{n}/assets`
-    subcollection. So a reference like `@/scenes/5/hero` must be resolved
-    against `scenes/5/assets`, not the project-level `assets` collection, or
-    it will always appear "missing" even when scene 5's asset has a generated
-    image. Non-root source scenes are fetched lazily and cached per call.
+    A broken reference chain (cycle, excessive depth, or a dangling `ref`
+    pointing at a deleted document) does not raise here — it resolves to an
+    "unready" asset (no prompt, no image), which naturally fails
+    `assets_ready_for_storyboard`'s all-images-present gate below. Surfacing
+    the distinguishable cycle/depth error itself is the mobile Asset Editor's
+    job (FEAT-013 "not ready" banner) since that's decided per-asset from a
+    live Firestore listener, not from this batch scene-resolution call.
     """
     project_path = f"users/{uid}/projects/{project_slug}"
-
-    global_by_name: dict[str, dict] = {}
-    for doc in db.collection(f"{project_path}/assets").stream():
-        data = doc.to_dict() or {}
-        global_by_name[data.get("name") or doc.id] = data
-
-    def _find_by_name(by_name: dict[str, dict], base_name: str) -> dict:
-        if base_name in by_name:
-            return by_name[base_name]
-        lower = base_name.lower()
-        for name, data in by_name.items():
-            if name.lower() == lower:
-                return data
-        return {}
-
-    # Cache of non-root source scene number -> {name: data}, populated lazily
-    # as references into those scenes are encountered below.
-    ref_scene_cache: dict[int, dict[str, dict]] = {}
-
-    def _find_reference(ref: _AssetReference) -> dict:
-        if ref.scene_number == 0:
-            return _find_by_name(global_by_name, ref.base_name)
-        if ref.scene_number not in ref_scene_cache:
-            by_name: dict[str, dict] = {}
-            for doc in db.collection(
-                f"{project_path}/scenes/{ref.scene_number}/assets"
-            ).stream():
-                data = doc.to_dict() or {}
-                by_name[data.get("name") or doc.id] = data
-            ref_scene_cache[ref.scene_number] = by_name
-        return _find_by_name(ref_scene_cache[ref.scene_number], ref.base_name)
 
     entries: list[tuple[int, ResolvedAsset]] = []
     for doc in db.collection(f"{project_path}/scenes/{scene_index}/assets").stream():
         data = doc.to_dict() or {}
         name = data.get("name") or doc.id
         description = data.get("description") or ""
-        is_pass_through = description == ""
+        ref = data.get("ref")
+        is_pass_through = ref is not None and description == ""
 
-        if is_pass_through:
-            ref = _parse_reference(name)
-            referenced = _find_reference(ref) if ref is not None else {}
-            prompt = referenced.get("prompt_body") or ""
-            gcs_image_path = referenced.get("gcs_image_path")
-            asset_type = referenced.get("type")
+        if ref:
+            try:
+                resolved_terminal = resolve_asset_ref_chain(db, project_path, ref)
+            except ReferenceChainError:
+                resolved_terminal = None
+
+            if is_pass_through:
+                # Pass-through: use the terminal asset's own fields, never
+                # this (empty-description) document's own (also empty) ones.
+                terminal_data = (
+                    resolved_terminal.data
+                    if resolved_terminal and resolved_terminal.exists
+                    else {}
+                )
+                prompt = terminal_data.get("prompt_body") or ""
+                gcs_image_path = terminal_data.get("gcs_image_path")
+                asset_type = terminal_data.get("type")
+            else:
+                # Variant: own prompt/image/type — the ref chain only grounds
+                # this asset's *image generation conditioning* (see /image's
+                # conditioning_gcs_path), not its resolved scene identity.
+                prompt = data.get("prompt_body") or ""
+                gcs_image_path = data.get("gcs_image_path")
+                asset_type = data.get("type")
         else:
             prompt = data.get("prompt_body") or ""
             gcs_image_path = data.get("gcs_image_path")

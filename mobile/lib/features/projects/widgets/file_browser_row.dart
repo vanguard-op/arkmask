@@ -137,18 +137,20 @@ class FileBrowserRow extends StatelessWidget {
 
 /// Small pill badge for scene-local asset reference mode.
 ///
-/// Badge logic:
-///   Global   — pass-through ref (@-name, empty description): uses referenced asset
-///   Variant  — @-name with own description/prompt/image
-///   Scene    — plain local asset (no @ prefix)
+/// Badge logic keys off `ref` presence (FEAT-013), not any `name` prefix:
+///   Global   — pass-through ref (`ref` non-null, empty description): uses referenced asset
+///   Variant  — `ref` non-null with own description/prompt/image
+///   Scene    — plain local asset (`ref` null)
 class AssetReferenceBadge extends StatelessWidget {
   const AssetReferenceBadge({
     super.key,
-    required this.assetName,
+    required this.ref,
     required this.description,
   });
 
-  final String assetName;
+  /// The asset's own `ref` field — non-null means this asset references
+  /// another one (directly or transitively).
+  final String? ref;
   final String description;
 
   @override
@@ -156,7 +158,7 @@ class AssetReferenceBadge extends StatelessWidget {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final primaryColor = isDark ? AppColors.primaryDark : AppColors.primaryLight;
 
-    final bool isRef = assetName.startsWith('@');
+    final bool isRef = ref != null;
     final bool isPassThrough = isRef && description.isEmpty;
     final bool isVariant = isRef && description.isNotEmpty;
 

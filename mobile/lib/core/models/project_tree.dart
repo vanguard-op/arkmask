@@ -85,6 +85,7 @@ class AssetNode {
     required this.hasImage,
     required this.isGlobal,
     this.sceneNumber,
+    this.ref,
     this.gcsImagePath,
     this.isGeneratingPrompt = false,
     this.isGeneratingImage = false,
@@ -96,8 +97,7 @@ class AssetNode {
   /// Firestore document ID for this asset.
   final String id;
 
-  /// Asset name. No @ prefix = independent local asset.
-  /// @ prefix = reference: pass-through if [description] is empty, variant otherwise.
+  /// Display label only — never overloaded with reference syntax. See [ref].
   final String name;
 
   final AssetType? type;
@@ -117,6 +117,11 @@ class AssetNode {
 
   /// Scene number for scene-local assets; null for global assets.
   final int? sceneNumber;
+
+  /// Asset path this asset references (`'assets/<slug>'` or
+  /// `'scenes/<N>/assets/<slug>'`), or null for an independent asset.
+  /// Replaces the old `"@/scenes/N/<name>"` `name`-string convention (FEAT-013).
+  final String? ref;
 
   /// GCS object path for the generated image. Non-null when [hasImage] is true.
   final String? gcsImagePath;
@@ -146,10 +151,18 @@ class AssetNode {
   /// Set only when [source] is 'manual_image' and [styleAdapted] is true.
   final String? originalUploadGcsPath;
 
-  /// True for a scene-local pass-through reference (name starts with @,
-  /// description is empty). Pass-through assets reuse the referenced global
-  /// asset image — they have no independent image or prompt of their own.
-  bool get isPassThrough => !isGlobal && name.startsWith('@') && description.isEmpty;
+  /// True when this asset references another one ([ref] is non-null).
+  bool get isReference => ref != null;
+
+  /// True for a pass-through reference ([ref] non-null, description empty).
+  /// Pass-through assets reuse the referenced (terminal) asset's image —
+  /// they have no independent image or prompt of their own.
+  bool get isPassThrough => ref != null && description.isEmpty;
+
+  /// True for a variant reference ([ref] non-null, description non-empty) —
+  /// gets its own independently generated prompt/image, conditioned on the
+  /// referenced asset's image.
+  bool get isVariant => ref != null && description.isNotEmpty;
 }
 
 /// Represents a single scene document in the Firestore scenes subcollection.

@@ -13,9 +13,9 @@ enum AssetType {
   String get value => name;
 
   static AssetType fromString(String s) => AssetType.values.firstWhere(
-        (t) => t.name == s,
-        orElse: () => AssetType.character,
-      );
+    (t) => t.name == s,
+    orElse: () => AssetType.character,
+  );
 }
 
 class AssetPrompt {
@@ -33,17 +33,24 @@ class AssetPrompt {
 
   bool get isPassThrough => description.isEmpty;
 
-  AssetPrompt copyWith({String? name, AssetType? type, String? description, String? promptBody}) =>
-      AssetPrompt(
-        name: name ?? this.name,
-        type: type ?? this.type,
-        description: description ?? this.description,
-        promptBody: promptBody ?? this.promptBody,
-      );
+  AssetPrompt copyWith({
+    String? name,
+    AssetType? type,
+    String? description,
+    String? promptBody,
+  }) => AssetPrompt(
+    name: name ?? this.name,
+    type: type ?? this.type,
+    description: description ?? this.description,
+    promptBody: promptBody ?? this.promptBody,
+  );
 }
 
 class SceneStoryboard {
-  const SceneStoryboard({required this.sceneNumber, required this.storyboardBody});
+  const SceneStoryboard({
+    required this.sceneNumber,
+    required this.storyboardBody,
+  });
 
   final int sceneNumber;
   final String storyboardBody;
@@ -58,7 +65,12 @@ class SceneStoryboard {
 }
 
 class ExtractedAsset {
-  const ExtractedAsset({required this.name, required this.type, required this.sceneNumber, required this.description});
+  const ExtractedAsset({
+    required this.name,
+    required this.type,
+    required this.sceneNumber,
+    required this.description,
+  });
 
   final String name;
   final AssetType type;
@@ -68,11 +80,11 @@ class ExtractedAsset {
   bool get isGlobal => sceneNumber == 0;
 
   factory ExtractedAsset.fromJson(Map<String, dynamic> json) => ExtractedAsset(
-        name: json['name'] as String,
-        type: AssetType.fromString(json['type'] as String),
-        sceneNumber: json['scene_number'] as int,
-        description: json['description'] as String,
-      );
+    name: json['name'] as String,
+    type: AssetType.fromString(json['type'] as String),
+    sceneNumber: json['scene_number'] as int,
+    description: json['description'] as String,
+  );
 }
 
 class AssetsResponse {
@@ -80,10 +92,10 @@ class AssetsResponse {
   final List<ExtractedAsset> assets;
 
   factory AssetsResponse.fromJson(Map<String, dynamic> json) => AssetsResponse(
-        assets: (json['assets'] as List<dynamic>)
-            .map((e) => ExtractedAsset.fromJson(e as Map<String, dynamic>))
-            .toList(),
-      );
+    assets: (json['assets'] as List<dynamic>)
+        .map((e) => ExtractedAsset.fromJson(e as Map<String, dynamic>))
+        .toList(),
+  );
 }
 
 class ImagePromptResponse {
@@ -125,20 +137,26 @@ enum JobStatus {
   failed;
 
   static JobStatus fromString(String s) => JobStatus.values.firstWhere(
-        (j) => j.name == s,
-        orElse: () => JobStatus.pending,
-      );
+    (j) => j.name == s,
+    orElse: () => JobStatus.pending,
+  );
 }
 
 class VideoStatusResponse {
-  const VideoStatusResponse({required this.jobId, required this.status, this.url, this.error});
+  const VideoStatusResponse({
+    required this.jobId,
+    required this.status,
+    this.url,
+    this.error,
+  });
 
   final String jobId;
   final JobStatus status;
   final String? url;
   final String? error;
 
-  bool get isTerminal => status == JobStatus.success || status == JobStatus.failed;
+  bool get isTerminal =>
+      status == JobStatus.success || status == JobStatus.failed;
   bool get isSuccess => status == JobStatus.success;
 
   factory VideoStatusResponse.fromJson(Map<String, dynamic> json) =>
@@ -155,14 +173,14 @@ enum ProviderType {
   byteplus;
 
   String get headerValue => switch (this) {
-        gemini => 'gemini',
-        byteplus => 'bytedance',
-      };
+    gemini => 'gemini',
+    byteplus => 'bytedance',
+  };
 
   static ProviderType fromString(String s) => ProviderType.values.firstWhere(
-        (p) => p.name == s,
-        orElse: () => ProviderType.gemini,
-      );
+    (p) => p.name == s,
+    orElse: () => ProviderType.gemini,
+  );
 }
 
 enum UserTier {
@@ -171,21 +189,21 @@ enum UserTier {
   studio;
 
   static UserTier fromString(String s) => UserTier.values.firstWhere(
-        (t) => t.name == s,
-        orElse: () => UserTier.free,
-      );
+    (t) => t.name == s,
+    orElse: () => UserTier.free,
+  );
 
   int get monthlyCredits => switch (this) {
-        free => 200,
-        creator => 3000,
-        studio => 10000,
-      };
+    free => 200,
+    creator => 3000,
+    studio => 10000,
+  };
 
   int? get maxProjects => switch (this) {
-        free => 1,
-        creator => null,
-        studio => null,
-      };
+    free => 1,
+    creator => null,
+    studio => null,
+  };
 }
 
 abstract final class CreditCost {
@@ -194,8 +212,10 @@ abstract final class CreditCost {
   static const int imageGeneration = 5;
   static const int videoPrompt = 3;
   static const int videoGeneration = 20;
+
   /// Cloud FFmpeg merge — flat fee regardless of scene count.
   static const int merge = 5;
+
   /// POST /image-describe — single vision-model call (FEAT-034).
   static const int imageDescribe = 1;
 }
@@ -203,7 +223,7 @@ abstract final class CreditCost {
 // ── Generation settings ───────────────────────────────────────────────────────
 
 /// Default art style used when no preference has been set for the project.
-const kDefaultArtStyle = 'cinematic live-action';
+const kDefaultArtStyle = 'retro film grain';
 
 /// Preset art styles shown in the style picker.
 ///
@@ -214,7 +234,7 @@ const kArtStylePresets = [
   'painterly illustration with clean lines and rich color',
   '2D Japanese anime style',
   '3D animation CG style',
-  'retro film grain',
+  'cinematic live-action',
 ];
 
 /// Project-level generation settings stored in the Firestore project document.
@@ -246,9 +266,9 @@ class GenerationSettings {
       );
 
   Map<String, dynamic> toFirestore() => {
-        'art_style': artStyle,
-        'video_subtitles': videoSubtitles,
-      };
+    'art_style': artStyle,
+    'video_subtitles': videoSubtitles,
+  };
 
   GenerationSettings copyWith({String? artStyle, bool? videoSubtitles}) =>
       GenerationSettings(
@@ -304,10 +324,7 @@ class ProjectDocument {
   ///
   /// [id] is the Firestore document ID (the project slug).
   /// [data] is the raw `Map<String, dynamic>` from the snapshot.
-  factory ProjectDocument.fromFirestore(
-    String id,
-    Map<String, dynamic> data,
-  ) {
+  factory ProjectDocument.fromFirestore(String id, Map<String, dynamic> data) {
     // Firestore Timestamps are deserialized as `Timestamp` objects; fall back
     // to now() if the field is missing on a freshly created document that has
     // not yet received a server-side `created_at` write.
@@ -350,14 +367,23 @@ class AssetDocument {
     required this.name,
     required this.type,
     required this.description,
+    this.ref,
     this.promptBody,
     this.gcsImagePath,
   });
 
   final String id;
+
+  /// Display label only — never overloaded with reference syntax. See [ref].
   final String name;
   final AssetType type;
   final String description;
+
+  /// Asset path this asset references (`'assets/<slug>'` or
+  /// `'scenes/<N>/assets/<slug>'`), or null for an independent asset.
+  /// Replaces the old `"@/scenes/N/<name>"` `name`-string convention — see
+  /// docs/ArkMask/schema.md "Global Asset Document" (FEAT-013).
+  final String? ref;
 
   /// Generated image prompt text (`prompt_body` Firestore field). Null until
   /// a `/image-prompt` call completes and the backend writes it.
@@ -373,6 +399,7 @@ class AssetDocument {
         name: data['name'] as String? ?? id,
         type: AssetType.fromString(data['type'] as String? ?? 'character'),
         description: data['description'] as String? ?? '',
+        ref: data['ref'] as String?,
         promptBody: data['prompt_body'] as String?,
         gcsImagePath: data['gcs_image_path'] as String?,
       );
@@ -512,25 +539,25 @@ class ClipTrimState {
   static const double minDuration = 0.5;
 
   ClipTrimState copyWith({double? inPoint, double? outPoint}) => ClipTrimState(
-        sceneNumber: sceneNumber,
-        inPoint: inPoint ?? this.inPoint,
-        outPoint: outPoint ?? this.outPoint,
-        totalDuration: totalDuration,
-      );
+    sceneNumber: sceneNumber,
+    inPoint: inPoint ?? this.inPoint,
+    outPoint: outPoint ?? this.outPoint,
+    totalDuration: totalDuration,
+  );
 
   Map<String, dynamic> toJson() => {
-        'sceneNumber': sceneNumber,
-        'inPoint': inPoint,
-        'outPoint': outPoint,
-        'totalDuration': totalDuration,
-      };
+    'sceneNumber': sceneNumber,
+    'inPoint': inPoint,
+    'outPoint': outPoint,
+    'totalDuration': totalDuration,
+  };
 
   factory ClipTrimState.fromJson(Map<String, dynamic> json) => ClipTrimState(
-        sceneNumber: json['sceneNumber'] as int,
-        inPoint: (json['inPoint'] as num).toDouble(),
-        outPoint: (json['outPoint'] as num).toDouble(),
-        totalDuration: (json['totalDuration'] as num).toDouble(),
-      );
+    sceneNumber: json['sceneNumber'] as int,
+    inPoint: (json['inPoint'] as num).toDouble(),
+    outPoint: (json['outPoint'] as num).toDouble(),
+    totalDuration: (json['totalDuration'] as num).toDouble(),
+  );
 }
 
 /// Per-project GCS storage summary from `GET /projects/{slug}/storage`.
@@ -560,24 +587,26 @@ class ProjectStorageSummary {
   /// Size of final.mp4 (0 if no export yet).
   final int exportBytes;
 
-  factory ProjectStorageSummary.fromJson(String slug, Map<String, dynamic> json) =>
-      ProjectStorageSummary(
-        slug: slug,
-        totalBytes: json['total_bytes'] as int? ?? 0,
-        imagesBytes: json['images_bytes'] as int? ?? 0,
-        videosBytes: json['videos_bytes'] as int? ?? 0,
-        exportBytes: json['export_bytes'] as int? ?? 0,
-      );
+  factory ProjectStorageSummary.fromJson(
+    String slug,
+    Map<String, dynamic> json,
+  ) => ProjectStorageSummary(
+    slug: slug,
+    totalBytes: json['total_bytes'] as int? ?? 0,
+    imagesBytes: json['images_bytes'] as int? ?? 0,
+    videosBytes: json['videos_bytes'] as int? ?? 0,
+    exportBytes: json['export_bytes'] as int? ?? 0,
+  );
 
   /// Returns a zeroed summary — used as a placeholder while the fetch is in flight
   /// or when the backend returns an error (non-blocking).
   factory ProjectStorageSummary.zero(String slug) => ProjectStorageSummary(
-        slug: slug,
-        totalBytes: 0,
-        imagesBytes: 0,
-        videosBytes: 0,
-        exportBytes: 0,
-      );
+    slug: slug,
+    totalBytes: 0,
+    imagesBytes: 0,
+    videosBytes: 0,
+    exportBytes: 0,
+  );
 }
 
 enum TransitionType {
@@ -587,22 +616,22 @@ enum TransitionType {
 
   /// Full display name shown in the transition picker.
   String get label => switch (this) {
-        hardCut => 'Hard Cut',
-        fadeBlack => 'Fade to Black',
-        dissolve => 'Dissolve',
-      };
+    hardCut => 'Hard Cut',
+    fadeBlack => 'Fade to Black',
+    dissolve => 'Dissolve',
+  };
 
   /// Abbreviated label shown on the small timeline indicator (≤ 4 chars).
   String get shortLabel => switch (this) {
-        hardCut => 'Cut',
-        fadeBlack => 'Fade',
-        dissolve => 'Dslv',
-      };
+    hardCut => 'Cut',
+    fadeBlack => 'Fade',
+    dissolve => 'Dslv',
+  };
 
   /// JSON-safe string sent to `POST /merge` as `transition_to_next`.
   String get apiValue => switch (this) {
-        hardCut => 'hard_cut',
-        fadeBlack => 'fade_black',
-        dissolve => 'dissolve',
-      };
+    hardCut => 'hard_cut',
+    fadeBlack => 'fade_black',
+    dissolve => 'dissolve',
+  };
 }

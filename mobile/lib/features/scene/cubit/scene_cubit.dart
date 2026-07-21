@@ -49,13 +49,25 @@ class SceneCubit extends Cubit<SceneState> {
   StreamSubscription<JobsState>? _jobsSub;
 
   /// Lazily-opened listeners on other scenes' local asset subcollections,
-  /// keyed by scene number. A pass-through reference (`@/scenes/N/name`) with
-  /// N != 0 points at a *scene-local* asset defined in scene N — those are
-  /// never copied into the project-level `assets` collection (only
-  /// scene_number == 0 assets are — see asset_writer.write_extracted_assets),
-  /// so resolving such a reference requires reading scene N's own
-  /// `assets` subcollection directly. Opened on demand as references are
-  /// discovered in `_rebuildState`, never closed until this cubit closes.
+  /// keyed by scene number. A pass-through `ref` (FEAT-013 — see
+  /// docs/ArkMask/schema.md "Global Asset Document") of the form
+  /// `'scenes/N/assets/<slug>'` with N != 0 points at a *scene-local* asset
+  /// defined in scene N — those are never copied into the project-level
+  /// `assets` collection (only scene_number == 0 assets are — see
+  /// asset_writer.write_extracted_assets), so resolving such a reference
+  /// requires reading scene N's own `assets` subcollection directly. Opened
+  /// on demand as references are discovered in `_rebuildState`, never closed
+  /// until this cubit closes.
+  ///
+  /// Note: this cubit resolves only ONE hop of a `ref` chain (for live UI
+  /// gating — "does this scene's directly-referenced source have an image
+  /// yet"). A `ref` chain with more than one hop resolves fully and
+  /// authoritatively server-side at generation time (see
+  /// app.services.asset_ref.resolve_asset_ref_chain /
+  /// app.services.scene_assets.resolve_scene_assets), which is what actually
+  /// gates `/video-prompt`/`/video`. A deeper chain simply shows this
+  /// screen's "ready" indicator slightly conservatively until the
+  /// intermediate hop itself has an image.
   final Map<int, StreamSubscription<QuerySnapshot<Map<String, dynamic>>>>
       _refSceneAssetsSubs = {};
 
@@ -235,31 +247,31 @@ class SceneCubit extends Cubit<SceneState> {
     // by this scene's pass-through assets, so their gcs_image_path can be
     // resolved below. Safe to call on every rebuild — no-ops once opened.
     for (final asset in _sceneAssets) {
-      if (asset.description.isNotEmpty) continue;
-      final ref = _parseReference(asset.name);
-      if (ref != null && ref.sceneNumber != 0) {
-        _ensureRefSceneAssetsListener(ref.sceneNumber);
+      if (asset.ref == null || asset.description.isNotEmpty) continue;
+      final parsed = _parseRefPath(asset.ref!);
+      if (parsed != null && parsed.scope != 0) {
+        _ensureRefSceneAssetsListener(parsed.scope);
       }
     }
 
     final resolved = <SceneAsset>[];
     for (final asset in _sceneAssets) {
-      final isPassThrough = asset.description.isEmpty;
+      final isPassThrough = asset.ref != null && asset.description.isEmpty;
       String? gcsImagePath;
 
       if (isPassThrough) {
-        // Pass-through: resolve against the asset's *source* scene — scene 0
-        // ("root") assets live in the project-level `assets` collection;
-        // any other scene number's assets are scene-local only (see
-        // asset_writer.write_extracted_assets / StoryCubit._writeAssetDocuments)
-        // and must be looked up in that scene's own `assets` subcollection.
-        final ref = _parseReference(asset.name);
-        if (ref == null) {
+        // Pass-through: resolve against the asset's `ref` (FEAT-013) —
+        // scope 0 ("root") assets live in the project-level `assets`
+        // collection; any other scope's assets are scene-local only (see
+        // asset_writer.write_extracted_assets) and must be looked up in
+        // that scene's own `assets` subcollection.
+        final parsed = _parseRefPath(asset.ref!);
+        if (parsed == null) {
           gcsImagePath = null;
-        } else if (ref.sceneNumber == 0) {
-          gcsImagePath = _findGlobalAsset(ref.baseName)?.gcsImagePath;
+        } else if (parsed.scope == 0) {
+          gcsImagePath = _findGlobalAsset(parsed.slug)?.gcsImagePath;
         } else {
-          gcsImagePath = _findRefSceneAsset(ref.sceneNumber, ref.baseName)?.gcsImagePath;
+          gcsImagePath = _findRefSceneAsset(parsed.scope, parsed.slug)?.gcsImagePath;
         }
       } else {
         gcsImagePath = asset.gcsImagePath;
@@ -270,6 +282,7 @@ class SceneCubit extends Cubit<SceneState> {
         name: asset.name,
         type: asset.type,
         description: asset.description,
+        ref: asset.ref,
         promptBody: asset.promptBody,
         gcsImagePath: gcsImagePath,
         isPassThrough: isPassThrough,
@@ -511,29 +524,35 @@ class SceneCubit extends Cubit<SceneState> {
     return null;
   }
 
-  /// Returns the global asset whose name matches [baseName] (case-insensitive).
-  AssetDocument? _findGlobalAsset(String baseName) {
-    final lower = baseName.toLowerCase();
+  /// Returns the global asset whose Firestore document ID matches [slug].
+  AssetDocument? _findGlobalAsset(String slug) {
     for (final g in _globalAssets) {
-      if (g.name == baseName || g.name.toLowerCase() == lower) return g;
+      if (g.id == slug) return g;
     }
     return null;
   }
 
-  /// Parses a pass-through reference name (`@/scenes/N/{baseName}`) into its
-  /// source scene number and base name. Returns `null` if [name] does not
-  /// match the expected reference format.
-  static _AssetReference? _parseReference(String name) {
-    if (!name.startsWith('@')) return null;
-    final parts = name
-        .substring(1)
-        .split('/')
-        .where((s) => s.isNotEmpty)
-        .toList();
-    if (parts.length < 3 || parts[0] != 'scenes') return null;
-    final sceneNumber = int.tryParse(parts[1]);
-    if (sceneNumber == null) return null;
-    return _AssetReference(sceneNumber: sceneNumber, baseName: parts.last);
+  /// Parses a `ref` field value (FEAT-013 — e.g. `"assets/hero"` or
+  /// `"scenes/2/assets/hero"`) into its source scope (0 = global) and slug.
+  /// Returns `null` if [ref] does not match either expected shape.
+  static ({int scope, String slug})? _parseRefPath(String ref) {
+    // See project_file_service.dart's _invalidNameChars doc comment:
+    // constructing RegExp(pattern) remains the supported API despite the
+    // class itself being slated `final` in a future release.
+    // ignore: deprecated_member_use
+    final globalMatch = RegExp(r'^assets/([^/]+)$').firstMatch(ref);
+    if (globalMatch != null) {
+      return (scope: 0, slug: globalMatch.group(1)!);
+    }
+    // ignore: deprecated_member_use
+    final sceneMatch = RegExp(r'^scenes/(\d+)/assets/([^/]+)$').firstMatch(ref);
+    if (sceneMatch != null) {
+      return (
+        scope: int.parse(sceneMatch.group(1)!),
+        slug: sceneMatch.group(2)!,
+      );
+    }
+    return null;
   }
 
   /// Opens (once) a listener on `scenes/{sceneNumber}/assets` so pass-through
@@ -556,15 +575,14 @@ class SceneCubit extends Cubit<SceneState> {
     );
   }
 
-  /// Returns the asset named [baseName] (case-insensitive) from scene
+  /// Returns the asset with Firestore document ID [slug] from scene
   /// [sceneNumber]'s cached local assets, or `null` if not yet loaded / not
   /// found.
-  AssetDocument? _findRefSceneAsset(int sceneNumber, String baseName) {
+  AssetDocument? _findRefSceneAsset(int sceneNumber, String slug) {
     final assets = _refSceneAssets[sceneNumber];
     if (assets == null) return null;
-    final lower = baseName.toLowerCase();
     for (final a in assets) {
-      if (a.name == baseName || a.name.toLowerCase() == lower) return a;
+      if (a.id == slug) return a;
     }
     return null;
   }
@@ -604,12 +622,4 @@ class SceneCubit extends Cubit<SceneState> {
     }
     return super.close();
   }
-}
-
-/// Parsed form of a pass-through reference name (`@/scenes/N/{baseName}`).
-class _AssetReference {
-  const _AssetReference({required this.sceneNumber, required this.baseName});
-
-  final int sceneNumber;
-  final String baseName;
 }

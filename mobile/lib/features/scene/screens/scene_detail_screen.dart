@@ -687,9 +687,8 @@ class _AssetBadge extends StatelessWidget {
       label = 'Pass-through';
       bgColor = primaryColor.withValues(alpha: 0.15);
       textColor = primaryColor;
-    } else if (asset.name.startsWith('@') &&
-        asset.description.isNotEmpty) {
-      // Variant: @-named asset with its own description.
+    } else if (asset.ref != null && asset.description.isNotEmpty) {
+      // Variant: references another asset but has its own description.
       label = 'Variant';
       bgColor = isDark
           ? AppColors.surfaceOverlayDark
