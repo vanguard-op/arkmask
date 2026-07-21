@@ -1,6 +1,12 @@
 solid-work
 docs/ArkMask
 
+# Python bytecode cache (backend/ and workers/ both run pytest/uvicorn
+# locally, which regenerates these on every run — never meant to be tracked)
+__pycache__/
+*.pyc
+*.pyo
+
 # FVM Version Cache
 .fvm/
 
