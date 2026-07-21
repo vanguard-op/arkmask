@@ -51,7 +51,17 @@ class ResolvedAssetRef {
 
 /// Recursively follows `ref` fields starting at [startAssetPath] (a relative
 /// asset path, e.g. `"assets/hero"` or `"scenes/2/assets/hero"`) until
-/// reaching a terminal asset (`ref` is null/empty) or a missing document.
+/// reaching a content-terminal asset or a missing document.
+///
+/// A document is content-terminal when either `ref` is null/empty (a true
+/// independent/global terminal), OR its own `description` is non-empty (a
+/// *variant* — per docs/ArkMask/schema.md, a variant keeps `ref` set
+/// permanently as conditioning lineage for regeneration, but has its own
+/// independently generated `gcsImagePath`/`prompt`, so the walk must stop at
+/// the variant itself rather than following its `ref` further upstream).
+/// Stopping only on a null `ref` previously walked straight through a
+/// variant to whatever it references, silently resolving to the wrong
+/// (older/earlier) asset instead of the variant's own image/prompt.
 ///
 /// Resolution is a pure graph walk over current Firestore state — NOT
 /// dependent on scene number or creation order, matching
@@ -84,7 +94,8 @@ Future<ResolvedAssetRef> resolveAssetRefChain({
     }
     final data = snap.data()!;
     final ref = data['ref'] as String?;
-    if (ref == null || ref.isEmpty) {
+    final description = data['description'] as String? ?? '';
+    if (ref == null || ref.isEmpty || description.isNotEmpty) {
       return ResolvedAssetRef(exists: true, path: current, data: data);
     }
     current = ref;

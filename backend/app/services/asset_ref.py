@@ -90,6 +90,18 @@ def resolve_asset_ref_chain(db, project_path: str, start_asset_path: str) -> Res
     by the caller before invoking this resolver, never by inspecting the
     terminal document reached here.
 
+    The walk stops as soon as it reaches a document that is content-terminal:
+    either `ref` is null (a true independent/global terminal), OR the
+    document's own `description` is non-empty (a *variant* — per
+    docs/ArkMask/schema.md, a variant keeps its `ref` set permanently as
+    conditioning lineage for regeneration, but it has its own independently
+    generated `gcs_image_path`/`prompt_body` and must never be walked past).
+    Stopping only on `ref is None` (the pre-fix behavior) incorrectly walked
+    straight through a variant to whatever *it* references, silently
+    resolving to the wrong (older/earlier) asset's image/prompt instead of
+    the variant's own — e.g. a scene referencing a variant would render with
+    the variant's upstream global asset instead of the variant itself.
+
     Raises CycleDetectedError if `start_asset_path` (or any path reached
     while walking) is revisited, and MaxDepthExceededError if the walk
     exceeds MAX_REF_DEPTH hops without terminating — both are graph-walk
@@ -114,7 +126,8 @@ def resolve_asset_ref_chain(db, project_path: str, start_asset_path: str) -> Res
 
         data = doc.to_dict() or {}
         ref = data.get("ref")
-        if not ref:
+        description = data.get("description") or ""
+        if not ref or description != "":
             return ResolvedAsset(exists=True, asset_path=current, data=data, hops=hops)
 
         current = ref

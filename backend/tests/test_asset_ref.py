@@ -71,6 +71,42 @@ def test_resolve_follows_multi_hop_chain_to_terminal():
     assert resolved.hops == 2
 
 
+def test_resolve_stops_at_variant_instead_of_walking_past_it():
+    # Regression test: a variant (non-empty description) keeps its own `ref`
+    # set permanently as conditioning lineage, but the walk must treat it as
+    # content-terminal — using ITS OWN gcs_image_path/prompt_body — rather
+    # than continuing on to whatever it references. Previously the walk only
+    # stopped when `ref` was null, so a scene referencing a variant would
+    # silently resolve to the variant's upstream asset instead (e.g. an
+    # "older" variant of a character rendering as the original "younger"
+    # global asset in generated video).
+    db = _FakeDb({
+        "scenes/4/assets/older-ref": {
+            "name": "older-ref",
+            "ref": "assets/older-variant",
+        },
+        "assets/older-variant": {
+            "name": "older-variant",
+            "ref": "assets/hero",
+            "description": "An aged version of the hero character.",
+            "prompt_body": "older variant prompt",
+            "gcs_image_path": "u1/p1/assets/older-variant/image.png",
+        },
+        "assets/hero": {
+            "name": "hero",
+            "ref": None,
+            "prompt_body": "hero prompt",
+            "gcs_image_path": "u1/p1/assets/hero/image.png",
+        },
+    })
+    resolved = resolve_asset_ref_chain(db, PROJECT_PATH, "assets/older-variant")
+    assert resolved.exists is True
+    assert resolved.asset_path == "assets/older-variant"
+    assert resolved.data["prompt_body"] == "older variant prompt"
+    assert resolved.data["gcs_image_path"] == "u1/p1/assets/older-variant/image.png"
+    assert resolved.hops == 0
+
+
 def test_resolve_missing_target_returns_not_exists():
     db = _FakeDb({})
     resolved = resolve_asset_ref_chain(db, PROJECT_PATH, "assets/ghost")
