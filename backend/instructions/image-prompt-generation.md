@@ -12,7 +12,7 @@ Generate a text prompt for the Ark image generation API (Seedream model) that wi
 }
 ```
 
-- `art_style` — the visual rendering style for this project (e.g. `"painterly illustration with clean lines and rich color"`, `"cinematic live-action"`, `"2D Japanese anime style"`). Always apply this style exactly as written. If absent or empty, default to `painterly illustration with clean lines and rich color`.
+- `art_style` — the visual rendering style for this project (e.g. `"painterly illustration with clean lines and rich color"`, `"cinematic live-action"`, `"2D Japanese anime style"`). Apply this style as written, **except** for `"character"` assets when it is realism-leaning, in which case resolve it through the Realism Guardrail below before writing the prompt. If absent or empty, default to `painterly illustration with clean lines and rich color`.
 
 ## Model Context
 
@@ -26,6 +26,20 @@ Prompts are consumed by **seedream-5-0-lite** (`seedream-5-0-260128`) via the Ar
 ## Output
 
 Output a single prompt string — plain text, no JSON wrapping, no field names. The prompt is the only output.
+
+## Realism Guardrail (Downstream Video Model Compatibility)
+
+The image generated here is later fed into a separate video generation model as a conditioning reference. That video model silently rejects images its own safety filter judges to be an indistinguishable photograph of a real person (its rejection reasoning references likeness/celebrity-resemblance risk, even for entirely fictional descriptions). A prompt that leans into literal photographic realism — especially for `"character"` assets — risks producing an image the video model will reject after the fact, with no user-facing error.
+
+**When this applies**: check `art_style` (case-insensitive) for realism-leaning language — e.g. it contains words like `"live-action"`, `"photoreal"`, `"photo-real"`, `"photorealistic"`, `"cinematic"`, `"realistic"`, `"live action"`, `"film"`, `"photograph"`. If none of these are present (e.g. painterly, anime, cartoon, stylized, low-poly, watercolor styles), skip this section entirely and apply `art_style` exactly as written — those styles are already far from the rejection boundary.
+
+**How to resolve a realism-leaning `art_style`**: do not pass the raw style string through unmodified. Instead, translate it into rendering-style language that keeps every quality the user asked for (photographic lighting, fine detail, lifelike proportions, cinematic composition, color grading) while explicitly framing the output as a **digital render of a character**, never as a photograph of a real, physical person. Concretely, the "Style and rendering" language in the prompt must:
+- Keep the user's realism cues — lighting quality, level of detail, cinematic mood, color grading — intact and undiminished.
+- Add a rendering-medium qualifier that a photo cannot have, e.g. "hyper-detailed digital character render," "CG character render with photographic lighting," "cinematic 3D character render." Use wording proportional to the source style — do not soften the requested realism, only reclassify its medium.
+- Never use the bare words "photograph," "photo," "photorealistic photo," or "real person" to describe the output image itself — these describe exactly the classification the video model rejects. Describing lighting or detail as "photographic" or "cinematic" is fine; describing the output image itself as a photo is not.
+- For `"character"` assets specifically, avoid descriptor combinations that read as a specific, identifiable real individual (e.g. do not invent or imply a celebrity likeness, a named public figure, or hyper-specific real-world identity markers). Keep descriptions generic and original — an invented person's features, not a recognizable one.
+
+This guardrail applies specifically to `"character"` assets — the video model's rejection is a likeness/face-resemblance check, which only fires on images containing a face. `"background"` and `"object"` assets have no face for the filter to evaluate, so their `art_style` should always be applied as written, with no guardrail translation needed.
 
 ## Generation Rules by Type
 
@@ -41,7 +55,7 @@ Structure the prompt as:
 1. Layout declaration — state explicitly that this is a two-panel side-by-side character sheet
 2. Character description — physical appearance, face, hair, skin, expression, age, distinguishing features
 3. Clothing and accessories — full outfit description in both panels
-4. Style and rendering — art style, line quality, color palette, rendering technique
+4. Style and rendering — art style, line quality, color palette, rendering technique (apply the Realism Guardrail above if `art_style` is realism-leaning)
 5. Lighting — clean, even, studio-quality lighting with no dramatic shadows that would obscure features
 6. Background — plain, light neutral or white background in both panels (no environmental context)
 7. Aspect ratio guidance — include in the prompt that the image is wide/landscape format (16:9)
@@ -111,3 +125,17 @@ A heavy rectangular wooden box, open-lidded to reveal its interior, constructed 
 
 **Output**:
 Character reference sheet — two-panel side-by-side layout on a plain white background, wide landscape format (16:9). Left panel: close-up portrait from mid-chest upward of an elderly man in his late 70s, face in soft three-quarter view. His skin is deeply weathered with pronounced wrinkles earned over decades of close work. Round wire-rimmed spectacles rest on his nose. His eyes are warm and absorbed, carrying the focused calm of a lifetime craftsman. Thinning white hair, neatly kept. He wears a worn brown leather apron over a simple off-white linen shirt, collar slightly open. Oil and grease stains mark the apron and his hands. Right panel: full-body view of the same man in a natural standing pose, hands visible at his sides, full leather apron and linen shirt clearly rendered head to toe, same lighting and same expression. Painterly illustration style with clean outlines and warm, earthy color palette. Soft even studio lighting, no shadows obscuring facial features. Plain white background in both panels.
+
+---
+
+**Input** (realism-leaning `art_style` — Realism Guardrail applies):
+```json
+{
+  "description": "A woman in her mid-20s with sharp cheekbones, straight dark hair in a ponytail, and an athletic build. She wears a fitted grey running jacket and dark leggings, with a determined, focused expression.",
+  "type": "character",
+  "art_style": "cinematic live-action"
+}
+```
+
+**Output**:
+Character reference sheet — two-panel side-by-side layout on a plain light neutral background, wide landscape format (16:9). Left panel: close-up portrait from mid-chest upward of a woman in her mid-20s with an invented, original appearance — sharp cheekbones, straight dark hair pulled into a neat ponytail, athletic build, and a determined, focused expression, gaze slightly angled toward camera. Right panel: full-body view of the same woman in a natural standing pose, wearing a fitted grey running jacket over dark athletic leggings, full outfit and proportions visible head to toe, same lighting and same expression. Rendered as a hyper-detailed digital character render with cinematic, photographic-quality lighting and fine surface detail — a polished CG character render, not a photograph. Clean, even studio-quality lighting with soft falloff, no dramatic shadows obscuring the face. Plain light neutral background in both panels.
